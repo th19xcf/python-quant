@@ -125,37 +125,53 @@ def calculate_psy(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
     return lazy_df
 
 
-def calculate_cr(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
+def calculate_cr(lazy_df: pl.LazyFrame, windows: list, ma_windows: list | None = None) -> pl.LazyFrame:
     """
-    计算CR指标（能量指标）
-    CR = (N日内上涨日成交量总和 - N日内下跌日成交量总和) / (N日内上涨日成交量总和 + N日内下跌日成交量总和) * 100
+    计算CR指标（价格类能量指标，通达信口径）
+
+    通达信原文：
+        MID:=REF(HIGH+LOW,1)/2;
+        CR:SUM(MAX(0,HIGH-MID),N)/SUM(MAX(0,MID-LOW),N)*100;
+        MA1:REF(MA(CR,M1),M1/2.5+1);（M1~M4 = 10/20/40/60，本实现输出 cr_ma1~cr_ma4）
+
+    旧实现用「上涨日成交量 - 下跌日成交量」冒充 CR，属量能类、语义完全不同，已重写。
 
     Args:
         lazy_df: Polars LazyFrame
         windows: CR计算窗口列表
+        ma_windows: CR 参考均线周期列表，默认 [10, 20, 40, 60]
 
     Returns:
-        pl.LazyFrame: 包含CR指标的LazyFrame
+        pl.LazyFrame: 包含 ``cr{N}`` / ``cr`` / ``cr_ma1~cr_ma4``
     """
-    # 1. 计算价格变化方向和分类成交量
-    prev_close = pl.col('close').shift(1)
-    up_vol = pl.when(pl.col('close') > prev_close).then(pl.col('volume')).otherwise(0.0)
-    down_vol = pl.when(pl.col('close') < prev_close).then(pl.col('volume')).otherwise(0.0)
+    if ma_windows is None:
+        ma_windows = [10, 20, 40, 60]
 
-    # 2. 计算各窗口的CR值
+    # 1. 参考线 MID = 昨日 (HIGH+LOW)/2
+    mid = (pl.col('high').shift(1) + pl.col('low').shift(1)) / 2
+    # 2. 上冲力度 / 下探力度（只取正部）
+    up_move = pl.when((pl.col('high') - mid) > 0).then(pl.col('high') - mid).otherwise(0.0)
+    down_move = pl.when((mid - pl.col('low')) > 0).then(mid - pl.col('low')).otherwise(0.0)
+
+    # 3. 计算各窗口的CR值
     for window in windows:
-        # 计算N日上涨、下跌成交量总和
-        up_sum = to_float32(up_vol.rolling_sum(window_size=window, min_samples=1))
-        down_sum = to_float32(down_vol.rolling_sum(window_size=window, min_samples=1))
-
-        # 计算CR值 = (上涨总和 - 下跌总和) / (上涨总和 + 下跌总和) * 100
-        cr = to_float32((up_sum - down_sum) /
-             (up_sum + down_sum + 0.0001) * 100).alias(f'cr{window}')
-
+        up_sum = to_float32(up_move.rolling_sum(window_size=window, min_samples=1))
+        down_sum = to_float32(down_move.rolling_sum(window_size=window, min_samples=1))
+        cr = to_float32(up_sum / (down_sum + 0.0001) * 100).alias(f'cr{window}')
         lazy_df = lazy_df.with_columns(cr)
 
-    # 3. 添加默认列名
+    # 4. 默认列名
     lazy_df = add_default_columns(lazy_df, 'cr', windows)
+
+    # 5. 参考均线 MA1~MA4：REF(MA(CR,M), M/2.5+1)
+    if len(windows) >= 1:
+        base = pl.col(f'cr{windows[0]}')
+        exprs = []
+        for i, m in enumerate(ma_windows[:4], start=1):
+            ma = base.rolling_mean(window_size=m, min_samples=m)
+            exprs.append(to_float32(ma.shift(int(m / 2.5) + 1)).alias(f'cr_ma{i}'))
+        lazy_df = lazy_df.with_columns(exprs)
+
     return lazy_df
 
 
@@ -170,8 +186,10 @@ def calculate_hsl(lazy_df: pl.LazyFrame, float_share: float | None = None,
        分级填充，周/月线由聚合层按区间成交量加权计算）；
     2. ``turn_frame``（列 ``trade_date/turn``）按日期左连接；
     3. ``float_share`` 有效时按 ``volume(手) × 100 / float_share × 100``；
-    4. 以上都没有 → 旧口径估算 ``volume / MA60(volume) × 5``，并在
-       ``hsl_source`` 列标注 ``estimated``。
+    4. 以上都没有 → **留空**，``hsl_source='missing'``。
+
+    旧实现第 4 档用 ``volume / MA60(volume) × 5`` 估算并标 ``estimated``，
+    该值是伪换手率（可达真实值数倍、与股本无关），会污染横截面排序，已移除。
 
     Args:
         lazy_df: Polars LazyFrame（需含 ``volume``，可选 ``date``/``turn``）
@@ -192,31 +210,27 @@ def calculate_hsl(lazy_df: pl.LazyFrame, float_share: float | None = None,
         lazy_df = lazy_df.join(joined.lazy(), on=date_key, how='left')
         turn_expr = pl.col('turn').cast(pl.Float64)
 
-    # 旧口径估算：60 日平均成交量作为流通股本的参考量
-    avg_volume = pl.col('volume').rolling_mean(window_size=60, min_samples=1)
-    estimated = pl.when(avg_volume > 0).then(
-        pl.col('volume') / avg_volume * 5).otherwise(0.0)
-
+    # 旧口径估算列已移除：缺失即为缺失，不再用伪换手率填充
     if turn_expr is not None:
         real = turn_expr.is_not_null() & (turn_expr > 0)
-        hsl_expr = pl.when(real).then(turn_expr).otherwise(estimated)
-        source_expr = pl.when(real).then(pl.lit('turn')).otherwise(pl.lit('estimated'))
+        hsl_expr = pl.when(real).then(turn_expr).otherwise(None)
+        source_expr = pl.when(real).then(pl.lit('turn')).otherwise(pl.lit('missing'))
     elif float_share is not None and float_share > 0:
         # volume 单位「手」：×100 换股，再 ×100 转百分数
         hsl_expr = pl.col('volume') * 100.0 * 100.0 / float_share
         source_expr = pl.lit('float_share')
     else:
-        hsl_expr = estimated
-        source_expr = pl.lit('estimated')
+        hsl_expr = pl.lit(None, dtype=pl.Float64)
+        source_expr = pl.lit('missing')
 
     lazy_df = lazy_df.with_columns([
         to_float32(hsl_expr).alias('hsl'),
         source_expr.alias('hsl_source'),
     ])
 
-    # 计算HSL的5日和10日移动平均
-    hsl_ma5 = to_float32(pl.col('hsl').rolling_mean(window_size=5, min_samples=1)).alias('hsl_ma5')
-    hsl_ma10 = to_float32(pl.col('hsl').rolling_mean(window_size=10, min_samples=1)).alias('hsl_ma10')
+    # 计算HSL的5日和10日移动平均（MA 不足 N 根不输出）
+    hsl_ma5 = to_float32(pl.col('hsl').rolling_mean(window_size=5, min_samples=5)).alias('hsl_ma5')
+    hsl_ma10 = to_float32(pl.col('hsl').rolling_mean(window_size=10, min_samples=10)).alias('hsl_ma10')
 
     return lazy_df.with_columns([hsl_ma5, hsl_ma10])
 
@@ -240,6 +254,80 @@ def calculate_lb(lazy_df: pl.LazyFrame, period: int = 5) -> pl.LazyFrame:
     lb = to_float32(pl.when(avg_volume > 0).then(pl.col('volume') / avg_volume).otherwise(1)).alias('lb')
 
     return lazy_df.with_columns(lb)
+
+
+def calculate_mfi(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
+    """
+    计算MFI指标（资金流量指标，Money Flow Index）
+
+    标准公式（与通达信/主流行情软件一致；``TCalc.dll`` 未检索到独立公式体，
+    按标准公式实现并在报告中标注证据等级）：
+        TP = (HIGH + LOW + CLOSE) / 3
+        MF = TP * VOL
+        TP 上涨记正资金流、下跌记负资金流、持平记 0
+        MFI = 100 - 100 / (1 + SUM(MF+, N) / SUM(MF-, N))
+
+    ``SUM`` 不足 N 根不输出；窗口内无负资金流取 100、无正且无负取 50。
+
+    Args:
+        lazy_df: Polars LazyFrame（需 high/low/close/volume）
+        windows: MFI 周期列表，默认 [14]
+
+    Returns:
+        pl.LazyFrame: 含 ``mfi{N}`` 与默认列 ``mfi``
+    """
+    tp = (pl.col('high') + pl.col('low') + pl.col('close')) / 3.0
+    money_flow = tp * pl.col('volume')
+    prev_tp = tp.shift(1)
+
+    pos_flow = pl.when(tp > prev_tp).then(money_flow).otherwise(0.0)
+    neg_flow = pl.when(tp < prev_tp).then(money_flow).otherwise(0.0)
+
+    for window in windows:
+        pos_sum = pos_flow.rolling_sum(window_size=window, min_samples=window)
+        neg_sum = neg_flow.rolling_sum(window_size=window, min_samples=window)
+        mfi_value = (
+            pl.when((pos_sum == 0) & (neg_sum == 0)).then(50.0)
+            .when(neg_sum == 0).then(100.0)
+            .otherwise(100.0 - 100.0 / (1.0 + pos_sum / neg_sum))
+        )
+        lazy_df = lazy_df.with_columns(to_float32(mfi_value).alias(f'mfi{window}'))
+
+    return add_default_columns(lazy_df, 'mfi', windows)
+
+
+def calculate_cmf(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
+    """
+    计算CMF指标（蔡金资金流，Chaikin Money Flow）
+
+    标准日线公式（通达信无内置，按标准公式实现）：
+        CLV = ((CLOSE - LOW) - (HIGH - CLOSE)) / (HIGH - LOW)
+        CMF = SUM(CLV * VOL, N) / SUM(VOL, N)
+    ``HIGH == LOW``（一字板/停牌）按 CLV = 0 处理；``SUM`` 不足 N 根不输出。
+
+    Args:
+        lazy_df: Polars LazyFrame（需 high/low/close/volume）
+        windows: CMF 周期列表，默认 [20]
+
+    Returns:
+        pl.LazyFrame: 含 ``cmf{N}`` 与默认列 ``cmf``
+    """
+    hl_range = pl.col('high') - pl.col('low')
+    clv = (
+        pl.when(hl_range == 0).then(0.0)
+        .otherwise(((pl.col('close') - pl.col('low')) - (pl.col('high') - pl.col('close'))) / hl_range)
+    )
+    volume = pl.col('volume')
+
+    for window in windows:
+        clv_vol_sum = (clv * volume).rolling_sum(window_size=window, min_samples=window)
+        vol_sum = volume.rolling_sum(window_size=window, min_samples=window)
+        cmf_value = (
+            pl.when(vol_sum > 0).then(clv_vol_sum / vol_sum).otherwise(None)
+        )
+        lazy_df = lazy_df.with_columns(to_float32(cmf_value).alias(f'cmf{window}'))
+
+    return add_default_columns(lazy_df, 'cmf', windows)
 
 
 def calculate_volume_indicators(lazy_df: pl.LazyFrame, indicator_types: list, **params) -> pl.LazyFrame:
@@ -276,7 +364,8 @@ def calculate_volume_indicators(lazy_df: pl.LazyFrame, indicator_types: list, **
     # 计算CR指标
     if 'cr' in indicator_types:
         windows = params.get('cr_windows', [26])
-        lazy_df = calculate_cr(lazy_df, windows)
+        ma_windows = params.get('cr_ma_windows', [10, 20, 40, 60])
+        lazy_df = calculate_cr(lazy_df, windows, ma_windows)
 
     # 计算HSL指标（换手率）
     if 'hsl' in indicator_types:
@@ -300,5 +389,15 @@ def calculate_volume_indicators(lazy_df: pl.LazyFrame, indicator_types: list, **
     if 'lb' in indicator_types:
         period = params.get('lb_period', 5)
         lazy_df = calculate_lb(lazy_df, period)
+
+    # 计算MFI指标（资金流量）
+    if 'mfi' in indicator_types:
+        windows = params.get('mfi_windows', [14])
+        lazy_df = calculate_mfi(lazy_df, windows)
+
+    # 计算CMF指标（蔡金资金流）
+    if 'cmf' in indicator_types:
+        windows = params.get('cmf_windows', [20])
+        lazy_df = calculate_cmf(lazy_df, windows)
 
     return lazy_df

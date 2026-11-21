@@ -426,3 +426,74 @@ def compute_chip_profile(
         clamped_high_ratio=(decay_stats.clamped_high_ratio
                             if turnover_source == 'turn' else 0.0),
     )
+
+
+def calculate_chip_polars(
+    df: pl.DataFrame,
+    *,
+    bins: int = DEFAULT_BINS,
+    turnover_source: str = 'turn',
+    turnover_floor: float | None | str = DEFAULT_TURNOVER_FLOOR,
+    adjustment_type: str | None = None,
+) -> pl.DataFrame:
+    """把 :func:`compute_chip_profile` 的结果落成可被因子/策略引用的列（批量入口）。
+
+    口径说明：筹码分布本身是"截至最新一日"的全表结果，因此除 ``chip_profit_ratio``
+    外，其余列在同一标的的所有行上取相同值；``chip_profit_ratio`` 用这张最新分布
+    对每个交易日收盘价求"价位低于收盘的筹码占比"，是逐日序列。
+
+    输出列契约（策略试算/因子库可直接按列名引用）：
+        - ``chip_main_price`` / ``chip_main_share``：主峰价格 / 占比(%)
+        - ``chip_second_price`` / ``chip_second_share``：次峰价格 / 占比(%)，无次峰为 null
+        - ``chip_profit_ratio``：获利盘占比(%)，逐日
+        - ``chip_bins`` / ``chip_warmup_rows``：计算口径元信息（箱数 / 预热行数）
+
+    注意：本实现是衰减 VAP（``decay_accumulate``）口径，**不是通达信分价表**，
+    两者不可逐值对齐（``TCalc.dll`` 无筹码分布公式原文）。
+
+    Args:
+        df: 含 open/high/low/close/volume 的行情表（可选 date/turn）
+        bins: 价格箱数，默认 200
+        turnover_source: ``'turn'``（真实换手率）或 ``'proxy'``（volume/MA20 代理）
+        turnover_floor: 换手率下限（百分数）或 ``'auto_p10'``
+        adjustment_type: ``qfq``/``hfq``/``None``
+
+    Returns:
+        pl.DataFrame: 原表追加上述 7 列
+    """
+    profile = compute_chip_profile(
+        df,
+        bins=bins,
+        turnover_source=turnover_source,
+        turnover_floor=turnover_floor,
+        adjustment_type=adjustment_type,
+    )
+
+    peaks = profile.peaks
+    main = peaks[0] if peaks else None
+    second = peaks[1] if len(peaks) > 1 else None
+
+    centers = profile.centers
+    shares = profile.shares
+    order = np.argsort(centers)
+    cumulative = np.cumsum(shares[order])
+    close = df['close'].to_numpy().astype(float)
+    profit_ratio = np.interp(
+        close,
+        centers[order],
+        cumulative,
+        left=0.0,
+        right=float(shares.sum()),
+    )
+
+    n = df.height
+    # ChipPeak.share 是分量比（0~1），统一换算成百分数与其他列一致
+    return df.with_columns([
+        pl.Series('chip_main_price', [main.price if main else None] * n, dtype=pl.Float64),
+        pl.Series('chip_main_share', [main.share * 100.0 if main else None] * n, dtype=pl.Float64),
+        pl.Series('chip_second_price', [second.price if second else None] * n, dtype=pl.Float64),
+        pl.Series('chip_second_share', [second.share * 100.0 if second else None] * n, dtype=pl.Float64),
+        pl.Series('chip_profit_ratio', profit_ratio, dtype=pl.Float64, nan_to_null=True),
+        pl.Series('chip_bins', [profile.bins] * n, dtype=pl.Int32),
+        pl.Series('chip_warmup_rows', [profile.warmup_rows] * n, dtype=pl.Int32),
+    ])

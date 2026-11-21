@@ -11,9 +11,10 @@
     - EMA：y0 = x0，alpha = 2 / (period + 1)，即 pandas ewm(span=period, adjust=False)
     - Wilder 平滑（RSI / ATR 标准）：前 period 个值的 SMA 作为种子，
       之后 y = (x + (period - 1) * y_prev) / period
-    - RSI：Wilder 平滑上涨/下跌幅度后 100 - 100 / (1 + avg_gain / avg_loss)，
-      avg_loss 为 0 时取 100
-    - MACD：DIF = EMA(fast) - EMA(slow)，DEA = EMA(DIF, signal)，柱 = DIF - DEA
+    - RSI：通达信口径 ``SMA(MAX(C-LC,0),N,1) / SMA(ABS(C-LC),N,1) * 100``，
+      其中 ``SMA(X,N,1)`` 即 alpha = 1/N、adjust=False 的指数平滑且首值取 X，
+      第 2 根 K 线起即有值
+    - MACD：DIF = EMA(fast) - EMA(slow)，DEA = EMA(DIF, signal)，柱 = (DIF - DEA) * 2
     - ATR：TR = max(high - low, |high - prev_close|, |low - prev_close|)，
       再做 Wilder 平滑
     - KDJ：RSV 含当日高低点，K/D 为通达信 SMA(X, M1, 1) 递推（α = 1/M1），
@@ -73,9 +74,14 @@ def wilder_expr(expr: pl.Expr, period: int) -> pl.Expr:
 
 def rsi_expr(close_col: str = 'close', period: int = 14) -> pl.Expr:
     """
-    RSI 表达式（Wilder 标准口径）。
+    RSI 表达式（通达信 SMA 口径，已对拍 ``H:\\zxzq\\TCalc.dll`` 公式原文）。
 
-    前 period-1 行为 null（种子在索引 period-1），值域 0~100。
+    通达信原文：
+        ``LC:=REF(CLOSE,1); RSI:=SMA(MAX(CLOSE-LC,0),N,1)/SMA(ABS(CLOSE-LC),N,1)*100;``
+
+    ``SMA(X,N,1)`` 即 alpha = 1/N、adjust=False、首值取 X 的指数平滑，
+    因此首行（diff 为 null）为空、**第 2 根 K 线起即有值**，
+    与旧 Wilder 种子（前 N-1 根为 null）不同。
 
     Args:
         close_col: 收盘价列名
@@ -87,15 +93,16 @@ def rsi_expr(close_col: str = 'close', period: int = 14) -> pl.Expr:
     close = pl.col(close_col)
     delta = close.diff()
     gain = pl.when(delta > 0).then(delta).otherwise(0.0)
-    loss = pl.when(delta < 0).then(-delta).otherwise(0.0)
+    abs_delta = delta.abs()
 
-    avg_gain = wilder_expr(gain, period)
-    avg_loss = wilder_expr(loss, period)
+    alpha = 1.0 / period
+    avg_gain = gain.ewm_mean(alpha=alpha, adjust=False, min_samples=1)
+    avg_abs = abs_delta.ewm_mean(alpha=alpha, adjust=False, min_samples=1)
 
     return (
-        pl.when(avg_loss == 0)
+        pl.when(avg_abs == 0)
         .then(100.0)
-        .otherwise(100.0 - 100.0 / (1.0 + avg_gain / avg_loss))
+        .otherwise(avg_gain / avg_abs * 100.0)
     )
 
 
@@ -123,7 +130,8 @@ def macd_exprs(
     close = pl.col(close_col)
     macd = ema_expr(close, fast) - ema_expr(close, slow)
     signal_line = ema_expr(macd, signal)
-    hist = macd - signal_line
+    # 通达信原文 MACD:(DIF-DEA)*2 —— 柱值必须乘 2，否则只有通达信的一半
+    hist = (macd - signal_line) * 2.0
     return {'macd': macd, 'signal': signal_line, 'hist': hist}
 
 

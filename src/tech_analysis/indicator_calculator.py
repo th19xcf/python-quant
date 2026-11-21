@@ -552,7 +552,7 @@ def calculate_asi_polars(df, signal_period=20):
     return calculate_multiple_indicators_polars(df, ['asi'], asi_signal_period=signal_period)
 
 
-def calculate_emv_polars(df, windows=None, constant=100000000):
+def calculate_emv_polars(df, windows=None, constant=1.0):
     """
     使用Polars批量计算EMV指标（简易波动指标）
     支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
@@ -683,6 +683,74 @@ def calculate_cr_polars(df, windows=None):
     return calculate_multiple_indicators_polars(df, ['cr'], cr_windows=windows)
 
 
+def calculate_bias_polars(df, windows=None):
+    """
+    使用Polars计算BIAS指标（乖离率，通达信口径 (C-MA(C,N))/MA(C,N)*100）
+
+    Args:
+        df: Polars DataFrame或LazyFrame
+        windows: 周期列表，默认 [6, 12, 24]
+
+    Returns:
+        pl.DataFrame或pl.LazyFrame: 含 bias6/bias12/bias24 与默认列 bias
+    """
+    if windows is None:
+        windows = [6, 12, 24]
+    return calculate_multiple_indicators_polars(df, ['bias'], bias_windows=windows)
+
+
+def calculate_mfi_polars(df, windows=None):
+    """
+    使用Polars计算MFI指标（资金流量指标，典型价×成交量的正负资金流比率）
+
+    Args:
+        df: Polars DataFrame或LazyFrame
+        windows: 周期列表，默认 [14]
+
+    Returns:
+        pl.DataFrame或pl.LazyFrame: 含 mfi14 与默认列 mfi
+    """
+    if windows is None:
+        windows = [14]
+    return calculate_multiple_indicators_polars(df, ['mfi'], mfi_windows=windows)
+
+
+def calculate_cmf_polars(df, windows=None):
+    """
+    使用Polars计算CMF指标（蔡金资金流，CLV×成交量的 N 日加权）
+
+    Args:
+        df: Polars DataFrame或LazyFrame
+        windows: 周期列表，默认 [20]
+
+    Returns:
+        pl.DataFrame或pl.LazyFrame: 含 cmf20 与默认列 cmf
+    """
+    if windows is None:
+        windows = [20]
+    return calculate_multiple_indicators_polars(df, ['cmf'], cmf_windows=windows)
+
+
+def calculate_arms_polars(df, period=10, *, db_manager=None, market_breadth=None):
+    """
+    使用Polars计算ARMS（TRIN）指标
+
+    需要 up_count/down_count 与 up_volume/down_volume；本地广度表缺成交量列时
+    该指标会被跳过（记录错误日志），不会生成占位值。
+
+    Args:
+        df: Polars DataFrame或LazyFrame
+        period: 平滑周期，默认 10
+
+    Returns:
+        pl.DataFrame或pl.LazyFrame: 含 arms{period}
+    """
+    result = calculate_multiple_indicators_polars(
+        df, ['arms'], db_manager=db_manager, market_breadth=market_breadth, period=period)
+    # 广度数据缺失时批量入口返回 None：保持原表并让上游从列名判断该指标不可用
+    return df if result is None else result
+
+
 def _add_shared_window_columns(lazy_df, indicator_types, indicator_params):
     """为 kdj/wr/boll 预计算共享的最高价/最低价窗口列。"""
     need_high_low = any(indicator in indicator_types for indicator in ['kdj', 'wr', 'boll'])
@@ -746,6 +814,7 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, *, optimize_m
     from src.utils.lazy_optimizer import execute_optimized_pipeline, optimize_lazy_frame
 
     # 默认计算所有指标（以注册表为唯一真源）
+    explicit_types = indicator_types is not None
     if indicator_types is None:
         indicator_types = get_default_indicator_types()
 
@@ -795,6 +864,16 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, *, optimize_m
     # 内部已含一次压缩，此处再压是重复开销；且其惰性计划级压缩会把全部数值列
     # 降级 Float32 后再执行 EMA 递推，与通达信口径产生可观测偏差
     result = execute_optimized_pipeline(lazy_df, optimize_memory=optimize_memory)
+
+    # 步骤8: 筹码分布（全表口径，需在落地后的 DataFrame 上计算；未显式请求时不参与，
+    # 避免全市场默认跑批时为每个标的额外做一次 O(箱数×交易日) 的分布计算）
+    if explicit_types and 'chip' in indicator_types:
+        try:
+            from src.tech_analysis.chip import calculate_chip_polars
+            result = calculate_chip_polars(result)
+        except (ValueError, TypeError, KeyError) as exc:
+            logger.error(f"筹码分布计算失败（不生成占位列）：{exc}")
+
     logger.debug("指标计算结果: {} 行 x {} 列", result.height, result.width)
     return result
 

@@ -226,6 +226,59 @@ def calculate_obos(
     )
 
 
+def calculate_arms(
+    lazy_df: pl.LazyFrame,
+    period: int = 10,
+    *,
+    db_manager: Any = None,
+    market_breadth: pl.DataFrame | None = None,
+) -> pl.LazyFrame:
+    """
+    计算阿姆氏指标 (ARMS / TRIN)
+
+    公式: ARMS = (N日均上涨家数 / N日均下跌家数) / (N日均上涨量 / N日均下跌量)
+
+    数据前提：需要 ``up_count`` / ``down_count`` **以及** ``up_volume`` / ``down_volume``。
+    本地 ``MarketBreadth`` 表只有家数（``up_count/down_count/flat_count/total_count``），
+    没有涨跌分组的成交量列，因此**无法用现有数据算出量比部分**；
+    这里不做任何近似或占位，缺列时显式抛出 ``MarketBreadthUnavailableError``，
+    由上游记录缺口。补齐方式：按日聚合全市场个股涨跌分组成交量后注入 ``market_breadth``。
+
+    Args:
+        lazy_df: Polars LazyFrame（含 up_count/down_count/up_volume/down_volume）
+        period: 平滑周期，默认 10
+        db_manager: 由调用方注入的数据库管理器
+        market_breadth: 直接传入的广度 DataFrame
+
+    Returns:
+        pl.LazyFrame: 含 ``arms{period}``
+    """
+    lazy_df = _ensure_market_breadth_columns(
+        lazy_df, db_manager=db_manager, market_breadth=market_breadth)
+
+    columns = set(lazy_df.collect_schema().names())
+    missing = {'up_volume', 'down_volume'} - columns
+    if missing:
+        raise MarketBreadthUnavailableError(
+            f"ARMS 缺少涨跌分组成交量列 {sorted(missing)}：本地 MarketBreadth 表只有涨跌家数，"
+            f"需按日聚合全市场个股涨跌分组成交量后注入，不能用家数或指数量近似")
+
+    avg_up = pl.col('up_count').cast(pl.Float64).rolling_mean(window_size=period, min_samples=period)
+    avg_down = pl.col('down_count').cast(pl.Float64).rolling_mean(window_size=period, min_samples=period)
+    avg_up_vol = pl.col('up_volume').cast(pl.Float64).rolling_mean(window_size=period, min_samples=period)
+    avg_down_vol = pl.col('down_volume').cast(pl.Float64).rolling_mean(window_size=period, min_samples=period)
+
+    arms_value = (
+        pl.when((avg_down == 0) | (avg_down_vol == 0) | avg_up_vol.is_null())
+        .then(None)
+        .otherwise((avg_up / avg_down) / (avg_up_vol / avg_down_vol))
+    )
+
+    return lazy_df.with_columns(
+        to_float32(arms_value.alias(f'arms{period}'))
+    )
+
+
 def _ensure_market_breadth_columns(
     lazy_df: pl.LazyFrame,
     *,
@@ -362,7 +415,7 @@ def calculate_market_breadth_indicators(
     """
     period = params.get('period', 10)
 
-    breadth_types = [name for name in ('abi', 'adl', 'adr', 'obos')
+    breadth_types = [name for name in ('abi', 'adl', 'adr', 'obos', 'arms')
                      if name in indicator_types]
     if not breadth_types:
         return lazy_df
@@ -400,5 +453,11 @@ def calculate_market_breadth_indicators(
 
     if 'obos' in breadth_types:
         lazy_df = calculate_obos(lazy_df, period)
+
+    if 'arms' in breadth_types:
+        try:
+            lazy_df = calculate_arms(lazy_df, period)
+        except MarketBreadthUnavailableError as exc:
+            logger.error(f"ARMS 跳过（数据缺口）：{exc}")
 
     return lazy_df

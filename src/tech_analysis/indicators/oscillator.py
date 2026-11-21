@@ -23,7 +23,7 @@ def calculate_rsi(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
     Returns:
         pl.LazyFrame: 包含RSI指标的LazyFrame
     """
-    # 统一走共享公式层（Wilder 标准口径），窗口之外自动为 null
+    # 统一走共享公式层（通达信 SMA 口径，第 2 根 K 线起即有值）
     for window in windows:
         rsi = to_float32(rsi_expr('close', window)).alias(f'rsi{window}')
         lazy_df = lazy_df.with_columns(rsi)
@@ -83,8 +83,8 @@ def calculate_cci(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
     tp = (pl.col('high') + pl.col('low') + pl.col('close')) / 3
 
     for window in windows:
-        # 计算典型价格的N日移动平均值（MA_TP）
-        ma_tp = tp.rolling_mean(window_size=window, min_samples=1)
+        # 计算典型价格的N日移动平均值（MA_TP，通达信 MA 不足 N 根不输出）
+        ma_tp = tp.rolling_mean(window_size=window, min_samples=window)
 
         # 计算平均绝对偏差（MAD）
         mad = calculate_mad(tp, window)
@@ -145,6 +145,28 @@ def calculate_mtm(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
     return lazy_df
 
 
+def calculate_bias(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
+    """
+    计算BIAS指标（乖离率，通达信口径）
+
+    通达信原文：``BIAS := (CLOSE - MA(CLOSE,N)) / MA(CLOSE,N) * 100``
+    常用周期 6 / 12 / 24；MA 不足 N 根不输出（与阶段一 MA 预热口径一致）。
+
+    Args:
+        lazy_df: Polars LazyFrame
+        windows: BIAS 计算周期列表，默认 [6, 12, 24]
+
+    Returns:
+        pl.LazyFrame: 含 ``bias{N}`` 与默认列 ``bias``（首个窗口）
+    """
+    for window in windows:
+        ma = pl.col('close').rolling_mean(window_size=window, min_samples=window)
+        bias = to_float32((pl.col('close') - ma) / ma * 100).alias(f'bias{window}')
+        lazy_df = lazy_df.with_columns(bias)
+
+    return add_default_columns(lazy_df, 'bias', windows)
+
+
 def calculate_oscillator_indicators(lazy_df: pl.LazyFrame, indicator_types: list, **params) -> pl.LazyFrame:
     """
     计算所有震荡类指标
@@ -181,5 +203,10 @@ def calculate_oscillator_indicators(lazy_df: pl.LazyFrame, indicator_types: list
     if 'mtm' in indicator_types:
         windows = params.get('mtm_windows', [12])
         lazy_df = calculate_mtm(lazy_df, windows)
+
+    # 计算BIAS指标（乖离率）
+    if 'bias' in indicator_types:
+        windows = params.get('bias_windows', [6, 12, 24])
+        lazy_df = calculate_bias(lazy_df, windows)
 
     return lazy_df

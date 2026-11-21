@@ -25,11 +25,11 @@ def calculate_boll(lazy_df: pl.LazyFrame, windows: list, std_dev: float) -> pl.L
     """
     # 批量计算所有窗口的Boll指标
     for window in windows:
-        # 计算移动平均线（中轨线）
-        mb_expr = to_float32(pl.col('close').rolling_mean(window_size=window, min_samples=1)).alias(f'mb{window}')
-        # 计算上轨线和下轨线
-        up_expr = to_float32(mb_expr + to_float32(pl.col('close').rolling_std(window_size=window, min_samples=1)) * std_dev).alias(f'up{window}')
-        dn_expr = to_float32(mb_expr - to_float32(pl.col('close').rolling_std(window_size=window, min_samples=1)) * std_dev).alias(f'dn{window}')
+        # 计算移动平均线（中轨线，通达信 MA 不足 N 根不输出）
+        mb_expr = to_float32(pl.col('close').rolling_mean(window_size=window, min_samples=window)).alias(f'mb{window}')
+        # 计算上轨线和下轨线（STD 同 MA 口径，不足 N 根为空）
+        up_expr = to_float32(mb_expr + to_float32(pl.col('close').rolling_std(window_size=window, min_samples=window)) * std_dev).alias(f'up{window}')
+        dn_expr = to_float32(mb_expr - to_float32(pl.col('close').rolling_std(window_size=window, min_samples=window)) * std_dev).alias(f'dn{window}')
 
         # 添加到DataFrame
         lazy_df = lazy_df.with_columns([mb_expr, up_expr, dn_expr])
@@ -166,39 +166,52 @@ def calculate_asi(lazy_df: pl.LazyFrame, signal_period: int) -> pl.LazyFrame:
     # 4. 计算ASI的分子部分
     asi_numerator = (pl.col('open') - pl.col('close').shift(1)) + 0.5 * (pl.col('open') - pl.col('close')) + 0.25 * (pl.col('close').shift(1) - pl.col('open').shift(1))
 
-    # 5. 计算ASI值（使用Polars条件表达式处理除以零的情况）
-    asi = to_float32(pl.when(tr != 0).then(asi_numerator / tr * 16).otherwise(0.0)).alias('asi')
+    # 5. 计算单日 SI 与累计 ASI（通达信 ASI:SUM(SI,0)，必须逐日累加才有趋势形态）
+    si = to_float32(pl.when(tr != 0).then(asi_numerator / tr * 16).otherwise(0.0))
+    asi_cum = si.cum_sum()
+    asi = asi_cum.alias('asi')
 
-    # 6. 计算ASI的信号线（ASI_SIG = ASI的signal_period天MA）
-    asi_sig = asi.rolling_mean(window_size=signal_period, min_samples=1).alias('asi_sig')
+    # 6. 计算ASI的信号线（ASI_SIG = ASI的signal_period天MA，不足 N 根不输出）
+    asi_sig = to_float32(asi_cum.rolling_mean(window_size=signal_period, min_samples=signal_period)).alias('asi_sig')
 
     # 7. 添加到DataFrame
     return lazy_df.with_columns([asi, asi_sig])
 
 
-def calculate_emv(lazy_df: pl.LazyFrame, windows: list, constant: float) -> pl.LazyFrame:
+def calculate_emv(lazy_df: pl.LazyFrame, windows: list, constant: float = 1.0) -> pl.LazyFrame:
     """
-    计算EMV指标（简易波动指标）
+    计算EMV指标（简易波动指标，通达信原式）
+
+    通达信公式：
+        VOLUME:=MA(VOL,N)/VOL;
+        MID:=100*(HIGH+LOW-REF(HIGH+LOW,1))/(HIGH+LOW);
+        EMV:MA(MID*VOLUME*(HIGH-LOW)/MA(HIGH-LOW,N),N);
+
+    旧实现多乘了 1e8（量纲错位），已去掉；``constant`` 默认 1.0 即通达信原式。
 
     Args:
         lazy_df: Polars LazyFrame
         windows: EMV计算窗口列表
-        constant: 常数，用于调整EMV的数值大小
+        constant: 缩放常数，默认 1.0（通达信原式，无额外缩放）
 
     Returns:
         pl.LazyFrame: 包含EMV指标的LazyFrame
     """
-    # 1. 直接计算EMV基础值，避免中间变量和列名冲突
-    # 距离差值：(最高价 + 最低价)/2 - 前一日(最高价 + 最低价)/2
-    distance_diff = ((pl.col('high') + pl.col('low')) / 2) - ((pl.col('high').shift(1) + pl.col('low').shift(1)) / 2)
+    hl = pl.col('high') + pl.col('low')
+    hl_range = pl.col('high') - pl.col('low')
+    # MID：中点价相对昨日的百分比变化（×100）
+    mid = 100.0 * (hl - hl.shift(1)) / hl
 
-    # 2. 计算EMV基础值（直接在表达式中处理除以零的情况）
-    # EMV = (距离差值 / (成交量 / (最高价 - 最低价))) * 常数，当最高价等于最低价时为0
-    emv_base_expr = to_float32(pl.when(pl.col('high') != pl.col('low')).then(distance_diff / (pl.col('volume') / (pl.col('high') - pl.col('low'))) * constant).otherwise(0.0))
-
-    # 3. 计算各窗口的EMV移动平均线
     for window in windows:
-        emv_expr = to_float32(emv_base_expr.rolling_mean(window_size=window, min_samples=1)).alias(f'emv{window}')
+        # VOLUME:=MA(VOL,N)/VOL（量能倍数，不足 N 根为空）
+        vol_ratio = pl.col('volume').rolling_mean(window_size=window, min_samples=window) / pl.col('volume')
+        # MA(HIGH-LOW,N)
+        range_ma = hl_range.rolling_mean(window_size=window, min_samples=window)
+        emv_base = pl.when(
+            range_ma.is_null() | (range_ma == 0) | (pl.col('volume') <= 0)
+        ).then(None).otherwise(mid * vol_ratio * hl_range / range_ma)
+        # EMV:MA(基础值,N)，不足 N 根不输出
+        emv_expr = to_float32((emv_base * constant).rolling_mean(window_size=window, min_samples=window)).alias(f'emv{window}')
         lazy_df = lazy_df.with_columns(emv_expr)
 
     # 4. 添加默认列名
@@ -222,26 +235,27 @@ def calculate_mcst(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
     Returns:
         pl.LazyFrame: 包含MCST指标的LazyFrame
     """
-    # 1. 计算中间值
-    # 价格 * 成交量
-    price_volume = (pl.col('close') * pl.col('volume')).alias('price_volume')
-    # 累积成本：累积(价格 * 成交量)
-    cumulative_cost = price_volume.cum_sum().alias('cumulative_cost')
-    # 累积成交量：累积(成交量)
-    cumulative_volume = pl.col('volume').cum_sum().alias('cumulative_volume')
+    # 1. 成交额近似：close × volume（与 VOL 同量纲，比值仍为每股价格）
+    price_volume = pl.col('close') * pl.col('volume')
 
-    # 2. 添加中间变量到DataFrame
-    lazy_df = lazy_df.with_columns([price_volume, cumulative_cost, cumulative_volume])
-
-    # 3. 计算MCST（使用Polars条件表达式处理除以零的情况）
-    mcst = to_float32(pl.when(cumulative_volume != 0).then(cumulative_cost / cumulative_volume).otherwise(pl.lit(0.0))).alias('mcst')
-
-    # 4. 添加MCST值到DataFrame
-    lazy_df = lazy_df.with_columns(mcst)
-
-    # 5. 计算各窗口的MCST移动平均线
+    # 2. 通达信 MCST:=SUM(AMOUNT,N)/SUM(VOL,N) —— N 日窗口滚动，非全历史累加
     for window in windows:
-        mcst_ma_expr = to_float32(mcst.rolling_mean(window_size=window, min_samples=1)).alias(f'mcst_ma{window}')
+        cost_sum = price_volume.rolling_sum(window_size=window, min_samples=window)
+        volume_sum = pl.col('volume').rolling_sum(window_size=window, min_samples=window)
+        mcst_n = to_float32(
+            pl.when(volume_sum > 0).then(cost_sum / volume_sum).otherwise(None)
+        ).alias(f'mcst{window}')
+        lazy_df = lazy_df.with_columns(mcst_n)
+
+    if len(windows) >= 1:
+        first = windows[0]
+        lazy_df = lazy_df.with_columns(pl.col(f'mcst{first}').alias('mcst'))
+
+    # 3. 各窗口的 MCST 移动平均线（MA 不足 N 根不输出）
+    for window in windows:
+        mcst_ma_expr = to_float32(
+            pl.col('mcst').rolling_mean(window_size=window, min_samples=window)
+        ).alias(f'mcst_ma{window}')
         lazy_df = lazy_df.with_columns(mcst_ma_expr)
 
     return lazy_df
@@ -283,7 +297,7 @@ def calculate_volatility_indicators(lazy_df: pl.LazyFrame, indicator_types: list
     # 计算EMV指标
     if 'emv' in indicator_types:
         windows = params.get('emv_windows', [14])
-        constant = params.get('emv_constant', 100000000)
+        constant = params.get('emv_constant', 1.0)
         lazy_df = calculate_emv(lazy_df, windows, constant)
 
     # 计算MCST指标

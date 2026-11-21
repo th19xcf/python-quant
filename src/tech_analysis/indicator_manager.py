@@ -13,12 +13,16 @@ import pandas as pd
 import polars as pl
 from loguru import logger
 
+from src.tech_analysis.chip import calculate_chip_polars
 from src.tech_analysis.indicator_cache import global_indicator_cache
 from src.tech_analysis.indicator_calculator import (
+    calculate_arms_polars,
     calculate_asi_polars,
+    calculate_bias_polars,
     calculate_boll_polars,
     calculate_brar_polars,
     calculate_cci_polars,
+    calculate_cmf_polars,
     calculate_cr_polars,
     calculate_dma_polars,
     calculate_dmi_polars,
@@ -28,6 +32,7 @@ from src.tech_analysis.indicator_calculator import (
     calculate_ma_polars,
     calculate_macd_polars,
     calculate_mcst_polars,
+    calculate_mfi_polars,
     calculate_mtm_polars,
     calculate_multiple_indicators_polars,
     calculate_obv_polars,
@@ -93,8 +98,11 @@ _INDICATOR_COLUMN_PATTERNS: Dict[str, tuple[str, ...]] = {
     'cci': (r'cci', r'cci\d+'),
     'roc': (r'roc', r'roc\d+'),
     'mtm': (r'mtm', r'mtm\d+'),
+    'bias': (r'bias', r'bias\d+'),
     'obv': ('obv',),
     'vr': (r'vr', r'vr\d+'),
+    'mfi': (r'mfi', r'mfi\d+'),
+    'cmf': (r'cmf', r'cmf\d+'),
     'psy': (r'psy', r'psy\d+'),
     'trix': ('trix', 'trma', r'trix\d+', r'trma\d+'),
     'brar': ('ar', 'br', r'ar\d+', r'br\d+'),
@@ -104,7 +112,7 @@ _INDICATOR_COLUMN_PATTERNS: Dict[str, tuple[str, ...]] = {
     'dma': ('dma', 'ama'),
     'fsl': ('swl', 'sws'),
     'sar': ('sar',),
-    'cr': ('cr', r'cr\d+'),
+    'cr': ('cr', r'cr\d+', r'cr_ma\d+'),
     'expma': ('expma', r'expma\d+'),
     'bbi': ('bbi',),
     'hsl': ('hsl', r'hsl_ma\d+', 'hsl_source'),
@@ -115,6 +123,11 @@ _INDICATOR_COLUMN_PATTERNS: Dict[str, tuple[str, ...]] = {
     'adl': ('adl',),
     'adr': (r'adr\d+',),
     'obos': (r'obos\d+',),
+    'arms': (r'arms\d+',),
+    'chip': (
+        'chip_main_price', 'chip_main_share', 'chip_second_price', 'chip_second_share',
+        'chip_profit_ratio', 'chip_bins', 'chip_warmup_rows',
+    ),
 }
 
 
@@ -207,6 +220,41 @@ _BUILTIN_INDICATORS: tuple[Dict[str, Any], ...] = (
         "category": "震荡指标",
     },
     {
+        "name": "bias",
+        "calculate_func": calculate_bias_polars,
+        "params": {"windows": [6, 12, 24]},
+        "description": "乖离率（(C-MA(C,N))/MA(C,N)*100，通达信口径，默认 6/12/24）",
+        "category": "震荡指标",
+    },
+    {
+        "name": "mfi",
+        "calculate_func": calculate_mfi_polars,
+        "params": {"windows": [14]},
+        "description": "资金流量指标（典型价×成交量的正负资金流比率，默认 14）",
+        "category": "成交量指标",
+    },
+    {
+        "name": "cmf",
+        "calculate_func": calculate_cmf_polars,
+        "params": {"windows": [20]},
+        "description": "蔡金资金流（CLV×成交量 N 日加权，日线口径，默认 20）",
+        "category": "成交量指标",
+    },
+    {
+        "name": "arms",
+        "calculate_func": calculate_arms_polars,
+        "params": {"period": 10},
+        "description": "阿姆氏指标 TRIN（需涨跌家数与涨跌分组成交量，缺量数据时跳过不造数）",
+        "category": "大势指标",
+    },
+    {
+        "name": "chip",
+        "calculate_func": calculate_chip_polars,
+        "params": {"bins": 200, "turnover_source": "turn", "turnover_floor": "auto_p10"},
+        "description": "筹码分布（衰减 VAP 口径：主/次峰价格与占比、获利盘占比）",
+        "category": "成本指标",
+    },
+    {
         "name": "obv",
         "calculate_func": calculate_obv_polars,
         "params": {},
@@ -251,7 +299,7 @@ _BUILTIN_INDICATORS: tuple[Dict[str, Any], ...] = (
     {
         "name": "emv",
         "calculate_func": calculate_emv_polars,
-        "params": {"windows": [14], "constant": 100000000},
+        "params": {"windows": [14], "constant": 1.0},
         "description": "简易波动指标",
         "category": "趋势指标",
     },

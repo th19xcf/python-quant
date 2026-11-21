@@ -23,8 +23,9 @@ def calculate_moving_average(lazy_df: pl.LazyFrame, column: str, windows: list, 
         pl.LazyFrame: 包含移动平均线的LazyFrame
     """
     for window in windows:
+        # 通达信 MA 函数文档：数据个数少于 N 时不输出（min_samples=window → 前 N-1 根为空）
         lazy_df = lazy_df.with_columns(
-            to_float32(pl.col(column).rolling_mean(window_size=window, min_samples=1)).alias(f'{prefix}ma{window}')
+            to_float32(pl.col(column).rolling_mean(window_size=window, min_samples=window)).alias(f'{prefix}ma{window}')
         )
     return lazy_df
 
@@ -43,7 +44,7 @@ def add_default_columns(lazy_df: pl.LazyFrame, indicator_type: str, windows: lis
     """
     if len(windows) >= 1:
         window = windows[0]
-        if indicator_type in ['ma', 'vol_ma', 'rsi', 'kdj', 'wr', 'dmi', 'cci', 'roc', 'mtm', 'vr', 'psy', 'trix', 'brar', 'emv', 'mcst', 'cyc', 'cr']:
+        if indicator_type in ['ma', 'vol_ma', 'rsi', 'kdj', 'wr', 'dmi', 'cci', 'roc', 'mtm', 'vr', 'psy', 'trix', 'brar', 'emv', 'mcst', 'cyc', 'cr', 'bias', 'mfi', 'cmf']:
             lazy_df = lazy_df.with_columns(
                 pl.col(f'{indicator_type}{window}').alias(indicator_type)
             )

@@ -99,8 +99,8 @@ def calculate_cys(lazy_df: pl.LazyFrame, cyc_window: int = 13) -> pl.LazyFrame:
     # 先添加CYS列
     lazy_df = lazy_df.with_columns(cys)
 
-    # 计算CYS的5日移动平均
-    cys_ma5 = to_float32(pl.col('cys').rolling_mean(window_size=5, min_samples=1)).alias('cys_ma5')
+    # 计算CYS的5日移动平均（MA 不足 N 根不输出）
+    cys_ma5 = to_float32(pl.col('cys').rolling_mean(window_size=5, min_samples=5)).alias('cys_ma5')
 
     return lazy_df.with_columns(cys_ma5)
 
