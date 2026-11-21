@@ -17,7 +17,7 @@ from src.backtest.costs.cost_model import CostModel
 from src.backtest.engine.input_contract import BAR_CONTRACT
 from src.backtest.engine.portfolio_backtest_engine import PortfolioBacktestEngine
 from src.backtest.strategies.base_strategy import BaseStrategy
-from src.core.usecases.run_backtest import _load_local_dividends, _load_st_status
+from src.data.services.panel_inputs import load_local_dividends, load_st_status
 from src.risk import NoSuspendedTrade, PriceLimitTradable, RiskEngine
 
 from . import compute
@@ -324,7 +324,7 @@ def execute(spec: Dict[str, Any], reporter: Any = None) -> Dict[str, Any]:
     if not days:
         raise RuntimeError('调仓日为空：请检查 rebalance.first_date 与行情覆盖区间')
     quoted = compute.quoted_sets(data, days)
-    st_status = _load_st_status(None, data, None, period['warmup_start'],
+    st_status = load_st_status(None, data, None, period['warmup_start'],
                                 period['end'], None, None)
     allowed = None
     if resolved['universe']['mode'] == 'explicit':
@@ -337,7 +337,7 @@ def execute(spec: Dict[str, Any], reporter: Any = None) -> Dict[str, Any]:
 
     schedules = build_schedules(path, prev_day,
                                 resolved['portfolio']['cash_buffer'])
-    dividends = _load_local_dividends(list(data), None, None)
+    dividends = load_local_dividends(list(data), None, None)
     if reporter is not None:
         from .progress import progress_scope
         with progress_scope(reporter):

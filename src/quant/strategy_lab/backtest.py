@@ -21,7 +21,7 @@ from loguru import logger
 from src.backtest.performance.benchmark_eval import information_ratio
 from src.backtest.performance.performance_analyzer import PerformanceAnalyzer
 from src.backtest.runner import compute, pipeline
-from src.core.usecases.run_backtest import _load_st_status
+from src.data.services.panel_inputs import load_st_status
 
 from .coverage import dividend_coverage
 from .markers import sides_from_weights
@@ -657,7 +657,7 @@ def _run_stock_select(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
         return _empty('调仓日为空：检查区间与本地行情覆盖', rule)
 
     quoted = compute.quoted_sets(data, days)
-    st_status = _load_st_status(None, data, None, period['warmup_start'],
+    st_status = load_st_status(None, data, None, period['warmup_start'],
                                 period['end'], None, None)
     ctx = compute.Context(data=data, days=days, quoted=quoted,
                           st_status=st_status or {}, allowed=None)
@@ -728,7 +728,7 @@ def _run_scheduled(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
 
     warmup = (date.fromisoformat(rule['period']['start'])
               - timedelta(days=WARMUP_DAYS)).isoformat()
-    st_status = _load_st_status(None, plan.data, None, warmup,
+    st_status = load_st_status(None, plan.data, None, warmup,
                                 rule['period']['end'], None, None)
     # 统一前复权口径：行情只有前复权价（见 switch_timing._normalize），撮合与盯市
     # 都在前复权价空间；分红/送转已内含在价格里，不再单独记账除权事件。
