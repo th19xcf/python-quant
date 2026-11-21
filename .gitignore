@@ -158,6 +158,9 @@ config.ini
 # Quickstart 运行产物
 examples/output/
 
+# 回测图（outputs/ 下的 png 为本地产物，不入库；同目录结论 md、调仓明细与分红 csv 仍入库）
+/outputs/**/*.png
+
 # 审计产物（回测/巡检报告，2026-11-06 实测约 1.8G，属本地产物不入库；只锚定仓库根，勿误伤 src/quant/reports 源码）
 /reports/
 
