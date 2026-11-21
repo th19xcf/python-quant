@@ -45,7 +45,7 @@ class QuantException(Exception):
 
         return result
 
-    def with_context(self, **context: Any) -> QuantException:
+    def with_context(self, **context: Any) -> "QuantException":  # noqa: UP037
         """
         添加上下文信息到异常
 

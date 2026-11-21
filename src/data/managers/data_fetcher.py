@@ -1634,7 +1634,7 @@ class DataFetcher:
             except TypeError:
                 pool.shutdown(wait=False)
 
-    def __enter__(self) -> DataFetcher:
+    def __enter__(self) -> "DataFetcher":  # noqa: UP037
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> Literal[False]:

@@ -36,7 +36,7 @@ _CONSOLE_FORMAT = (
 )
 
 
-def setup_logger(config: Config) -> None:
+def setup_logger(config: "Config") -> None:  # noqa: UP037
     """
     配置日志系统
 

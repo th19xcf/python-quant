@@ -101,7 +101,7 @@ class APIVersion:
         return not self < other
 
     @classmethod
-    def from_string(cls, version_str: str) -> APIVersion:
+    def from_string(cls, version_str: str) -> "APIVersion":  # noqa: UP037
         """从字符串创建API版本
 
         Args:
@@ -295,7 +295,7 @@ class APIResponse:
         return response
 
     @classmethod
-    def success(cls, data: Any, status_code: int = 200, headers: Dict[str, str] | None = None) -> APIResponse:
+    def success(cls, data: Any, status_code: int = 200, headers: Dict[str, str] | None = None) -> "APIResponse":  # noqa: UP037
         """创建成功响应
 
         Args:
@@ -310,7 +310,7 @@ class APIResponse:
 
     @classmethod
     def error(cls, error_msg: str, status_code: int = 400, error_code: str | None = None,
-              headers: Dict[str, str] | None = None) -> APIResponse:
+              headers: Dict[str, str] | None = None) -> "APIResponse":  # noqa: UP037
         """创建错误响应
 
         Args:

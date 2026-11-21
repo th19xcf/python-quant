@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 class UIManager:
     """主窗口UI管理器"""
 
-    def __init__(self, window: MainWindow):
+    def __init__(self, window: "MainWindow"):  # noqa: UP037
         self.window = window
 
     def init_ui(self):

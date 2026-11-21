@@ -53,7 +53,7 @@ class DataManager(DataService):
         logger.info("DataManager 已初始化（继承 DataService，无额外透传层）")
 
     @property
-    def data_service(self) -> DataManager:
+    def data_service(self) -> "DataManager":  # noqa: UP037
         """兼容旧调用方：DataManager 自身就是 DataService。"""
         return self
 
