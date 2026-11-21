@@ -14,6 +14,20 @@
 
 事件冷却口径：公告日 T，冷却区间 ``[T+1, T+N]``，N 为该事件类型的交易日数。
 覆盖区间之外一律返回 ``unknown``——**不得当成「没有事件」**。
+
+PIT 双时间戳（``ann_date`` / ``report_period``）
+----------------------------------------------
+- ``ann_date``：**实际披露日**（``Date``）。公告类事件的 ``display_time`` 就是披露
+  时间戳，归一取日期即可可靠得到；旧表可用 ``backfill-pit`` 幂等回填。
+- ``report_period``：**报告期**（``Date``）。仅当原始/已规范化输入显式带
+  ``report_period`` / ``end_date`` / ``period`` 字段时写入；**不从标题猜测**，
+  无法可靠推导的一律留空（``null``）。
+- 两者均可为空；``event_date`` / ``display_time`` / ``publish_time`` 的语义与
+  使用方完全不变，冷却窗口仍按 ``publish_time`` 计算。
+- 读取侧默认**不过滤**（保持既有事件研究链路逐位不变）。需要 PIT 口径时显式传
+  ``load_events(store_root, ann_date_lte=as_of)`` 或
+  ``EventStore(store_root, pit_as_of=as_of)``：只保留 ``ann_date <= as_of`` 的行，
+  ``ann_date`` 为空的行视为披露日未知、在过滤模式下剔除。
 """
 
 from __future__ import annotations
@@ -74,13 +88,15 @@ STATUS_CLEAR = 'clear'
 STATUS_UNKNOWN = 'unknown'
 
 EVENT_COLUMNS = ('event_id', 'ts_code', 'event_type', 'publish_time',
-                 'title', 'source')
+                 'ann_date', 'report_period', 'title', 'source')
 DEDUP_DAYS = 30
 _EMPTY_SCHEMA = {
     'event_id': pl.String,
     'ts_code': pl.String,
     'event_type': pl.String,
     'publish_time': pl.Datetime,
+    'ann_date': pl.Date,
+    'report_period': pl.Date,
     'title': pl.String,
     'source': pl.String,
 }
@@ -201,11 +217,30 @@ def normalize_announcements(
             'ts_code': ts_code,
             'event_type': event_type,
             'publish_time': published,
+            'ann_date': published.date(),
+            'report_period': _parse_report_period(item),
             'title': title,
             'source': row_source,
         })
     return dedup_events(_coerce_events(pl.DataFrame(rows, infer_schema_length=None)
                                        if rows else empty_events()))
+
+
+def _parse_report_period(item: dict[str, Any]) -> date | None:
+    """只认输入里显式的报告期字段，绝不从标题推断。"""
+    for key in ('report_period', 'end_date', 'period'):
+        value = item.get(key)
+        if value is None or value == '':
+            continue
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        try:
+            return date.fromisoformat(str(value).strip()[:10])
+        except ValueError:
+            continue
+    return None
 
 
 def _parse_time(value: Any) -> datetime | None:
@@ -238,6 +273,18 @@ def _coerce_events(frame: pl.DataFrame) -> pl.DataFrame:
         frame = frame.with_columns(
             pl.col('publish_time').str.slice(0, 19)
             .str.to_datetime(strict=False))
+    for column in ('ann_date', 'report_period'):
+        column_dtype = frame.schema[column]
+        if column_dtype == pl.Datetime:
+            frame = frame.with_columns(pl.col(column).cast(pl.Date))
+        elif column_dtype in (pl.String, pl.Null):
+            frame = frame.with_columns(
+                pl.col(column).cast(pl.String).str.slice(0, 10)
+                .str.to_date(strict=False))
+    # 披露时间戳就是公告披露时点：ann_date 缺失时按它归一，属于可靠推导。
+    frame = frame.with_columns(
+        pl.coalesce([pl.col('ann_date'), pl.col('publish_time').dt.date()])
+        .alias('ann_date'))
     return frame.filter(pl.col('publish_time').is_not_null())
 
 
@@ -346,7 +393,9 @@ def _assert_replace_conservation(
                 f'replace 写路径为 {column} 造出了空值：待写 {incoming_nulls} 行空，'
                 f'写盘 {merged_nulls} 行空')
         existing_nulls = int(null_existing[column][0])
-        if merged_nulls > existing_nulls:
+        # report_period 是设计上可为空的字段（无法推导时留空），不参与
+        # 「空值不得增加」检查；其余列仍按 DG-31 严格拦截。
+        if column != 'report_period' and merged_nulls > existing_nulls:
             raise RuntimeError(
                 f'replace 使 {column} 的空值从 {existing_nulls} 行增加到 '
                 f'{merged_nulls} 行（空值从 0 变成 N 即判定为写回缺陷）')
@@ -354,15 +403,26 @@ def _assert_replace_conservation(
             'existing_replaced_out': replaced_out}
 
 
-def load_events(store_root: Path | str) -> pl.DataFrame:
+def load_events(store_root: Path | str, *,
+                ann_date_lte: Any = None) -> pl.DataFrame:
+    """读取事件表；``ann_date_lte`` 为空时不过滤（默认行为不变）。
+
+    传入日期后只保留 ``ann_date <= ann_date_lte`` 的行，``ann_date`` 为空的行
+    视为披露日未知，在该模式下剔除。
+    """
     path = events_path(store_root)
     if not path.is_file():
         return empty_events()
     try:
-        return _coerce_events(pl.read_parquet(path))
+        frame = _coerce_events(pl.read_parquet(path))
     except (OSError, ValueError) as exc:
         logger.warning(f'[events] 事件表读取失败，按无数据处理: {path}: {exc}')
         return empty_events()
+    cutoff = as_date(ann_date_lte) if ann_date_lte is not None else None
+    if cutoff is not None:
+        frame = frame.filter(pl.col('ann_date').is_not_null()
+                             & (pl.col('ann_date') <= cutoff))
+    return frame
 
 
 def load_equity_issue_events(store_root: Path | str) -> pl.DataFrame:
@@ -680,6 +740,43 @@ def import_file(path: Path | str, store_root: Path | str | None = None,
             'source_format': kind, 'dry_run': False, **stats}
 
 
+def backfill_pit_columns(store_root: Path | str | None = None, *,
+                         dry_run: bool = False) -> dict[str, Any]:
+    """给既有事件表补 ``ann_date`` / ``report_period``，可重复执行。
+
+    只做可靠推导：``ann_date`` 取 ``publish_time`` 的日期；``report_period``
+    没有显式来源一律留空，不从标题猜。第二次执行 ``changed == 0`` 且不落盘。
+    """
+    root = Path(store_root) if store_root else _default_store_root()
+    path = events_path(root)
+    stats: dict[str, Any] = {'rows': 0, 'ann_date_filled': 0,
+                             'ann_date_blank': 0, 'report_period_filled': 0,
+                             'report_period_blank': 0, 'changed': 0,
+                             'dry_run': dry_run}
+    if not path.is_file():
+        return stats
+    raw = pl.read_parquet(path)
+    before_ann = (0 if 'ann_date' not in raw.columns
+                  else raw.height - raw['ann_date'].null_count())
+    frame = _coerce_events(raw)
+    rows = frame.height
+    ann_filled = rows - frame['ann_date'].null_count()
+    rp_filled = rows - frame['report_period'].null_count()
+    changed = max(0, ann_filled - before_ann)
+    stats.update({
+        'rows': rows,
+        'ann_date_filled': ann_filled,
+        'ann_date_blank': rows - ann_filled,
+        'report_period_filled': rp_filled,
+        'report_period_blank': rows - rp_filled,
+        'changed': changed,
+    })
+    if changed and not dry_run:
+        write_parquet_atomic(frame, path)
+        logger.info(f'[events] PIT 回填 {changed} 行 ann_date → {path}')
+    return stats
+
+
 def _default_store_root() -> Path:
     from src.data.local_store.store import resolve_store_root  # noqa: PLC0415
     from src.utils.config import get_config  # noqa: PLC0415
@@ -705,10 +802,12 @@ class EventStore:
     """本地事件表 + 冷却窗口查询（初始化后只读，运行时不联网）。"""
 
     def __init__(self, store_root: Path | str | None = None,
-                 cooldowns: dict[str, int] | None = None) -> None:
+                 cooldowns: dict[str, int] | None = None,
+                 pit_as_of: Any = None) -> None:
         self.store_root = Path(store_root) if store_root else _default_store_root()
         self.cooldowns = dict(cooldowns or RISK_EVENT_COOLDOWNS)
-        self.events = load_events(self.store_root)
+        # pit_as_of=None 时保持既有全量口径；显式传入才按 ann_date <= as_of 过滤。
+        self.events = load_events(self.store_root, ann_date_lte=pit_as_of)
         self.coverage = load_coverage(self.store_root) or self._derive_coverage()
         self.available = not self.events.is_empty()
         self.risk_events = self.events.filter(
@@ -856,6 +955,10 @@ def _main(args: argparse.Namespace) -> int:
                     f'覆盖 {result["coverage"].get("start")}~'
                     f'{result["coverage"].get("end")}')
         return 0
+    if args.command == 'backfill-pit':
+        result = backfill_pit_columns(root, dry_run=args.dry_run)
+        logger.info(f'[events] PIT 回填: {json.dumps(result, ensure_ascii=False)}')
+        return 0
     info = EventStore(root).summary()
     logger.info(f'[events] 事件表: {json.dumps(info, ensure_ascii=False, indent=2)}')
     return 0 if info['available'] else 1
@@ -863,7 +966,10 @@ def _main(args: argparse.Namespace) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description='公告事件本地表（离线导入）')
-    parser.add_argument('command', choices=['import', 'append', 'stats'])
+    parser.add_argument('command', choices=['import', 'append', 'stats',
+                                            'backfill-pit'])
+    parser.add_argument('--dry-run', action='store_true',
+                        help='只统计 PIT 回填结果，不落盘')
     parser.add_argument('--path', default=None, help='CSV / Parquet 事件文件')
     parser.add_argument('--source', default='cninfo', help='数据来源标识')
     parser.add_argument('--start', default=None, help='只导入该日期之后的事件')

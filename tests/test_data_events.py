@@ -12,12 +12,14 @@ import polars as pl
 import pytest
 
 from src.data.events import (
+    RISK_EVENT_COOLDOWNS,
     STATUS_CLEAR,
     STATUS_COOLING,
     STATUS_UNKNOWN,
     EventStore,
     _assert_replace_conservation,
     _coerce_events,
+    backfill_pit_columns,
     cooldown_range,
     dedup_events,
     get_event_status,
@@ -34,6 +36,78 @@ TRADING = [
     date(2025, 1, 9), date(2025, 1, 10),
     date(2025, 1, 13), date(2025, 1, 14), date(2025, 1, 15),
 ]
+
+
+class TestPitDualTimestamps:
+    """``ann_date`` / ``report_period`` 双时间戳与 PIT 过滤契约。"""
+
+    def test_normalize_fills_ann_date_and_leaves_report_period_blank(self):
+        events = normalize_announcements(_raw_frame(), source='cninfo')
+        assert events['ann_date'].null_count() == 0
+        assert set(events['ann_date'].to_list()) == {date(2025, 1, 3)}
+        # 原始公告没有报告期字段：一律留空，不从标题猜
+        assert events['report_period'].null_count() == events.height
+
+    def test_report_period_only_from_explicit_field(self):
+        frame = _coerce_events(pl.DataFrame({
+            'event_id': ['e1'], 'ts_code': ['600000.SH'],
+            'event_type': ['分红送转'],
+            'publish_time': [datetime(2025, 1, 3, 16, 0)],
+            'report_period': [date(2024, 12, 31)],
+            'title': ['2024年年度权益分派实施公告'], 'source': ['cninfo'],
+        }))
+        assert frame['report_period'].to_list() == [date(2024, 12, 31)]
+        assert frame['ann_date'].to_list() == [date(2025, 1, 3)]
+
+    def test_load_events_pit_filter_defaults_off(self, tmp_path):
+        path = tmp_path / 'meta' / 'events' / 'events.parquet'
+        path.parent.mkdir(parents=True)
+        _coerce_events(pl.DataFrame({
+            'event_id': ['e1', 'e2'], 'ts_code': ['600000.SH', '000001.SZ'],
+            'event_type': ['减持', '减持'],
+            'publish_time': [datetime(2025, 1, 3, 16, 0),
+                             datetime(2025, 1, 10, 16, 0)],
+            'title': ['减持', '减持'], 'source': ['test', 'test'],
+        })).write_parquet(path)
+        assert load_events(tmp_path).height == 2
+        assert load_events(tmp_path, ann_date_lte='2025-01-05').height == 1
+        assert EventStore(tmp_path).events.height == 2
+        assert EventStore(tmp_path, pit_as_of='2025-01-05').events.height == 1
+
+    def test_backfill_is_idempotent(self, tmp_path):
+        path = tmp_path / 'meta' / 'events' / 'events.parquet'
+        path.parent.mkdir(parents=True)
+        # 旧表：没有 ann_date / report_period 两列
+        pl.DataFrame({
+            'event_id': ['e1'], 'ts_code': ['600000.SH'],
+            'event_type': ['减持'],
+            'publish_time': [datetime(2025, 1, 3, 16, 0)],
+            'title': ['减持'], 'source': ['test'],
+        }).write_parquet(path)
+        first = backfill_pit_columns(tmp_path)
+        assert first['changed'] == 1
+        assert first['ann_date_blank'] == 0
+        assert first['report_period_filled'] == 0
+        stored = pl.read_parquet(path)
+        assert stored['ann_date'].to_list() == [date(2025, 1, 3)]
+        second = backfill_pit_columns(tmp_path)
+        assert second['changed'] == 0
+
+    def test_cooldown_chain_unchanged_by_default(self, tmp_path):
+        seed = tmp_path / 'seed.parquet'
+        _coerce_events(pl.DataFrame({
+            'event_id': ['e1'], 'ts_code': ['600000.SH'],
+            'event_type': ['并购重组'],
+            'publish_time': [datetime(2025, 1, 3, 16, 0)],
+            'title': ['重组'], 'source': ['test'],
+        })).write_parquet(seed)
+        import_file(seed, tmp_path, source='test',
+                    coverage_start=date(2025, 1, 1),
+                    coverage_end=date(2025, 1, 31))
+        status = get_event_status('600000.SH', date(2025, 1, 6),
+                                  trading_dates=TRADING, store_root=tmp_path)
+        assert status['status'] == STATUS_COOLING
+        assert status['publish_date'] == '2025-01-03'
 
 
 def _raw_frame() -> pl.DataFrame:
