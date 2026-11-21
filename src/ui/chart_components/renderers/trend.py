@@ -414,6 +414,58 @@ class TrendRenderMixin:
             logger.exception(f"渲染BBI失败: {e}")
         return df
 
+    def render_supertrend(self, plot_widget: Any, df: Any, x: np.ndarray):
+        """渲染 Supertrend 副图：上轨、下轨 + 按方向着色的趋势线（ATR 10 / 倍数 3）。"""
+        try:
+            if 'supertrend' not in df.columns:
+                logger.warning("Supertrend 数据列不存在，跳过渲染（应由渲染前补算提供）")
+                return df
+            st_data = as_f64(df['supertrend'])
+            if len(st_data) != len(x):
+                logger.warning(f"Supertrend 数据长度({len(st_data)})与x坐标长度({len(x)})不一致")
+                return df
+            upper_data = as_f64(df['st_upper']) if 'st_upper' in df.columns else np.full(len(x), np.nan)
+            lower_data = as_f64(df['st_lower']) if 'st_lower' in df.columns else np.full(len(x), np.nan)
+            dir_data = as_f64(df['st_dir']) if 'st_dir' in df.columns else np.zeros(len(x))
+
+            # 上轨（品红虚线）/ 下轨（青色虚线）
+            upper_mask = ~np.isnan(upper_data)
+            if np.any(upper_mask):
+                plot_widget.plot(x[upper_mask], upper_data[upper_mask],
+                                 pen=pg.mkPen('#FF00FF', width=1,
+                                              style=Qt.PenStyle.DashLine), name='上轨')
+            lower_mask = ~np.isnan(lower_data)
+            if np.any(lower_mask):
+                plot_widget.plot(x[lower_mask], lower_data[lower_mask],
+                                 pen=pg.mkPen('#00FFFF', width=1,
+                                              style=Qt.PenStyle.DashLine), name='下轨')
+
+            # 方向用趋势线颜色区分：多头红、空头绿（不做独立阶梯线，不双轴）
+            valid = ~np.isnan(st_data)
+            bull_mask = valid & (dir_data > 0)
+            bear_mask = valid & (dir_data < 0)
+            if np.any(bull_mask):
+                plot_widget.plot(x[bull_mask], st_data[bull_mask],
+                                 pen=pg.mkPen('#FF0000', width=2), name='Supertrend 多头')
+            if np.any(bear_mask):
+                plot_widget.plot(x[bear_mask], st_data[bear_mask],
+                                 pen=pg.mkPen('#00FF00', width=2), name='Supertrend 空头')
+
+            # 价格量级：按三条有效数据的整体区间给 Y 轴留 10% 余量
+            valid_data = [arr[~np.isnan(arr)] for arr in (st_data, upper_data, lower_data)]
+            valid_data = [arr for arr in valid_data if arr.size]
+            if valid_data:
+                all_vals = np.concatenate(valid_data)
+                min_val = float(np.min(all_vals))
+                max_val = float(np.max(all_vals))
+                range_val = max_val - min_val
+                if range_val == 0:
+                    range_val = abs(max_val) * 0.1 if max_val != 0 else 1
+                plot_widget.setYRange(min_val - range_val * 0.1, max_val + range_val * 0.1)
+        except (OSError, RuntimeError, ValueError) as e:
+            logger.exception(f"渲染Supertrend失败: {e}")
+        return df
+
     def render_cyc(self, plot_widget: Any, df: Any, x: np.ndarray):
         """渲染CYC（成本均线）指标"""
         try:

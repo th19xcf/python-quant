@@ -49,6 +49,9 @@ _INDICATOR_FIELD_SPECS: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...]
     ('mtm', 'current_mtm_data', (('mtm', 'mtm'),)),
     ('psy', 'current_psy_data', (('psy', 'psy'),)),
     ('mcst', 'current_mcst_data', (('mcst', 'mcst'),)),
+    ('supertrend', 'current_supertrend_data', (
+        ('supertrend', 'supertrend'), ('st_lower', 'st_lower'),
+        ('st_upper', 'st_upper'), ('st_dir', 'st_dir'))),
 )
 
 # SAR 为叠加型主图指标：切到 SAR 时清空这些副图缓存，避免标题栏读到旧值

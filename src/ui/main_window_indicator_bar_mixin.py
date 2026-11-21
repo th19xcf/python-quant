@@ -34,6 +34,13 @@ IMPLEMENTED_INDICATORS: frozenset[str] = frozenset({
     'EXPMA', 'BBI', 'HSL', 'LB', 'CYC', 'CYS',
     # 大势型指标
     'ABI', 'ADL', 'ADR', 'OBOS',
+    # 路径依赖趋势指标（UI 侧补算，见 indicator_renderer.ensure_indicator_columns）
+    'SUPERTREND',
+})
+
+#: 「选择副图指标」菜单不列出的按钮名（主图指标、特殊按钮与滚动按钮）
+_SUB_MENU_EXCLUDED: frozenset[str] = frozenset({
+    '指标A', '指标B', '模板', '窗口', 'MA', '<', '>',
 })
 
 
@@ -134,6 +141,7 @@ class MainWindowIndicatorBarMixin:
             "|",  # 分隔符
             # 趋势指标
             "MA", "MACD", "BOLL", "SAR", "TRIX", "DMA", "FSL", "EXPMA", "BBI",
+            "SUPERTREND",
             "|",  # 分隔符
             # 成交量指标
             "VOL", "OBV", "VR", "CR", "BRAR", "ASI", "EMV", "HSL", "LB",
@@ -393,9 +401,10 @@ class MainWindowIndicatorBarMixin:
         # 创建主菜单
         self.indicator_menu = QMenu()
 
-        # 选择副图指标
+        # 选择副图指标（条目在 show_indicator_menu 中按已实现指标重建）
         submenu = QMenu("选择副图指标", self.indicator_menu)
         self.indicator_menu.addMenu(submenu)
+        self.sub_indicator_menu = submenu
 
         # 指标用法注释
         action = QAction("指标用法注释", self.indicator_menu)
@@ -442,8 +451,42 @@ class MainWindowIndicatorBarMixin:
             window_num: 窗口编号
         """
         # 显示菜单
+        self._populate_sub_indicator_menu(window_num)
         self.indicator_menu.exec_(btn.mapToGlobal(btn.rect().bottomLeft()))
         logger.info(f"显示窗口{window_num}的指标功能菜单")
+
+    def _populate_sub_indicator_menu(self, window_num):
+        """重建「选择副图指标」子菜单：列出已实现副图指标并回显该窗口当前指标。"""
+        menu = getattr(self, 'sub_indicator_menu', None)
+        if menu is None:
+            return
+        menu.clear()
+        current = self.window_indicators.get(window_num)
+        for name in self.indicator_buttons:
+            if name in _SUB_MENU_EXCLUDED:
+                continue
+            action = QAction(name, menu)
+            action.setCheckable(True)
+            action.setChecked(name == current)
+            action.triggered.connect(
+                lambda checked=False, ind=name, win=window_num:
+                self._select_sub_indicator(win, ind))
+            menu.addAction(action)
+
+    def _select_sub_indicator(self, window_num, indicator):
+        """菜单选指标：与该指标按钮的点击分发同一路径，避免两套状态。"""
+        if window_num not in (2, 3):
+            return
+        self.current_selected_window = window_num
+        button = self.indicator_buttons.get(indicator)
+        if button is not None and not button.isChecked():
+            button.setChecked(True)
+            self.indicator_interaction_manager.on_indicator_clicked(indicator, True)
+            return
+        self.window_indicators[window_num] = indicator
+        if hasattr(self, 'current_stock_data') and self.current_stock_data is not None:
+            self.plot_k_line(self.current_stock_data,
+                             self.current_stock_name, self.current_stock_code)
 
     def _on_window_clicked_impl(self, window_num):
         """

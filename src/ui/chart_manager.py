@@ -46,6 +46,10 @@ class ChartManager:
         ('current_adl_data', (('adl', 'adl'),)),
         ('current_adr_data', (('adr10', 'adr10'),)),
         ('current_obos_data', (('obos10', 'obos10'),)),
+        ('current_supertrend_data', (
+            ('supertrend', 'supertrend'), ('st_lower', 'st_lower'),
+            ('st_upper', 'st_upper'), ('st_dir', 'st_dir'),
+        )),
     )
 
     def __init__(self, window):

@@ -53,6 +53,8 @@ INDICATOR_CALC_MAP = {
     'ADL': ('adl', ['adl']),
     'ADR': ('adr', ['adr10']),
     'OBOS': ('obos', ['obos10']),
+    # 路径依赖指标：批量入口不实现，由 ensure_indicator_columns 单独补算
+    'SUPERTREND': ('supertrend', ['supertrend', 'st_lower', 'st_upper', 'st_dir']),
 }
 
 
@@ -74,6 +76,7 @@ def ensure_indicator_columns(df: Any, indicator_names: Any) -> Any:
         return df
 
     missing_types = []
+    need_supertrend = False
     for name in indicator_names:
         if not name:
             continue
@@ -81,17 +84,17 @@ def ensure_indicator_columns(df: Any, indicator_names: Any) -> Any:
         if entry is None:
             continue
         indicator_type, expected_cols = entry
-        if indicator_type in missing_types:
-            continue
         if any(col not in df.columns for col in expected_cols):
+            if indicator_type == 'supertrend':
+                # 路径依赖递推不进 Lazy 批量管道（见 indicators/trend.py），单独补算
+                need_supertrend = True
+                continue
+            if indicator_type in missing_types:
+                continue
             missing_types.append(indicator_type)
 
-    if not missing_types:
+    if not missing_types and not need_supertrend:
         return df
-
-    from src.tech_analysis.indicator_calculator import (
-        calculate_multiple_indicators_polars,
-    )
 
     kwargs = {}
     if any(t in missing_types for t in ('abi', 'adl', 'adr', 'obos')):
@@ -99,9 +102,21 @@ def ensure_indicator_columns(df: Any, indicator_names: Any) -> Any:
         if breadth is not None:
             kwargs['market_breadth'] = breadth
 
-    logger.info(f"渲染前批量补齐指标列: {missing_types}")
-    result = calculate_multiple_indicators_polars(df.lazy(), missing_types, **kwargs)
-    return result.collect() if hasattr(result, 'collect') else result
+    result = df
+    if missing_types:
+        from src.tech_analysis.indicator_calculator import (
+            calculate_multiple_indicators_polars,
+        )
+
+        logger.info(f"渲染前批量补齐指标列: {missing_types}")
+        result = calculate_multiple_indicators_polars(result.lazy(), missing_types, **kwargs)
+        result = result.collect() if hasattr(result, 'collect') else result
+    if need_supertrend:
+        from src.tech_analysis.indicator_calculator import calculate_supertrend_polars
+
+        logger.info("渲染前补算 Supertrend 四列（ATR 10 / 倍数 3）")
+        result = calculate_supertrend_polars(result)
+    return result
 
 
 def _load_breadth_for_frame(df: Any) -> Any:
@@ -196,6 +211,8 @@ class IndicatorRenderer(TrendRenderMixin, VolumeRenderMixin, OscillatorRenderMix
             'ADL': self.render_adl,
             'ADR': self.render_adr,
             'OBOS': self.render_obos,
+            # 路径依赖趋势指标（副图）
+            'SUPERTREND': self.render_supertrend,
         }
 
         renderer = renderers.get(indicator_name)

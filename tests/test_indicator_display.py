@@ -20,13 +20,14 @@ DISPLAY_MODULE = REPO_ROOT / 'src' / 'ui' / 'event_handlers' / 'indicator_displa
 EXPECTED_WINDOW2 = {
     "VOL", "MACD", "RSI", "KDJ", "WR", "BOLL", "SAR", "TRIX", "DMI", "DMA",
     "BRAR", "FSL", "VR", "CR", "OBV", "HSL", "LB", "ASI", "EMV", "CCI",
-    "ROC", "MTM", "PSY", "MCST", "ABI", "ADL", "ADR", "OBOS",
+    "ROC", "MTM", "PSY", "MCST", "ABI", "ADL", "ADR", "OBOS", "SUPERTREND",
 }
 
 EXPECTED_WINDOW3 = {
     "KDJ", "RSI", "MACD", "WR", "BOLL", "DMI", "TRIX", "BRAR", "VR", "DMA",
     "SAR", "FSL", "CR", "OBV", "EXPMA", "BBI", "CYC", "CYS", "ASI", "EMV",
     "CCI", "ROC", "MTM", "PSY", "MCST", "HSL", "LB", "ABI", "ADL", "ADR", "OBOS",
+    "SUPERTREND",
 }
 
 

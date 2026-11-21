@@ -285,6 +285,25 @@ def _render_sar(data, index, fmt):
     return f"<font color='white'>SAR: {fmt(data['sar'][index])}</font>"
 
 
+def _render_supertrend(data, index, fmt):
+    """Supertrend：趋势线 + 上下轨，方向用中文与颜色标出（1 多 / -1 空 / 0 未初始化）。"""
+    if not _has(data, 'supertrend', index):
+        return ""
+    direction = _at(data, 'st_dir', index)
+    if direction is None:
+        direction_text = ""
+    else:
+        label = '多头' if direction > 0 else '空头' if direction < 0 else '未初始化'
+        color = '#FF0000' if direction > 0 else '#00FF00' if direction < 0 else '#C0C0C0'
+        direction_text = f"  <font color='{color}'>方向: {label}</font>"
+    return (
+        f"<font color='white'>ST: {fmt(data['supertrend'][index])}</font>  "
+        f"<font color='#FF00FF'>上轨: {fmt(_at(data, 'st_upper', index))}</font>  "
+        f"<font color='#00FFFF'>下轨: {fmt(_at(data, 'st_lower', index))}</font>"
+        + direction_text
+    )
+
+
 def _render_dma(data, index, fmt):
     if not _has(data, 'dma', index):
         return ""
@@ -405,6 +424,7 @@ WINDOW2_TEXTS: dict[str, Renderer] = {
     "ADL": _render_adl,
     "ADR": _render_adr,
     "OBOS": _render_obos,
+    "SUPERTREND": _render_supertrend,
 }
 
 WINDOW3_TEXTS: dict[str, Renderer] = {
@@ -439,6 +459,7 @@ WINDOW3_TEXTS: dict[str, Renderer] = {
     "ADL": _render_adl,
     "ADR": _render_adr,
     "OBOS": _render_obos,
+    "SUPERTREND": _render_supertrend,
 }
 
 
