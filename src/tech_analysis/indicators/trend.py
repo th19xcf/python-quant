@@ -153,6 +153,14 @@ def calculate_dmi(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
     """
     计算DMI指标
 
+    pdi/ndi → dx → adx → adxr 是逐级引用的链式子表达式。Polars 不做表达式级
+    CSE，若把上层表达式（含整棵子树）直接内联到下一层，每个引用点都会重新
+    展开一次：adxr 引用 adx 两次、dx 再引用 pdi/ndi 各两次，最终 tr_sma 被
+    展开十余次，查询计划膨胀到 6 千余字符，实测占单票指标总耗时的一半以上。
+    因此这里**每一级先落成列**，下一级只引用列名（列引用不产生展开）；
+    落地用的是各窗口本就有的输出列名（pdi_w/ndi_w/adx_w 逐级覆盖），
+    因此既不新增列、也不需要末尾 drop，输出列集合与改造前完全一致。
+
     Args:
         lazy_df: Polars LazyFrame
         windows: DMI计算窗口列表
@@ -175,33 +183,57 @@ def calculate_dmi(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
     plus_dm = pl.when((high_diff > low_diff) & (high_diff > 0)).then(high_diff).otherwise(0.0)
     minus_dm = pl.when((low_diff > high_diff) & (low_diff > 0)).then(low_diff).otherwise(0.0)
 
-    for window in windows:
-        # 计算平滑的TR、+DM、-DM
-        tr_sma = tr.rolling_sum(window_size=window, min_samples=1)
-        pdm_sma = plus_dm.rolling_sum(window_size=window, min_samples=1)
-        ndm_sma = minus_dm.rolling_sum(window_size=window, min_samples=1)
+    # 第 1 级：平滑后的 TR、+DM、-DM，暂存到本窗口的输出列名上
+    # （pdi_w ← TR 和、ndi_w ← +DM 和、adx_w ← -DM 和），随后被逐级覆盖。
+    # 不新建中间列，是因为末尾若再 drop 中间列会多一个投影节点，改变下游
+    # cum_sum/rolling_sum 的分块累加顺序，使 obv/psy 等指标出现 1 ULP 差异。
+    lazy_df = lazy_df.with_columns([
+        expr.alias(name)
+        for window in windows
+        for expr, name in (
+            (tr.rolling_sum(window_size=window, min_samples=1), f'pdi_{window}'),
+            (plus_dm.rolling_sum(window_size=window, min_samples=1), f'ndi_{window}'),
+            (minus_dm.rolling_sum(window_size=window, min_samples=1), f'adx_{window}'),
+        )
+    ])
 
-        # 计算+DI和-DI
-        # tr_sma 为 0 表示窗口内无真实波幅（价格完全不动），按通达信口径 DI 取 0，
-        # 避免 0/0 产生 NaN/inf 静默污染指标
-        pdi = to_float32(
-            pl.when(tr_sma == 0).then(0.0).otherwise(pdm_sma / tr_sma * 100)
-        ).alias(f'pdi_{window}')
-        ndi = to_float32(
-            pl.when(tr_sma == 0).then(0.0).otherwise(ndm_sma / tr_sma * 100)
-        ).alias(f'ndi_{window}')
+    # 第 2 级：+DI / -DI 覆盖写回 pdi_w / ndi_w。
+    # 同一节点内所有表达式都以本节点输入为准，所以下面读到的仍是第 1 级
+    # 存下的 TR/+DM/-DM 和。
+    # tr_sma 为 0 表示窗口内无真实波幅（价格完全不动），按通达信口径 DI 取 0，
+    # 避免 0/0 产生 NaN/inf 静默污染指标
+    lazy_df = lazy_df.with_columns([
+        expr
+        for window in windows
+        for expr in (
+            to_float32(pl.when(pl.col(f'pdi_{window}') == 0).then(0.0)
+                       .otherwise(pl.col(f'ndi_{window}') / pl.col(f'pdi_{window}') * 100)
+                       ).alias(f'pdi_{window}'),
+            to_float32(pl.when(pl.col(f'pdi_{window}') == 0).then(0.0)
+                       .otherwise(pl.col(f'adx_{window}') / pl.col(f'pdi_{window}') * 100)
+                       ).alias(f'ndi_{window}'),
+        )
+    ])
 
-        # 计算DX
-        dx = to_float32(pl.when((pdi + ndi) == 0).then(0.0).otherwise((pdi - ndi).abs() / (pdi + ndi) * 100)).alias(f'dx_{window}')
+    # 第 3 级：DX → ADX（MA(DX)，通达信 MA 不足 N 根不输出），覆盖写回 adx_w
+    # （此节点输入中的 adx_w 仍是 -DM 和，已无后续引用）。
+    # DX 只引用 pdi/ndi 列，是浅表达式，直接内联一次即可，不必再落列；
+    # 保留内层 float32 转换，使 rolling_mean 与改造前一样作用在 float32 的 DX 上
+    lazy_df = lazy_df.with_columns([
+        to_float32(to_float32(
+            pl.when((pl.col(f'pdi_{window}') + pl.col(f'ndi_{window}')) == 0).then(0.0)
+            .otherwise((pl.col(f'pdi_{window}') - pl.col(f'ndi_{window}')).abs()
+                       / (pl.col(f'pdi_{window}') + pl.col(f'ndi_{window}')) * 100))
+            .rolling_mean(window_size=window, min_samples=window)).alias(f'adx_{window}')
+        for window in windows
+    ])
 
-        # 计算ADX（MA(DX)，通达信 MA 不足 N 根不输出）
-        adx = to_float32(dx.rolling_mean(window_size=window, min_samples=window)).alias(f'adx_{window}')
-
-        # 计算ADXR
-        adxr = to_float32((adx + adx.shift(window)) / 2).alias(f'adxr_{window}')
-
-        # 添加所有DMI指标列
-        lazy_df = lazy_df.with_columns([pdi, ndi, adx, adxr])
+    # 第 4 级：ADXR = (ADX + REF(ADX, N)) / 2
+    lazy_df = lazy_df.with_columns([
+        to_float32((pl.col(f'adx_{window}') + pl.col(f'adx_{window}').shift(window)) / 2)
+        .alias(f'adxr_{window}')
+        for window in windows
+    ])
 
     # 添加默认列名
     if len(windows) >= 1:
