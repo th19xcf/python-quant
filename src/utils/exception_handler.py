@@ -12,7 +12,6 @@ from types import TracebackType
 from typing import Any, Dict, List, ParamSpec, TypeVar, cast
 
 from loguru import logger
-from PySide6.QtWidgets import QApplication, QMessageBox
 
 from src.utils.exceptions import QuantException, get_error_severity, is_retryable_error
 
@@ -205,6 +204,14 @@ class GlobalExceptionHandler:
         Args:
             error_details: 错误详情
         """
+        try:
+            # 惰性导入：GUI 作为可选依赖时本模块仍须可 import，
+            # 缺 PySide6 就静默跳过弹窗，日志与重试链路不受影响。
+            from PySide6.QtWidgets import QApplication, QMessageBox
+        # 兜底理由：无 GUI 环境（--without gui）下不得因缺包打断异常处理
+        except ImportError:  # noqa: BLE001
+            return
+
         try:
             app = QApplication.instance()
             if app:
