@@ -101,6 +101,35 @@ def save_overrides(overrides: dict[str, dict[str, float]]) -> None:
     path.write_text(json.dumps(cleaned, ensure_ascii=False, indent=2), encoding='utf-8')
 
 
+_FULLWIDTH_TRANSLATION = str.maketrans(
+    '０１２３４５６７８９．－＋，', '0123456789.-+,')
+
+
+def parse_param_text(name: str, key: str, text: Any) -> float:
+    """解析用户输入（兼容 Excel 常见的空格、全角数字、千分位逗号）。
+
+    空串、非数字、NaN/Inf、越界、整数位带小数都会抛 ValueError，
+    消息可直接展示给用户。
+    """
+    specs = {spec[0]: spec for spec in PARAM_SPECS.get(name.upper(), [])}
+    if key not in specs:
+        raise ValueError(f'{name} 不支持参数 {key}')
+    label = specs[key][1]
+    raw = '' if text is None else str(text)
+    normalized = raw.translate(_FULLWIDTH_TRANSLATION).strip()
+    normalized = normalized.replace(' ', '').replace('\u3000', '')
+    normalized = normalized.replace(',', '')
+    if normalized.endswith('.'):
+        normalized = normalized[:-1]
+    if not normalized:
+        raise ValueError(f'{label}不能为空，请输入数字')
+    try:
+        numeric = float(normalized)
+    except ValueError as exc:
+        raise ValueError(f'{label}「{raw.strip()}」不是有效数字') from exc
+    return validate_param_value(name, key, numeric)
+
+
 def validate_param_value(name: str, key: str, value: Any) -> float:
     """校验单个参数：必须落在规格区间内，整数型参数不允许小数。"""
     specs = {spec[0]: spec for spec in PARAM_SPECS.get(name.upper(), [])}

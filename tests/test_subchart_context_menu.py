@@ -103,6 +103,69 @@ def test_menu_identical_for_all_subchart_indicators_and_windows(qapp):
             assert snapshot == baseline
 
 
+def test_param_dialog_confirm_cancel_and_illegal_input(tmp_path, monkeypatch, qapp):
+    """弹窗链路：确认→重算+存配置；取消→不改动；非法输入→提示且不保存。"""
+    import src.ui.subchart_context_menu as menu_module
+    from src.ui.subchart_context_menu import IndicatorParamsDialog
+
+    monkeypatch.setenv('QUANT_INDICATOR_PARAMS_PATH', str(tmp_path / 'params.json'))
+    df = _ohlcv()
+
+    # 确认路径：MACD 12/26/9 -> 6/13/5，保存后按新参数重算
+    base = ensure_indicator_columns(df, ['MACD'])
+    dialog = IndicatorParamsDialog('MACD')
+    dialog._edits['fast_period'].setText(' ６ ')
+    dialog._edits['slow_period'].setText('13')
+    dialog._edits['signal_period'].setText('5')
+    dialog.accept()
+    assert dialog.result() == IndicatorParamsDialog.DialogCode.Accepted
+    overrides = load_overrides()
+    assert overrides['MACD'] == {'fast_period': 6, 'slow_period': 13, 'signal_period': 5}
+    custom = ensure_indicator_columns(df, ['MACD'], overrides=overrides,
+                                      **build_calc_kwargs(overrides))
+    assert not np.allclose(base['macd'].to_numpy(), custom['macd'].to_numpy())
+
+    # 取消路径：输入 7 但取消，配置不变、重算仍用默认 14
+    dialog_cancel = IndicatorParamsDialog('RSI')
+    dialog_cancel._edits['period'].setText('7')
+    dialog_cancel.reject()
+    assert 'RSI' not in load_overrides()
+    default_rsi = ensure_indicator_columns(df, ['RSI'])
+    assert 'rsi14' in default_rsi.columns
+
+    # 非法输入：0 周期被拒并弹出可读提示，不写配置
+    warnings: list[str] = []
+
+    class _StubMessageBox:
+        @staticmethod
+        def warning(_parent, _title, text):
+            warnings.append(text)
+
+    monkeypatch.setattr(menu_module, 'QMessageBox', _StubMessageBox)
+    dialog_bad = IndicatorParamsDialog('RSI')
+    dialog_bad._edits['period'].setText('0')
+    dialog_bad.accept()
+    assert warnings and '需在' in warnings[0]
+    assert 'RSI' not in load_overrides()
+
+    # 小数参数对话框可正常构造（原 QSpinBox.setDecimals 崩溃点）
+    boll_dialog = IndicatorParamsDialog('BOLL')
+    assert set(boll_dialog._edits) == {'period', 'std_dev'}
+
+
+def test_parse_param_text_accepts_excel_style_input():
+    from src.ui.indicator_parameters import parse_param_text
+
+    assert parse_param_text('RSI', 'period', ' １４ ') == 14
+    assert parse_param_text('MACD', 'fast_period', '12.0') == 12
+    assert parse_param_text('BOLL', 'std_dev', '２．５') == 2.5
+    assert parse_param_text('RSI', 'period', '20.') == 20
+    assert parse_param_text('MACD', 'fast_period', '1,2') == 12
+    for bad in ('', '   ', 'abc', '0', '-3', '1e9'):
+        with pytest.raises(ValueError):
+            parse_param_text('RSI', 'period', bad)
+
+
 def test_notes_cover_all_implemented_sub_indicators():
     from src.ui.main_window_indicator_bar_mixin import IMPLEMENTED_INDICATORS
 

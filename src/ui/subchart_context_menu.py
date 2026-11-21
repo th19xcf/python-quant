@@ -12,13 +12,12 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
-    QDoubleSpinBox,
     QFormLayout,
     QLabel,
+    QLineEdit,
     QMenu,
     QMessageBox,
     QPushButton,
-    QSpinBox,
     QTextBrowser,
     QVBoxLayout,
     QWidget,
@@ -29,6 +28,7 @@ from src.ui.indicator_parameters import (
     PARAM_SPECS,
     apply_overrides,
     effective_params,
+    parse_param_text,
     reset_overrides,
 )
 
@@ -129,7 +129,7 @@ class IndicatorParamsDialog(QDialog):
         self.setWindowTitle(f'调整指标参数 - {self.indicator}')
         self.resize(320, 220)
         layout = QVBoxLayout(self)
-        self._spins: dict[str, QSpinBox | QDoubleSpinBox] = {}
+        self._edits: dict[str, QLineEdit] = {}
 
         specs = PARAM_SPECS.get(self.indicator, [])
         if not specs:
@@ -141,18 +141,11 @@ class IndicatorParamsDialog(QDialog):
 
         form = QFormLayout()
         current = effective_params(self.indicator)
-        for key, label, default, low, high in specs:
-            if float(default).is_integer():
-                spin: QSpinBox | QDoubleSpinBox = QSpinBox(self)
-                spin.setDecimals(0)
-            else:
-                spin = QDoubleSpinBox(self)
-                spin.setDecimals(2)
-                spin.setSingleStep(0.1)
-            spin.setRange(low, high)
-            spin.setValue(current.get(key, default))
-            self._spins[key] = spin
-            form.addRow(f'{label}：', spin)
+        for key, label, default, _low, _high in specs:
+            edit = QLineEdit(str(current.get(key, default)), self)
+            edit.setToolTip('支持整数/小数，空格与全角数字会自动转换')
+            self._edits[key] = edit
+            form.addRow(f'{label}：', edit)
         layout.addLayout(form)
 
         restore = QPushButton('恢复默认', self)
@@ -167,17 +160,24 @@ class IndicatorParamsDialog(QDialog):
         layout.addWidget(buttons)
 
     def _restore_defaults(self) -> None:
-        for key, label, default, _low, _high in PARAM_SPECS.get(self.indicator, []):
-            spin = self._spins.get(key)
-            if spin is not None:
-                spin.setValue(default)
+        for key, _label, default, _low, _high in PARAM_SPECS.get(self.indicator, []):
+            edit = self._edits.get(key)
+            if edit is not None:
+                edit.setText(str(default))
 
     def values(self) -> dict[str, float]:
-        return {key: spin.value() for key, spin in self._spins.items()}
+        """解析输入框内容；非法输入抛出带可读消息的 ValueError。"""
+        return {key: parse_param_text(self.indicator, key, edit.text())
+                for key, edit in self._edits.items()}
 
     def accept(self) -> None:  # noqa: D401 - Qt 回调
         try:
-            apply_overrides(self.indicator, self.values())
+            values = self.values()
+        except ValueError as exc:
+            QMessageBox.warning(self, '参数无效', str(exc))
+            return
+        try:
+            apply_overrides(self.indicator, values)
         except ValueError as exc:
             QMessageBox.warning(self, '参数无效', str(exc))
             return
