@@ -532,8 +532,8 @@ class MainWindowIndicatorBarMixin:
             if hasattr(self, 'current_stock_data') and self.current_stock_data is not None:
                 self.plot_k_line(self.current_stock_data, self.current_stock_name, self.current_stock_code)
 
-        # 处理可在主图和副图同时显示的指标（SAR、BOLL）
-        elif indicator in ["SAR", "BOLL"]:
+        # 处理可在主图和副图同时显示的指标（SAR、BOLL、SUPERTREND）
+        elif indicator in ["SAR", "BOLL", "SUPERTREND"]:
             logger.info(f"{'显示' if checked else '隐藏'}{indicator}指标（主图+副图）")
             # 保存到当前选中的窗口（作为副图指标）
             if checked:
@@ -560,7 +560,7 @@ class MainWindowIndicatorBarMixin:
                         button.setChecked(False)
             elif indicator != "模板" and indicator != "窗口":
                 # 可在主图和副图同时显示的指标
-                dual_display_indicators = ["SAR", "BOLL"]
+                dual_display_indicators = ["SAR", "BOLL", "SUPERTREND"]
                 # 普通副图指标是互斥的
                 for name, button in self.indicator_buttons.items():
                     if name not in ["指标A", "指标B", "模板", "窗口", "MA"] + dual_display_indicators and name != indicator:

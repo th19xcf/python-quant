@@ -226,6 +226,96 @@ def test_subchart_and_main_overlay_coexist():
     assert sub_widget.y_ranges[0][0] < sub_widget.y_ranges[0][1]
 
 
+class _ToggleButton:
+    """指标按钮替身：仅维护勾选状态"""
+
+    def __init__(self):
+        self._checked = False
+
+    def isChecked(self):
+        return self._checked
+
+    def setChecked(self, value):
+        self._checked = bool(value)
+
+
+def test_main_overlay_toggle_on_off_on():
+    """主图叠加开关：开→关→开，关掉后轴范围回落，副图窗口同步清空。"""
+    from src.ui.chart_components.indicator_renderer import (
+        IndicatorRenderer,
+        overlay_y_range,
+    )
+    from src.ui.main_window_indicator_bar_mixin import MainWindowIndicatorBarMixin
+    from src.ui.main_window_indicator_window_mixin import MainWindowIndicatorWindowMixin
+
+    class _Stub(MainWindowIndicatorWindowMixin, MainWindowIndicatorBarMixin):
+        def __init__(self, frame):
+            self.indicator_buttons = {
+                name: _ToggleButton() for name in ('SAR', 'BOLL', 'SUPERTREND', 'MACD')}
+            self.window_indicators = {2: None, 3: None}
+            self.current_selected_window = 1
+            self.show_ma_lines = False
+            self._indicator_renderer = IndicatorRenderer(None)
+            self.tech_plot_widget = _FakePlotWidget()
+            self._df = frame
+            self._x = np.arange(frame.height)
+            self.current_stock_data = frame
+            self.current_stock_name = '测试标的'
+            self.current_stock_code = '000001.SZ'
+            self.snapshots = []
+
+        def plot_k_line(self, *args):
+            self.tech_plot_widget.plots.clear()
+            self.tech_plot_widget.y_ranges.clear()
+            self._render_overlay_indicators(self._df, self._x)
+            checked = [n for n in ('SAR', 'BOLL', 'SUPERTREND')
+                       if self.indicator_buttons[n].isChecked()]
+            self.snapshots.append((
+                [name for name, _ in self.tech_plot_widget.plots],
+                list(self.tech_plot_widget.y_ranges),
+                dict(self.window_indicators),
+                overlay_y_range(self._df, checked),
+            ))
+
+    df = _overlay_frame()
+    stub = _Stub(df)
+    low = np.asarray(df['low'], dtype=float)
+    high = np.asarray(df['high'], dtype=float)
+    candles_rng = (low.min() * 0.99, high.max() * 1.01)
+
+    def click(name: str):
+        button = stub.indicator_buttons[name]
+        button.setChecked(not button.isChecked())
+        stub._on_indicator_clicked_impl(name, button.isChecked())
+
+    # 第一次点击：开 —— 主图四条线 + 副图窗口2同步
+    click('SUPERTREND')
+    names, y_ranges, windows, eff_range = stub.snapshots[-1]
+    assert names == ['上轨', '下轨', 'Supertrend 多头', 'Supertrend 空头']
+    assert len(y_ranges) == 1
+    assert np.allclose(eff_range, y_ranges[0])
+    assert windows[2] == 'SUPERTREND'
+
+    # 第二次点击：关 —— 不再绘制、副图清空、轴回落为仅 K 线
+    click('SUPERTREND')
+    names, y_ranges, windows, eff_range = stub.snapshots[-1]
+    assert names == []
+    assert y_ranges == []
+    assert windows[2] is None
+    assert np.allclose(eff_range, candles_rng)
+
+    # 第三次点击：再开 —— 恢复四条线
+    click('SUPERTREND')
+    names, _, windows, _ = stub.snapshots[-1]
+    assert names == ['上轨', '下轨', 'Supertrend 多头', 'Supertrend 空头']
+    assert windows[2] == 'SUPERTREND'
+
+    # SAR/BOLL 同属双显示名单：撤除路径同样会清空副图并重绘（回归保护）
+    click('SAR')
+    click('SAR')
+    assert stub.window_indicators[2] is None
+
+
 # ---------------------------------------------------------------------------
 # 回测引擎接线层：_precompute_indicators 与 SupertrendStrategy 信号逻辑
 # ---------------------------------------------------------------------------
