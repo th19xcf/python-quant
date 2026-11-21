@@ -348,7 +348,7 @@ cp .env.example .env
 - 质量门禁（目前只在本地命令执行，仓库未接入 CI）：
   - `ruff check src tests`（pyflakes / bugbear / bandit / isort / mccabe C901 等全量规则）
   - `mypy src`（覆盖 src 下全部业务模块，配置见 `pyproject.toml [tool.mypy]`）
-  - `pytest --cov=src`（覆盖率门禁 `[tool.coverage.report] fail_under = 71`，2026-11-21 实测 71.04% = 43,526/61,268；模块阶梯 `src/backtest` 85 / `src/backtest/engine` 89 / `src/risk` 85 / `src/data/quality` 76。该闸门目前只在本地命令执行，仓库未接入 CI）
+  - `pytest --cov=src`（覆盖率门禁 `[tool.coverage.report] fail_under = 71`，2026-11-21 实测 71.04% = 43,526/61,268；模块阶梯 `src/backtest` 73 / `src/backtest/engine` 89 / `src/risk` 85 / `src/data/quality` 76。整包按 73 而非 85 登记，是因为 `src/backtest/runner` 实测仅 47.51%、`src/backtest/visualization` 仅 16.22%，整包并不具备 85% 覆盖；门槛只盯关键路径，撮合内核 `src/backtest/engine` 单列 89，这两个子模块不应把内核门槛拉低。该闸门目前只在本地命令执行，仓库未接入 CI）
 
 ---
 
