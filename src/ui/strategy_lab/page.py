@@ -88,7 +88,7 @@ _DCA_STATE_TEXT = {
 _METRIC_ROWS = (
     ('annual', '年化收益', 'pct'),
     ('max_drawdown', '最大回撤', 'pct'),
-    ('sharpe', 'Sharpe', 'num'),
+    ('sharpe', 'Sharpe（CAGR/波动）', 'num'),
     ('volatility', '年化波动', 'pct'),
     ('turnover_one_way', '单边年换手', 'x'),
     ('annual_cost_pct', '年化成本', 'pct'),
@@ -1488,6 +1488,9 @@ class StrategyLabPage(QWidget):
             self.metrics_table.setItem(i, 0, QTableWidgetItem(label))
             item = QTableWidgetItem(value)
             item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            if label.startswith('Sharpe'):
+                # 口径说明：与工具研究脚本一致，避免与「日均收益/日波动」混淆
+                item.setToolTip('CAGR ÷ 年化波动率（日收益标准差 × √252，无风险利率取 0）')
             self.metrics_table.setItem(i, 1, item)
         apply_content_widths(self.metrics_table)
         # 表格在 QSplitter 里按 sizeHint 只分到约 150 px，列宽按实测给足后会被横向

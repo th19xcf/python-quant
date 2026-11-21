@@ -365,6 +365,37 @@ def _period_series(result: Dict[str, Any], rule: Dict[str, Any]
     return curve, trades
 
 
+#: Sharpe 最少日收益样本数（约 1.5 个月）：不足时视为样本不足，返回 0。
+MIN_SHARPE_SAMPLES = 30
+
+
+def _cagr_sharpe(curve: List[Tuple[date, float]], annual: float) -> float:
+    """Sharpe = CAGR ÷ 年化波动率，与工具研究脚本同口径。
+
+    年化波动率 = 日收益标准差（``ddof=1``）× √252；无风险利率按 0（与研究一致）。
+    不使用「日收益均值 / 日标准差 × √252」的算术口径——那会让 Sharpe 的分母与
+    年化收益（CAGR）不同源，本次对账中正是它造成 +0.077 的口径偏差。
+
+    边界：净值非有限值/非正值先剔除；有效日收益少于 ``MIN_SHARPE_SAMPLES`` 视为
+    样本不足返回 0；波动率为 0 或非有限值返回 0；CAGR 为负时保留负 Sharpe；
+    最终结果非有限值时返回 0，保证界面不出现 inf / NaN。
+    """
+    points = [(d, float(e)) for d, e in curve
+              if math.isfinite(float(e)) and float(e) > 0.0]
+    if len(points) < MIN_SHARPE_SAMPLES + 1:
+        return 0.0
+    equity = [e for _, e in points]
+    returns = [equity[i] / equity[i - 1] - 1.0 for i in range(1, len(equity))]
+    returns = [r for r in returns if math.isfinite(r)]
+    if len(returns) < MIN_SHARPE_SAMPLES:
+        return 0.0
+    volatility = float(np.std(returns, ddof=1) * math.sqrt(252))
+    if not math.isfinite(volatility) or volatility <= 1e-12:
+        return 0.0
+    value = annual / volatility
+    return round(value, 4) if math.isfinite(value) else 0.0
+
+
 def _core_metrics(curve: List[Tuple[date, float]], trades: List[Dict[str, Any]],
                   rule: Dict[str, Any], bench: Dict[str, float]) -> Dict[str, Any]:
     equity_curve = [{'date': d, 'equity': e} for d, e in curve]
@@ -379,14 +410,15 @@ def _core_metrics(curve: List[Tuple[date, float]], trades: List[Dict[str, Any]],
     total_cost = sum(float(t.get('cost') or 0.0) for t in trades)
     turnover = analyzer.annual_turnover(buy_notional, avg_eq, years)
     cost_pct = analyzer.annual_cost_ratio(total_cost, avg_eq, years)
+    annual = float(perf.get('annual_return', 0.0)) / 100.0
     metrics = {
         'start': first_day.isoformat(),
         'end': last_day.isoformat(),
         'years': round(years, 2),
         'final_equity': round(last_eq, 2),
-        'annual': round(float(perf.get('annual_return', 0.0)) / 100.0, 6),
+        'annual': round(annual, 6),
         'max_drawdown': round(float(perf.get('max_drawdown', 0.0)) / 100.0, 6),
-        'sharpe': round(float(perf.get('sharpe_ratio', 0.0)), 4),
+        'sharpe': _cagr_sharpe(curve, annual),
         'volatility': round(float(perf.get('volatility', 0.0)) / 100.0, 6),
         'turnover_one_way': round(float(turnover['one_way']), 4),
         'turnover_two_way': round(float(turnover['two_way']), 4),
