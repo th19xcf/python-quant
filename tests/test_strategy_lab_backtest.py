@@ -184,3 +184,19 @@ def test_two_stage_sort_with_keep_pct():
                        {'field': 'ep', 'direction': 'desc'}], top_n=10)
     path, _ = select_members(_ctx(), panels, rule, DAYS)
     assert path[DAY] == ['B.SZ', 'A.SZ']
+
+
+def test_factor_panel_end_reads_official_factor_panel(tmp_path, monkeypatch):
+    """新鲜度核对读取正式因子面板（aaa3394 后为 panels.FACTOR_PANEL）。"""
+    import polars as pl
+
+    from src.quant.strategy_lab import panels as panels_module
+    from src.quant.strategy_lab.backtest import _factor_panel_end
+
+    panel = tmp_path / 'factor_panel.parquet'
+    pl.DataFrame({'signal_date': [date(2026, 10, 30), date(2026, 11, 20)]}).write_parquet(panel)
+    monkeypatch.setattr(panels_module, 'FACTOR_PANEL', panel)
+    assert _factor_panel_end() == '2026-11-20'
+
+    monkeypatch.setattr(panels_module, 'FACTOR_PANEL', tmp_path / 'missing.parquet')
+    assert _factor_panel_end() is None

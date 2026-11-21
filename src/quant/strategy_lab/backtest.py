@@ -268,11 +268,17 @@ def _used_fields(rule: Dict[str, Any]) -> Set[str]:
 
 
 def _factor_panel_end() -> str | None:
-    """周频因子面板末日（只读 date 列）；面板缺失时返回 ``None``。"""
-    from .panels import SF_BASE
-    if not SF_BASE.is_file():
+    """因子面板末日（只读 date 列）；面板缺失时返回 ``None``。
+
+    aaa3394 已把 staging 的 ``base_rebal.parquet`` 换成正式表 ``factor_panel``
+    （``panels.SF_BASE`` → ``panels.FACTOR_PANEL``），本处引用随之更正。
+    """
+    from .panels import FACTOR_PANEL
+    if not FACTOR_PANEL.is_file():
         return None
-    value = pl.read_parquet(SF_BASE, columns=['date'])['date'].max()
+    # 正式面板的日期列名为 signal_date（panels._ensure_base 读取时也做同样的映射）
+    value = (pl.scan_parquet(FACTOR_PANEL)
+             .select(pl.col('signal_date').max()).collect().item())
     return str(value)[:10] if value is not None else None
 
 
