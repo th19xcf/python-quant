@@ -2,7 +2,9 @@
 
 import importlib
 import inspect
+from datetime import date
 
+import polars as pl
 import pytest
 
 from src.data.sources.base import (
@@ -16,6 +18,7 @@ _SOURCE_MODULES = [
     'src.data.baostock_handler',
     'src.data.tdx_handler',
     'src.data.akshare_handler',
+    'src.data.tencent.client',
 ]
 
 
@@ -71,3 +74,46 @@ def test_required_methods_not_inherited_silently():
     assert 'get_index_data' in IncompleteSource.missing_contract_methods()
     assert all(m in REQUIRED_SOURCE_METHODS
                for m in IncompleteSource.missing_contract_methods())
+
+
+def test_tencent_capabilities_match_behavior(monkeypatch):
+    """腾讯客户端声明具备的能力必须真能调用，未声明的能力必须显式拒绝。"""
+    from src.data.tencent.client import TencentClient
+
+    client = TencentClient()
+    assert isinstance(client, DataSourceBase)
+    assert client.is_available() is True
+    assert TencentClient.missing_contract_methods() == []
+    assert TencentClient.CAPABILITIES == frozenset({'daily'})
+
+    # 不具备的能力沿用基类默认桩，不伪造实现
+    for stub in ('update_stock_daily', 'update_stock_basic',
+                 'get_stock_dividend', 'get_fund_data'):
+        assert getattr(TencentClient, stub) is getattr(DataSourceBase, stub)
+
+    captured: dict = {}
+
+    def fake_fetch_daily(ts_code: str, count: int = 800) -> pl.DataFrame:
+        captured.update(ts_code=ts_code, count=count)
+        return pl.DataFrame({
+            'date': [date(2024, 1, 2), date(2024, 1, 5), date(2024, 1, 12)],
+            'open': [1.0, 1.0, 1.0], 'high': [1.0, 1.0, 1.0],
+            'low': [1.0, 1.0, 1.0], 'close': [1.0, 1.0, 1.0],
+            'volume': [1.0, 1.0, 1.0], 'amount': [1.0, 1.0, 1.0],
+        })
+
+    monkeypatch.setattr(client, 'fetch_daily', fake_fetch_daily)
+
+    stock = client.get_stock_data('600000.SH', '2024-01-01', '2024-01-10',
+                                  adjustment_type='none')
+    assert captured['ts_code'] == '600000.SH'
+    assert stock['date'].to_list() == [date(2024, 1, 2), date(2024, 1, 5)]
+
+    index = client.get_index_data('000001.SH', '20240101', '20240110')
+    assert index['date'].to_list() == [date(2024, 1, 2), date(2024, 1, 5)]
+
+    # 未声明的复权口径与频率必须显式拒绝，而不是静默返回原始价
+    with pytest.raises(ValueError, match='不复权'):
+        client.get_stock_data('600000.SH', '2024-01-01', '2024-01-10')
+    with pytest.raises(ValueError, match='daily'):
+        client.get_index_data('000001.SH', '2024-01-01', '2024-01-10', freq='m5')

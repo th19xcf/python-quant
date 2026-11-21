@@ -33,12 +33,14 @@ import json
 import threading
 import urllib.error
 import urllib.request
+from datetime import date, datetime
 from typing import Any
 
 import polars as pl
 from loguru import logger
 
 from src.data.rate_limit import RateLimiter
+from src.data.sources.base import DataSourceBase
 from src.utils.code_converter import to_tdx_file_stem
 
 _DAILY_URL = (
@@ -56,6 +58,9 @@ _HEADERS = {
     'Referer': 'https://gu.qq.com/',
     'Accept': 'application/json, text/plain, */*',
 }
+
+#: 日线接口单次最多可取的历史根数（超出部分无法回溯，标准接口按此截断）
+_MAX_DAILY_BARS = 800
 
 DAILY_COLUMNS = ('date', 'open', 'high', 'low', 'close', 'volume', 'amount')
 MINUTE_COLUMNS = ('datetime', 'open', 'high', 'low', 'close', 'volume', 'amount')
@@ -100,6 +105,19 @@ def _to_float(value: Any) -> float | None:
         return None
 
 
+def _parse_optional_date(value: str | None, field: str) -> date | None:
+    """解析契约接口的日期参数（YYYY-MM-DD 或 YYYYMMDD）；空值表示不限。"""
+    if not value:
+        return None
+    text = str(value).strip()
+    for fmt in ('%Y-%m-%d', '%Y%m%d'):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    raise ValueError(f'{field} 日期格式不支持: {value!r}（应为 YYYY-MM-DD 或 YYYYMMDD）')
+
+
 def _tencent_limiter(min_interval: float, max_retries: int) -> RateLimiter:
     """腾讯客户端的限速口径：只重试网络/解析类异常，日志前缀保留 ``[tencent]``。"""
     return RateLimiter(
@@ -109,11 +127,27 @@ def _tencent_limiter(min_interval: float, max_retries: int) -> RateLimiter:
     )
 
 
-class TencentClient:
-    """腾讯行情只读客户端（日线 / 分钟）。"""
+class TencentClient(DataSourceBase):
+    """腾讯行情只读客户端（日线 / 分钟）。
+
+    继承 DataSourceBase 仅为统一数据源契约：只覆盖它真实具备的能力
+    （不复权日线），复权、财务、基础资料等能力沿用基类默认桩（记录
+    “不支持”），不伪造实现。分钟线 ``fetch_minute`` 属于离线补数接口，
+    不在契约内。
+    """
+
+    #: 契约能力声明：仅 daily 原始价；复权/财务/基础资料均不具备
+    CAPABILITIES = frozenset({'daily'})
+    #: 契约接口唯一接受的复权口径（原样返回，不换算复权因子）
+    ADJUSTMENT_TYPES = frozenset({'none', 'raw', ''})
 
     def __init__(self, *, timeout: float = 20.0, min_interval: float = 0.05,
                  max_retries: int = 3, headers: dict[str, str] | None = None) -> None:
+        # 与历史 handler 一致：在 __init__ 内自行初始化，不依赖基类 initialize()
+        self.config = None
+        self.db_manager = None
+        self.name = self.__class__.__name__
+        self.available = True
         self.timeout = float(timeout)
         self.headers = dict(_HEADERS if headers is None else headers)
         self.limiter = _tencent_limiter(min_interval, max_retries)
@@ -211,6 +245,55 @@ class TencentClient:
         if not isinstance(rows, list) or not rows:
             return pl.DataFrame(schema=_MINUTE_SCHEMA)
         return normalize_minute_volume(parse_minute_rows(rows), ts_code)
+
+    # ------------------------------------------------------------------
+    # DataSourceBase 契约接口（仅覆盖实际具备的：不复权日线）
+    # ------------------------------------------------------------------
+    def get_stock_data(self, ts_code: str, start_date: str, end_date: str,
+                       freq: str = 'daily', adjustment_type: str = 'hfq'):
+        """标准接口：股票不复权原始日线。
+
+        ``adjustment_type`` 只接受 none/raw（原样返回原始价，不换算复权因子），
+        其它口径显式拒绝，不做伪造实现。
+        """
+        return self._get_raw_daily(ts_code, start_date, end_date, freq, adjustment_type)
+
+    def get_index_data(self, ts_code: str, start_date: str, end_date: str,
+                       freq: str = 'daily'):
+        """标准接口：指数不复权原始日线（与股票同一后端，无复权口径）。"""
+        return self._get_raw_daily(ts_code, start_date, end_date, freq, 'none')
+
+    def _get_raw_daily(self, ts_code: str, start_date: str | None, end_date: str | None,
+                       freq: str, adjustment_type: str | None) -> pl.DataFrame:
+        if freq != 'daily':
+            raise ValueError(f'腾讯源只支持 daily 频率，收到 {freq!r}')
+        adjustment = str(adjustment_type or '').lower()
+        if adjustment not in self.ADJUSTMENT_TYPES:
+            raise ValueError(
+                f'腾讯源只提供不复权原始价，收到 adjustment_type={adjustment_type!r}；'
+                "请使用 'none' 或 'raw'")
+        start_dt = _parse_optional_date(start_date, 'start_date')
+        end_dt = _parse_optional_date(end_date, 'end_date')
+        if start_dt is not None and end_dt is not None and start_dt > end_dt:
+            raise ValueError(f'start_date({start_dt}) 晚于 end_date({end_dt})')
+
+        span_end = end_dt or date.today()
+        count = _MAX_DAILY_BARS if start_dt is None else min(
+            max((span_end - start_dt).days + 10, 1), _MAX_DAILY_BARS)
+        frame = self.fetch_daily(ts_code, count=count)
+        if frame.is_empty():
+            return frame
+
+        earliest = frame['date'].min()
+        if start_dt is not None and earliest is not None and earliest > start_dt:
+            logger.warning(
+                f'[tencent] {ts_code} 最多返回最近 {_MAX_DAILY_BARS} 根，'
+                f'请求起点 {start_dt} 早于可得最早日 {earliest}')
+        if start_dt is not None:
+            frame = frame.filter(pl.col('date') >= start_dt)
+        if end_dt is not None:
+            frame = frame.filter(pl.col('date') <= end_dt)
+        return frame
 
 
 # ----------------------------------------------------------------------
