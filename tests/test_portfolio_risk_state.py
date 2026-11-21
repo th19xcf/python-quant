@@ -104,7 +104,8 @@ def test_headless_page_renders_tables(qapp):
     try:
         page.render_state(state)
         assert page.steps_table.rowCount() == 3
-        assert page.steps_table.columnCount() == 3
+        # 3 个数据列 + 最左侧统一的「序号」列（_finalize_table 收尾时插入）
+        assert page.steps_table.columnCount() == 4
         assert page.steps_table.showGrid()
         assert page.budget_table.rowCount() == 4
         assert page.budget_table.showGrid()
