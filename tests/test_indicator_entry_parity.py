@@ -31,6 +31,32 @@ from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
 _DMI_WINDOW_COLUMNS = {'pdi_5', 'ndi_5', 'adx_5', 'adxr_5'}
 
 
+def test_mcst_batch_on_fresh_frame_does_not_drop_absent_temp_columns():
+    """双击加载路径回归：fresh 帧批量算 mcst 时，清理临时列不得 drop 不存在的列。
+
+    历史故障：MCST 改为 close*volume 内联表达式后不再落地 price_volume，
+    而 cleanup_temp_columns 仍无条件 drop，collect 时抛
+    ColumnNotFoundError: "price_volume" not found，导致技术分析页打不开。
+    """
+    n = 60
+    close = 10.0 + np.cumsum(np.random.default_rng(0).standard_normal(n) * 0.1)
+    df = pl.DataFrame({
+        'date': pl.date_range(pl.date(2025, 1, 1), pl.date(2025, 3, 1),
+                              interval='1d', eager=True).head(n),
+        'open': close,
+        'high': close + 0.2,
+        'low': close - 0.2,
+        'close': close,
+        'volume': np.full(n, 1000.0),
+    })
+
+    out = calculate_multiple_indicators_polars(df.lazy(), ['mcst']).collect()
+
+    assert 'mcst' in out.columns
+    assert out['mcst'].drop_nulls().len() > 0
+    assert 'price_volume' not in out.columns
+
+
 def _ohlcv(n: int = 160) -> pl.DataFrame:
     """构造稳定的 OHLCV 数据（date 为 pl.Date）。"""
     rng = np.random.default_rng(7)

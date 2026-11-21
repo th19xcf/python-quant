@@ -143,9 +143,12 @@ def cleanup_temp_columns(lazy_df: pl.LazyFrame, indicator_types: List[str], indi
         temp_cols.extend([f'high_n_{window}' for window in used_windows])
         temp_cols.extend([f'low_n_{window}' for window in used_windows])
 
-    # 直接删除临时列，无需检查是否存在
+    # 直接删除临时列，只删实际存在的列（MCST 已改为内联表达式，不再落地 price_volume 等物理列）
     if temp_cols:
-        lazy_df = lazy_df.drop(*temp_cols)
+        existing_cols = set(lazy_df.collect_schema().names())
+        temp_cols = [col for col in temp_cols if col in existing_cols]
+        if temp_cols:
+            lazy_df = lazy_df.drop(*temp_cols)
 
     return lazy_df
 
