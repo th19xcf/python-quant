@@ -84,6 +84,25 @@ def test_menu_only_for_subchart_windows(qapp):
     assert empty_menu.actions()[0].menu().isEnabled() is False
 
 
+def test_menu_identical_for_all_subchart_indicators_and_windows(qapp):
+    """窗口 2/3 内的任意指标共用同一容器入口，右键菜单结构完全一致。"""
+    cases = [(2, 'MACD'), (2, 'RSI'), (2, 'BOLL'), (3, 'SUPERTREND'), (3, 'OBV')]
+    baseline = None
+    for window_num, indicator in cases:
+        menu = build_subchart_menu(_FakeWindow({window_num: indicator}), window_num)
+        assert menu is not None, f'窗口{window_num}/{indicator} 未弹出菜单'
+        actions = menu.actions()[0].menu().actions()
+        snapshot = [(action.text(), action.isEnabled()) for action in actions]
+        assert [text for text, _ in snapshot] == EXPECTED_TEXTS
+        states = dict(snapshot)
+        assert states['指标用法注释'] and states['调整指标参数']
+        assert not states['删除当前指标']
+        if baseline is None:
+            baseline = snapshot
+        else:
+            assert snapshot == baseline
+
+
 def test_notes_cover_all_implemented_sub_indicators():
     from src.ui.main_window_indicator_bar_mixin import IMPLEMENTED_INDICATORS
 
