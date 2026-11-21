@@ -151,7 +151,8 @@ class MainWindowIndicatorWindowMixin:
             # 检查是否有主图叠加指标被选中
             sar_checked = hasattr(self, 'indicator_buttons') and self.indicator_buttons.get('SAR', {}).isChecked()
             boll_checked = hasattr(self, 'indicator_buttons') and self.indicator_buttons.get('BOLL', {}).isChecked()
-            logger.debug(f"主图叠加指标状态: SAR={sar_checked}, BOLL={boll_checked}")
+            st_checked = hasattr(self, 'indicator_buttons') and self.indicator_buttons.get('SUPERTREND', {}).isChecked()
+            logger.debug(f"主图叠加指标状态: SAR={sar_checked}, BOLL={boll_checked}, SUPERTREND={st_checked}")
 
             # SAR指标
             if sar_checked:
@@ -162,6 +163,25 @@ class MainWindowIndicatorWindowMixin:
             if boll_checked:
                 logger.debug("在主图绘制BOLL指标")
                 df_pl = self._indicator_renderer.render_boll(self.tech_plot_widget, df_pl, x)
+
+            # Supertrend 主图叠加（与副图共用已补算的四列，不重复计算）
+            if st_checked:
+                logger.debug("在主图绘制Supertrend指标")
+                df_pl = self._indicator_renderer.render_supertrend(
+                    self.tech_plot_widget, df_pl, x, set_range=False)
+
+            # 多叠加共存：K线高低点与全部已开启叠加取并集后统一设轴，避免互相覆盖
+            overlay_names = [
+                name for name, enabled in
+                (('SAR', sar_checked), ('BOLL', boll_checked), ('SUPERTREND', st_checked))
+                if enabled
+            ]
+            if overlay_names:
+                from src.ui.chart_components.indicator_renderer import overlay_y_range
+
+                y_range = overlay_y_range(df_pl, overlay_names)
+                if y_range:
+                    self.tech_plot_widget.setYRange(*y_range)
 
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染主图叠加指标失败: {e}")

@@ -117,6 +117,116 @@ def test_multiplier_zero_bounds_pinned_to_hl2():
 
 
 # ---------------------------------------------------------------------------
+# 主图叠加：渲染调用序列、方向着色、多叠加共存下的统一轴范围
+# ---------------------------------------------------------------------------
+
+
+class _FakePlotWidget:
+    """最小绘图替身：记录 plot 名称/颜色与 setYRange 调用"""
+
+    def __init__(self):
+        self.plots: list[tuple] = []
+        self.y_ranges: list[tuple] = []
+
+    def plot(self, xs, ys, **kwargs):
+        pen = kwargs.get('pen')
+        color = pen.color().name() if pen is not None else None
+        self.plots.append((kwargs.get('name'), color))
+
+    def setYRange(self, low, high):
+        self.y_ranges.append((low, high))
+
+
+def _overlay_frame() -> pl.DataFrame:
+    """先跌后涨的 OHLCV，并补出 Supertrend 四列（覆盖多空两段）"""
+    from src.tech_analysis.indicator_calculator import calculate_supertrend_polars
+
+    close = np.concatenate([np.linspace(100, 70, 40), np.linspace(70, 130, 40)])
+    dates = pl.date_range(datetime.date(2025, 1, 1), datetime.date(2025, 6, 30),
+                          eager=True).head(len(close))
+    df = pl.DataFrame({
+        'date': dates,
+        'open': close,
+        'high': close * 1.005,
+        'low': close * 0.995,
+        'close': close,
+        'volume': np.full_like(close, 1000.0),
+    })
+    return calculate_supertrend_polars(df)
+
+
+def test_main_overlay_render_calls_and_axis_combos():
+    """主图叠加：调用序列与着色正确、自己不设轴；三种组合统一按 K线+叠加并集给轴"""
+    from src.ui.chart_components.indicator_renderer import (
+        IndicatorRenderer,
+        overlay_y_range,
+    )
+
+    df = _overlay_frame()
+    x = np.arange(df.height)
+    widget = _FakePlotWidget()
+    IndicatorRenderer(None).render_supertrend(widget, df, x, set_range=False)
+
+    assert [name for name, _ in widget.plots] == [
+        '上轨', '下轨', 'Supertrend 多头', 'Supertrend 空头']
+    colors = dict(widget.plots)
+    assert colors['Supertrend 多头'] == '#ff0000'
+    assert colors['Supertrend 空头'] == '#00ff00'
+    assert widget.y_ranges == []
+
+    low = np.asarray(df['low'], dtype=float)
+    high = np.asarray(df['high'], dtype=float)
+    st_arrays = [np.asarray(df[c], dtype=float)
+                 for c in ('st_upper', 'st_lower', 'supertrend')]
+
+    # 仅 K 线
+    candles = overlay_y_range(df, [])
+    assert np.allclose(candles, (low.min() * 0.99, high.max() * 1.01))
+
+    # K 线 + ST
+    with_st = overlay_y_range(df, ['SUPERTREND'])
+    st_vals = np.concatenate([low, high] + [arr[~np.isnan(arr)] for arr in st_arrays])
+    assert np.allclose(with_st, (st_vals.min() * 0.99, st_vals.max() * 1.01))
+
+    # K 线 + ST + BOLL
+    df_boll = df.with_columns([
+        (pl.col('close') * 1.1).alias('up'),
+        (pl.col('close') * 0.9).alias('dn'),
+        pl.col('close').alias('mb'),
+    ])
+    with_both = overlay_y_range(df_boll, ['SUPERTREND', 'BOLL'])
+    boll_st = np.asarray(df_boll['supertrend'], dtype=float)
+    boll_vals = np.concatenate([
+        low, high,
+        np.asarray(df_boll['up'], dtype=float),
+        np.asarray(df_boll['dn'], dtype=float),
+        boll_st[~np.isnan(boll_st)],
+    ])
+    assert np.allclose(with_both, (boll_vals.min() * 0.99, boll_vals.max() * 1.01))
+    # 叠加越多轴域只会向外扩，不会因后渲染者覆盖而截断
+    assert with_both[0] <= with_st[0] <= candles[0]
+    assert with_both[1] >= with_st[1] >= candles[1]
+
+
+def test_subchart_and_main_overlay_coexist():
+    """主图与副图同时开启：共用同一份四列，各自设轴互不影响"""
+    from src.ui.chart_components.indicator_renderer import IndicatorRenderer
+
+    df = _overlay_frame()
+    x = np.arange(df.height)
+    renderer = IndicatorRenderer(None)
+    main_widget, sub_widget = _FakePlotWidget(), _FakePlotWidget()
+
+    renderer.render_supertrend(main_widget, df, x, set_range=False)
+    renderer.render_supertrend(sub_widget, df, x)
+
+    assert main_widget.plots == sub_widget.plots
+    assert main_widget.y_ranges == []
+    assert len(sub_widget.y_ranges) == 1
+    assert sub_widget.y_ranges[0][0] < sub_widget.y_ranges[0][1]
+
+
+# ---------------------------------------------------------------------------
 # 回测引擎接线层：_precompute_indicators 与 SupertrendStrategy 信号逻辑
 # ---------------------------------------------------------------------------
 

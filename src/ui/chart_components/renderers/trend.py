@@ -414,8 +414,12 @@ class TrendRenderMixin:
             logger.exception(f"渲染BBI失败: {e}")
         return df
 
-    def render_supertrend(self, plot_widget: Any, df: Any, x: np.ndarray):
-        """渲染 Supertrend 副图：上轨、下轨 + 按方向着色的趋势线（ATR 10 / 倍数 3）。"""
+    def render_supertrend(self, plot_widget: Any, df: Any, x: np.ndarray, set_range: bool = True):
+        """渲染 Supertrend：上轨、下轨 + 按方向着色的趋势线（ATR 10 / 倍数 3）。
+
+        set_range=False 用于主图叠加：Y 轴由调用方按 K 线+全部叠加统一计算，
+        避免与 SAR/BOLL 互相覆盖。
+        """
         try:
             if 'supertrend' not in df.columns:
                 logger.warning("Supertrend 数据列不存在，跳过渲染（应由渲染前补算提供）")
@@ -454,7 +458,7 @@ class TrendRenderMixin:
             # 价格量级：按三条有效数据的整体区间给 Y 轴留 10% 余量
             valid_data = [arr[~np.isnan(arr)] for arr in (st_data, upper_data, lower_data)]
             valid_data = [arr for arr in valid_data if arr.size]
-            if valid_data:
+            if set_range and valid_data:
                 all_vals = np.concatenate(valid_data)
                 min_val = float(np.min(all_vals))
                 max_val = float(np.max(all_vals))

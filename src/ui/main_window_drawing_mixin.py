@@ -137,7 +137,7 @@ class MainWindowDrawingMixin:
                     if name:
                         names.append(name)
             if hasattr(self, 'indicator_buttons') and self.indicator_buttons:
-                for name in ('SAR', 'BOLL'):
+                for name in ('SAR', 'BOLL', 'SUPERTREND'):
                     btn = self.indicator_buttons.get(name)
                     if btn is not None and btn.isChecked():
                         names.append(name)

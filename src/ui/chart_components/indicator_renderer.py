@@ -119,6 +119,37 @@ def ensure_indicator_columns(df: Any, indicator_names: Any) -> Any:
     return result
 
 
+def overlay_y_range(df: Any, overlay_names: list[str]) -> tuple[float, float] | None:
+    """主图叠加统一 Y 轴范围：K 线高低点 + 已开启叠加指标的有效值。
+
+    与 chart_manager._setup_chart_axes 同口径（低点 *0.99、高点 *1.01），
+    先取叠加值并集再套同一比例，避免 SAR/BOLL/Supertrend 互相覆盖轴范围。
+    """
+    if df is None or 'high' not in df.columns or 'low' not in df.columns:
+        return None
+    values = [np.asarray(df['low'], dtype=float), np.asarray(df['high'], dtype=float)]
+
+    def _add_columns(columns: tuple[str, ...]) -> None:
+        for col in columns:
+            if col in df.columns:
+                values.append(np.asarray(df[col], dtype=float))
+
+    for name in overlay_names:
+        if name == 'SAR':
+            _add_columns(('sar',))
+        elif name == 'BOLL':
+            _add_columns(('up', 'dn', 'mb'))
+        elif name == 'SUPERTREND':
+            _add_columns(('st_upper', 'st_lower', 'supertrend'))
+
+    merged = [arr[~np.isnan(arr)] for arr in values]
+    merged = [arr for arr in merged if arr.size]
+    if not merged:
+        return None
+    all_vals = np.concatenate(merged)
+    return float(np.min(all_vals)) * 0.99, float(np.max(all_vals)) * 1.01
+
+
 def _load_breadth_for_frame(df: Any) -> Any:
     """按主帧日期范围取 breadth 快照，并向前留 10 个交易日做 ADR/OBOS 预热。"""
     date_col = resolve_date_column(df.columns)

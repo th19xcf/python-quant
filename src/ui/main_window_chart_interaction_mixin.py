@@ -239,6 +239,19 @@ class MainWindowChartInteractionMixin:
                     if mb_val is not None and str(mb_val) != 'nan':
                         overlay_text += f"  <font color='white'>BOLL: {mb_val:.2f}/{up_val:.2f}/{dn_val:.2f}</font>"
 
+        # Supertrend 主图叠加（方向跟随趋势线配色：多红/空绿）
+        if hasattr(self, 'indicator_buttons') and self.indicator_buttons.get('SUPERTREND', {}).isChecked():
+            st_data = getattr(self, 'current_supertrend_data', None)
+            if st_data:
+                st_list = st_data.get('supertrend', [])
+                dir_list = st_data.get('st_dir', [])
+                if 0 <= index < len(st_list) and st_list[index] is not None and str(st_list[index]) != 'nan':
+                    direction = dir_list[index] if index < len(dir_list) else 0
+                    dir_text = '多头' if direction > 0 else '空头' if direction < 0 else '--'
+                    dir_color = '#FF0000' if direction > 0 else '#00FF00' if direction < 0 else '#C0C0C0'
+                    overlay_text += (f"  <font color='white'>ST: {st_list[index]:.2f}</font>"
+                                     f"  <font color='{dir_color}'>({dir_text})</font>")
+
         self.ma_values_label.setText(ma_text + overlay_text)
 
     def show_info_box(self):
