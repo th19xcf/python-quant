@@ -1,11 +1,12 @@
 """技术指标因子 v2（归一候选）—— 与 v1 并存，默认不进入任何生产链路。
 
 口径来源：``src/tech_analysis/indicators/formulas.py`` 真源 + ``src/alpha`` 的
-「窗口错位一期 + ddof=0」组装语义（见 ``docs/技术指标口径归一影响清单_2026-11-21.md``）。
+「带错位一期（价不移位）+ ddof=0」组装语义（见
+``docs/技术指标口径归一影响清单_2026-11-21.md``）。
 
-- v1（``technical.py``）：当期窗口 + 样本标准差 ddof=1；
-- v2（本模块）：均线/标准差先取 t-1 窗口、标准差用总体口径 ddof=0，避免用当日
-  收盘价生成当日信号。
+- v1（``technical.py``）：当期窗带 + 样本标准差 ddof=1；
+- v2（本模块）：均线/标准差取 t-1 窗口、标准差用总体口径 ddof=0；布林位置与
+  ``src/alpha`` 一致，分子仍用 ``close_t``（仅带错位，不是整体错位一期）。
 
 仅登记，不修改 v1；本模块未被 ``src/advice`` 或任何生产入口引用。
 """
@@ -29,14 +30,13 @@ def _std_ddof0(expr: pl.Expr, n: int) -> pl.Expr:
 
 
 @factor('tech_boll_pos_20_v2', 'technical_v2',
-         'BOLL_POS_v2 = (close_{t-1} - MA20_{t-1}) / (2 * STD20_{t-1}), ddof=0',
+         'BOLL_POS_v2 = (close_t - MA20_{t-1}) / (4 * STD20_{t-1}), ddof=0',
          'close', '-', SOURCE, lookback=21, status='approx',
-         note='v2：窗口错位一期 + ddof=0，对齐 src/alpha bollinger_position')
+         note='v2：价不移位、带错位一期 + ddof=0，严格对齐 src/alpha bollinger_position')
 def tech_boll_pos_20_v2(_panel: pl.DataFrame) -> pl.Expr:
-    close_prev = o.delay(C('close'), 1)
     mean_prev = o.delay(o.ts_mean(C('close'), 20), 1)
     std_prev = o.delay(_std_ddof0(C('close'), 20), 1)
-    return o.safe_div(close_prev - mean_prev, 2.0 * std_prev)
+    return o.safe_div(C('close') - mean_prev, 4.0 * std_prev)
 
 
 @factor('tech_atr_14_pct_v2', 'technical_v2',
