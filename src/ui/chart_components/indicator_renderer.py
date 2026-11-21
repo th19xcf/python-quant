@@ -58,7 +58,9 @@ INDICATOR_CALC_MAP = {
 }
 
 
-def ensure_indicator_columns(df: Any, indicator_names: Any) -> Any:
+def ensure_indicator_columns(df: Any, indicator_names: Any,
+                             overrides: dict[str, dict[str, float]] | None = None,
+                             **calc_params: Any) -> Any:
     """
     渲染前一次性批量补齐所选指标的缺失列（单个 Polars 查询计划）。
 
@@ -67,7 +69,9 @@ def ensure_indicator_columns(df: Any, indicator_names: Any) -> Any:
 
     Args:
         df: Polars DataFrame
-        indicator_names: UI 指标名称列表（如 ['MACD', 'KDJ', 'SAR']）
+        indicator_names: UI 指标名称列表（如 ['MACD', 'KDJ', 'SAR']），
+            overrides 为 UI 侧自定义参数，calc_params 为透传 kwargs，
+            未传时全部走计算函数默认值。
 
     Returns:
         pl.DataFrame: 补齐指标列后的数据（无缺失时原样返回）
@@ -75,15 +79,22 @@ def ensure_indicator_columns(df: Any, indicator_names: Any) -> Any:
     if df is None or not hasattr(df, 'columns'):
         return df
 
+    overrides = overrides or {}
     missing_types = []
     need_supertrend = False
     for name in indicator_names:
         if not name:
             continue
-        entry = INDICATOR_CALC_MAP.get(str(name).upper())
+        upper_name = str(name).upper()
+        entry = INDICATOR_CALC_MAP.get(upper_name)
         if entry is None:
             continue
-        indicator_type, expected_cols = entry
+        indicator_type, default_cols = entry
+        expected_cols = default_cols
+        if upper_name in overrides:
+            from src.ui.indicator_parameters import expected_columns
+
+            expected_cols = expected_columns(upper_name, overrides)
         if any(col not in df.columns for col in expected_cols):
             if indicator_type == 'supertrend':
                 # 路径依赖递推不进 Lazy 批量管道（见 indicators/trend.py），单独补算
@@ -96,7 +107,7 @@ def ensure_indicator_columns(df: Any, indicator_names: Any) -> Any:
     if not missing_types and not need_supertrend:
         return df
 
-    kwargs = {}
+    kwargs = dict(calc_params)
     if any(t in missing_types for t in ('abi', 'adl', 'adr', 'obos')):
         breadth = _load_breadth_for_frame(df)
         if breadth is not None:
@@ -114,8 +125,11 @@ def ensure_indicator_columns(df: Any, indicator_names: Any) -> Any:
     if need_supertrend:
         from src.tech_analysis.indicator_calculator import calculate_supertrend_polars
 
-        logger.info("渲染前补算 Supertrend 四列（ATR 10 / 倍数 3）")
-        result = calculate_supertrend_polars(result)
+        logger.info("渲染前补算 Supertrend 四列（UI 侧参数，默认 ATR10/3）")
+        st_period = int(calc_params.get('supertrend_period', 10))
+        st_multiplier = float(calc_params.get('supertrend_multiplier', 3.0))
+        result = calculate_supertrend_polars(result, period=st_period,
+                                             multiplier=st_multiplier)
     return result
 
 

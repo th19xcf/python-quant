@@ -436,11 +436,27 @@ class MainWindowTechTabMixin:
         # 添加点击事件，用于选中窗口
         self.kdj_container.mousePressEvent = lambda event: self.indicator_interaction_manager.on_window_clicked(3)
 
+        # 副图区域右键菜单（主图不接线，保持既有右键行为）
+        for window_num, target in (
+            (2, self.volume_plot_widget), (2, self.volume_container),
+            (3, self.kdj_plot_widget), (3, self.kdj_container),
+        ):
+            target.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            target.customContextMenuRequested.connect(
+                lambda pos, num=window_num, w=target: self._show_subchart_context_menu(num, w, pos))
+
+
         # 列宽同步：筹码栏自身宽度变化、显隐切换都会驱动副图占位列
         self._chip_gutters = (self.volume_chip_gutter, self.kdj_chip_gutter)
         self.chip_panel.set_width_callback(self._sync_chip_gutters)
         self.chip_controller.set_layout_callback(self._sync_chip_gutters)
         self._sync_chip_gutters()
+
+    def _show_subchart_context_menu(self, window_num: int, widget: QWidget, pos) -> None:
+        """副图区域右键：弹出「副图指标」子菜单（仅窗口 2/3 已接线）。"""
+        from src.ui.subchart_context_menu import show_subchart_context_menu
+
+        show_subchart_context_menu(self, window_num, widget, pos)
 
     @staticmethod
     def _create_chip_gutter():

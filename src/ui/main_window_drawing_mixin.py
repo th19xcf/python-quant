@@ -141,7 +141,24 @@ class MainWindowDrawingMixin:
                     btn = self.indicator_buttons.get(name)
                     if btn is not None and btn.isChecked():
                         names.append(name)
-            return ensure_indicator_columns(df_pl, names)
+            # 仅对用户改过参数的指标透传 kwargs，其余指标继续走函数默认值
+            from src.ui.indicator_parameters import (
+                build_calc_kwargs,
+                load_overrides,
+                stale_columns,
+            )
+
+            selected = {name.upper() for name in names}
+            overrides = {key: value for key, value in load_overrides().items()
+                         if key in selected}
+            for name in selected:
+                if name in overrides:
+                    drop_cols = [col for col in stale_columns(name, list(df_pl.columns))
+                                 if col in df_pl.columns]
+                    if drop_cols:
+                        df_pl = df_pl.drop(drop_cols)
+            return ensure_indicator_columns(
+                df_pl, names, overrides=overrides, **build_calc_kwargs(overrides))
         except Exception as e:
             logger.warning(f"批量补齐指标列失败，按原数据继续渲染: {e}")
             return df_pl

@@ -227,10 +227,16 @@ class OscillatorRenderMixin:
                 logger.warning("render_rsi: df is None, skipping")
                 return df
 
-            if not hasattr(df, 'columns') or 'rsi14' not in df.columns:
+            if not hasattr(df, 'columns'):
+                return df
+            # 参数化后列名随周期变化（rsi7/rsi21...），优先取标准 14 日列
+            rsi_col = 'rsi14' if 'rsi14' in df.columns else next(
+                (col for col in df.columns
+                 if col.startswith('rsi') and col[3:].isdigit()), None)
+            if rsi_col is None:
                 return df
 
-            rsi_data = as_f64(df['rsi14'])
+            rsi_data = as_f64(df[rsi_col])
             rsi_mask = ~np.isnan(rsi_data)
 
             if np.any(rsi_mask):
@@ -238,7 +244,7 @@ class OscillatorRenderMixin:
                     x[rsi_mask],
                     rsi_data[rsi_mask],
                     pen=pg.mkPen('b', width=1),
-                    name='RSI14'
+                    name=f'RSI{rsi_col[3:]}'
                 )
 
             # 添加参考线
