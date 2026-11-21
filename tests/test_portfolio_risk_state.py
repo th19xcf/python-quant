@@ -5,6 +5,8 @@ from __future__ import annotations
 import pytest
 
 from src.quant.analysis.portfolio_risk_state import (
+    DRAWDOWN_WINDOW,
+    DRAWDOWN_ZERO,
     MAX_INDUSTRY_WEIGHT,
     MAX_NAME_WEIGHT,
     baseline_tier,
@@ -16,6 +18,7 @@ from src.quant.analysis.portfolio_risk_state import (
     realized_volatility,
     vol_scale,
 )
+from src.risk import DEFAULT_RISK_LIMITS
 
 
 def test_tier_mapping_thresholds():
@@ -58,7 +61,7 @@ def test_realized_volatility_and_drawdown_on_synthetic_series():
 
 def test_constraints_flag_name_and_turnover_violations():
     report = check_constraints(
-        {'600000.SH': 0.10, '000001.SZ': 0.05},
+        {'600000.SH': 0.12, '000001.SZ': 0.05},
         {'600000.SH': '银行', '000001.SZ': '银行'},
         0.30,
         asof='2026-11-13',
@@ -66,10 +69,30 @@ def test_constraints_flag_name_and_turnover_violations():
     assert report.generated
     by_name = {item.name: item for item in report.items}
     assert by_name['单标的权重'].passed is False
-    assert by_name['单行业权重'].actual == pytest.approx(0.15)
+    assert by_name['单行业权重'].actual == pytest.approx(0.17)
     assert by_name['单行业权重'].limit == MAX_INDUSTRY_WEIGHT
     assert by_name['单标的权重'].limit == MAX_NAME_WEIGHT
     assert by_name['单边换手'].passed is False
+
+
+def test_limits_and_window_sourced_from_risk_engine():
+    """阈值/窗口同源：看板读数与回测闸门取自同一份 DEFAULT_RISK_LIMITS。"""
+    assert MAX_NAME_WEIGHT == DEFAULT_RISK_LIMITS['max_position_weight'] == 0.10
+    assert DRAWDOWN_ZERO == -DEFAULT_RISK_LIMITS['max_drawdown'] == -0.15
+    assert DRAWDOWN_WINDOW == int(DEFAULT_RISK_LIMITS['drawdown_window']) == 252
+
+
+def test_drawdown_sign_and_window_match_risk_engine():
+    """同一曲线、同一窗口：看板与回测回撤同号（负值）且数值一致。"""
+    from src.risk import Portfolio
+
+    closes = [100.0] * 10 + [90.0]
+    portfolio = Portfolio(
+        equity_curve=[{'date': f'd{index:03d}', 'equity': value}
+                      for index, value in enumerate(closes)])
+    bar = portfolio.current_drawdown(DRAWDOWN_WINDOW)
+    assert bar == pytest.approx(drawdown_from_peak(closes, DRAWDOWN_WINDOW))
+    assert bar == pytest.approx(-0.10)
 
 
 def test_missing_holdings_is_reported_not_estimated():

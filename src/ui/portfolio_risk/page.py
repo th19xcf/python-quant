@@ -209,8 +209,14 @@ class PortfolioRiskPage(QWidget):
         subtitle = QLabel(
             '趋势总分定档 → 波动率目标缩放 → 回撤制动，再叠加风险预算与持仓约束校验')
         subtitle.setObjectName('riskSubtitle')
+        proxy_note = QLabel(
+            '本页风险指标以沪深300（000300.SH）原始收盘代理组合净值计算，'
+            '与回测使用实际组合权益曲线的口径不同。')
+        proxy_note.setObjectName('riskSubtitle')
+        proxy_note.setWordWrap(True)
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
+        title_box.addWidget(proxy_note)
         header.addLayout(title_box)
         header.addStretch(1)
 
@@ -245,7 +251,7 @@ class PortfolioRiskPage(QWidget):
         hint = QLabel(
             '档位：总分 ≥+0.40 → 100%，+0.15~+0.40 → 60%，−0.15~+0.15 → 30%，≤−0.15 → 0%；'
             '波动率系数 = min(1, 15% / 20 日已实现波动)；'
-            '回撤制动：近 250 日高点回撤 −10% 起线性减仓、−15% 清仓。'
+            '回撤制动：近 252 日高点回撤 −10% 起线性减仓、−15% 清仓。'
             '三段相乘即为建议仓位，不加杠杆。')
         hint.setObjectName('riskSubtitle')
         hint.setWordWrap(True)

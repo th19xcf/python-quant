@@ -196,7 +196,11 @@ class DrawdownTracker:
             self._push(window, index, self._values[index])
 
     def current_drawdown(self, window: int) -> float | None:
-        """当前回撤 = (窗口内峰值 - 当前权益) / 窗口内峰值；非法时返回 None。"""
+        """当前回撤 = (当前权益 - 窗口内峰值) / 窗口内峰值；非法时返回 None。
+
+        统一为负值表达（与 ``portfolio_risk_state.drawdown_from_peak`` 同号），
+        避免同一组合在两个入口给出正负相反的回撤。
+        """
         if window <= 0 or not self._values:
             return None
         if window not in self._maxima:
@@ -207,7 +211,7 @@ class DrawdownTracker:
         peak = self._maxima[window][0][1]
         if peak <= 0:
             return None
-        return (peak - current) / peak
+        return (current - peak) / peak
 
 
 # ---------------------------------------------------------------------------
@@ -295,7 +299,7 @@ class Portfolio:
 
     def current_drawdown(self, window: int = 252) -> float | None:
         """
-        当前回撤 = (window 内峰值 - 当前权益) / window 内峰值。
+        当前回撤 = (当前权益 - window 内峰值) / window 内峰值，负值表达。
 
         equity_curve 乱序时先按日期排序再截尾，避免把早期峰值误当近期峰值。
         无法计算（曲线为空、window 非法、权益缺失/非有限/非正）时返回 None，
@@ -332,7 +336,7 @@ class Portfolio:
 
         peak = max(equities)
         current = equities[-1]
-        return (peak - current) / peak
+        return (current - peak) / peak
 
 
 # ---------------------------------------------------------------------------
@@ -431,7 +435,7 @@ class MaxIndustryWeight(Rule):
 
 class MaxDrawdownCircuit(Rule):
     """
-    组合回撤熔断：当前回撤 > limit 时停止开新仓（buy 一律拒，sell 放行）。
+    组合回撤熔断：当前回撤（负值）低于 -limit 时停止开新仓（buy 一律拒，sell 放行）。
     sell 放行是为了允许在熔断时主动减仓。
     默认值见 ``DEFAULT_RISK_LIMITS['max_drawdown']`` / ``['drawdown_window']``。
     """
@@ -454,10 +458,10 @@ class MaxDrawdownCircuit(Rule):
                 False,
                 '权益曲线缺失或数据非法，无法评估回撤，停止开新仓'
             )
-        if dd > self.limit:
+        if dd < -self.limit:
             return RuleResult(
                 False,
-                f"组合回撤 {dd:.2%} > 熔断上限 {self.limit:.2%}，停止开新仓"
+                f"组合回撤 {dd:.2%} 超过熔断上限 −{self.limit:.2%}，停止开新仓"
             )
         return RuleResult(True)
 

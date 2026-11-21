@@ -217,11 +217,25 @@ class TestMaxDrawdownCircuit:
             {'date': '2024-01-02', 'equity': 900_000.0},
         ]
         portfolio = Portfolio(cash=500_000.0, equity_curve=curve)
-        # 按日期排序后峰值 120w，当前 100w → 回撤 16.67% > 15%
-        assert portfolio.current_drawdown() == pytest.approx((1_200_000 - 1_000_000) / 1_200_000)
+        # 按日期排序后峰值 120w，当前 100w → 回撤 −16.67%（负值表达）低于 −15%
+        assert portfolio.current_drawdown() == pytest.approx(
+            -(1_200_000 - 1_000_000) / 1_200_000)
         rule = MaxDrawdownCircuit(0.15)
         result = rule.check(Order('000001.SZ', 'buy', 100, 100.0), portfolio)
         assert not result.passed
+
+    def test_drawdown_is_negative_expression(self):
+        """回撤统一负值：Portfolio 与 DrawdownTracker 同号同值，熔断按 −limit 判定。"""
+        from src.risk.rules import DrawdownTracker
+
+        curve = [
+            {'date': '2024-01-01', 'equity': 1_000_000.0},
+            {'date': '2024-01-02', 'equity': 900_000.0},
+        ]
+        tracker = DrawdownTracker()
+        tracker.sync(curve)
+        assert Portfolio(equity_curve=curve).current_drawdown(252) == pytest.approx(-0.10)
+        assert tracker.current_drawdown(252) == pytest.approx(-0.10)
 
 
 # ======================================================================

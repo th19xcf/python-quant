@@ -20,21 +20,26 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Mapping, Sequence
 
+from src.risk import DEFAULT_RISK_LIMITS
+
 #: 年化目标波动率（仓位缩放的分母）
 TARGET_VOL = 0.15
 #: 已实现波动率的滚动窗口（交易日）
 VOL_WINDOW = 20
 #: 交易日常数年化系数
 TRADING_DAYS = 252
-#: 回撤制动的观察窗口（交易日）：自窗口内高点起算
-DRAWDOWN_WINDOW = 250
-#: 回撤制动：自高点回撤达到该幅度开始减半
+#: 回撤制动的观察窗口（交易日）：与回测熔断同源，取 ``src.risk`` 的窗口常量。
+#: 原先此处独立写 250，比回测的 252 少 2 天，旧高点恰好落在倒数第 251/252 根
+#: 时两入口回撤读数会分叉；统一到 252（回测熔断窗口）后两侧同窗。
+DRAWDOWN_WINDOW = int(DEFAULT_RISK_LIMITS['drawdown_window'])
+#: 回撤制动：自高点回撤达到该幅度开始减半（本页独有的软制动起点）
 DRAWDOWN_HALF = -0.10
-#: 回撤制动：自高点回撤达到该幅度清仓
-DRAWDOWN_ZERO = -0.15
+#: 回撤制动：自高点回撤达到该幅度清仓（与回测熔断阈值同源，负值表达）
+DRAWDOWN_ZERO = -DEFAULT_RISK_LIMITS['max_drawdown']
 #: 约束上限
 MAX_INDUSTRY_WEIGHT = 0.25
-MAX_NAME_WEIGHT = 0.08
+#: 单标的权重上限与回测逐笔闸门同源（``MaxPositionWeight`` 默认值）
+MAX_NAME_WEIGHT = DEFAULT_RISK_LIMITS['max_position_weight']
 MAX_ONE_WAY_TURNOVER = 0.20
 
 
