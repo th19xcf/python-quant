@@ -7,6 +7,15 @@ UI 相关测试使用 Qt 离屏平台，避免依赖真实显示器。
 
 import importlib
 import os
+import warnings
+
+_external_qpa_platform = os.environ.get("QT_QPA_PLATFORM")
+if _external_qpa_platform and _external_qpa_platform.lower() != "offscreen":
+    warnings.warn(
+        f"检测到外部已设置 QT_QPA_PLATFORM={_external_qpa_platform!r}，"
+        "UI 测试可能跑在真实显示环境；如需离屏请显式设置 QT_QPA_PLATFORM=offscreen",
+        stacklevel=2,
+    )
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("PYQTGRAPH_QT_OPENGL", "software")

@@ -12,7 +12,7 @@ r"""
 特性：
 1. 基于Pydantic V2的类型验证
 2. 支持环境变量配置
-3. 支持配置热加载
+3. 支持配置热加载（仅对 get_config() 调用方生效；模块级 config 是导入期快照，不随热加载刷新）
 4. 详细的配置文档
 """
 
@@ -182,11 +182,12 @@ class LogSettings(BaseSettings):
     @field_validator('file_path')
     @classmethod
     def validate_file_path(cls, v: str) -> str:
-        """验证日志文件路径"""
-        # 确保日志目录存在
-        log_dir = Path(v).parent
-        if log_dir and not log_dir.exists():
-            log_dir.mkdir(parents=True, exist_ok=True)
+        """验证日志文件路径。
+
+        只做格式校验，不在构造期创建目录：Config 在模块导入期构造，
+        构造期写盘会让任意 import 都带副作用。目录由 setup_logger()
+        真正初始化日志时创建。
+        """
         return v
 
 
@@ -270,6 +271,10 @@ class ConfigManager:
     def start_watching(self, interval: int = 5) -> None:
         """开始监控配置文件变化
 
+        注意：热加载只替换本管理器内部的 Config 实例，模块级 ``config``
+        是导入期快照、不会刷新；只有调用 ``get_config()`` 的地方能看到新值。
+        直接 ``from src.utils.config import config`` 的模块需重启进程生效。
+
         Args:
             interval: 监控间隔（秒）
         """
@@ -305,6 +310,10 @@ class ConfigManager:
                         self._config = new_config
                         self._last_modified = current_mtime
                         logger.info("配置文件已更新，热加载成功")
+                        logger.warning(
+                            "配置热加载仅替换 ConfigManager 内部实例：模块级 `config` 是导入期快照，不会刷新；"
+                            "只有调用 `get_config()` 的代码能看到新值，直接 import `config` 的模块需重启进程"
+                        )
                     # 兜底理由：配置热加载失败保留旧配置
                     except Exception as e:  # noqa: BLE001
                         logger.warning(f"配置文件更新失败: {e}")
@@ -422,7 +431,11 @@ CONFIG_DOCUMENTATION = r"""
 
 ## 配置热加载
 
-系统支持配置热加载功能，当修改 `.env` 文件后，配置会自动重新加载，无需重启应用。
+调用 `config_manager.start_watching()` 后，修改 `.env` 会触发重新加载。
+
+**限制**：热加载只替换 `ConfigManager` 内部的配置实例，仅对通过
+`get_config()` 取配置的代码生效。模块级 `config`（`from src.utils.config import config`）
+是导入期快照，**不会**随热加载刷新，这些模块需要重启进程才能看到新配置。
 
 ## 配置验证
 
