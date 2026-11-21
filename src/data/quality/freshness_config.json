@@ -639,6 +639,41 @@
         }
       },
       "note": "行业分类变化慢，允许 1 个交易日冗余。计数取 industry_history.parquet 内 as_of 最大那一层的去重 code 数（latest_as_of_distinct），不是全历史并集。"
+    },
+    {
+      "key": "stock_margin_detail",
+      "label": "个股融资融券明细",
+      "category": "资金",
+      "freshness_field": "trade_date",
+      "source": {
+        "kind": "latest_glob_max",
+        "path_glob": "meta/margin_detail/margin_detail_*.parquet",
+        "column": "trade_date"
+      },
+      "cadence": {
+        "unit": "trading_day",
+        "expected_interval": 1,
+        "warn_multiple": 1,
+        "critical_multiple": 3,
+        "label": "每交易日"
+      },
+      "coverage": {
+        "count": {
+          "kind": "latest_glob_distinct",
+          "path_glob": "meta/margin_detail/margin_detail_*.parquet",
+          "column": "ts_code"
+        },
+        "expected": {
+          "kind": "latest_as_of_distinct",
+          "path": "meta/st_status/st_status_history.parquet",
+          "as_of_column": "as_of",
+          "column": "code"
+        },
+        "min_ratio": 0.5,
+        "critical_ratio": 0.4,
+        "why": "两融标的只占上市股票约 60%（4490/约 5900），不是全市场口径，按标的口径下调阈值"
+      },
+      "note": "按自然月分区，最新文件即当月；新鲜度取当月文件内 trade_date 最大值，覆盖取当月文件内 ts_code 去重数。"
     }
   ]
 }
