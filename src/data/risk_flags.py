@@ -35,6 +35,7 @@ from loguru import logger
 
 from src.data.atomic_write import write_parquet_atomic
 from src.data.snapshot_manifest import write_snapshot_manifest
+from src.utils.dates import as_date
 
 ST = 'st'
 NON_ST = 'non_st'
@@ -47,22 +48,6 @@ SOURCE_MISSING = 'missing'
 
 _ST_PREFIX = re.compile(r'^(S\*ST|SST|\*ST|ST)')
 _SNAPSHOT_CACHE: dict[str, tuple[int, pl.DataFrame]] = {}
-
-
-def _as_date(value: Any) -> date | None:
-    if value is None or value == '':
-        return None
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    text = str(value)
-    for fmt in ('%Y-%m-%d', '%Y%m%d'):
-        try:
-            return datetime.strptime(text[:10] if '-' in text else text, fmt).date()
-        except ValueError:
-            continue
-    return None
 
 
 def status_from_name(name: Any) -> str:
@@ -107,7 +92,7 @@ def build_snapshot(
             仅用于本地无名称的标的，``status='D'`` 一律判 ``unknown``。
         codes: 显式标的列表（测试用）；缺省读取本地列存 stock 全量。
     """
-    snapshot_date = _as_date(as_of) or date.today()
+    snapshot_date = as_date(as_of) or date.today()
     root = Path(store_root)
     names = _load_names(Path(names_path) if names_path else root / 'meta' / 'names.json')
     if not names and not db_basic:
@@ -257,7 +242,7 @@ def load_snapshot(
     store_root: Path | str, as_of: Any = None,
 ) -> tuple[pl.DataFrame | None, date | None]:
     """取 ``as_of`` 不晚于目标日的最大一层快照；早于首层返回 ``(None, None)``。"""
-    target = _as_date(as_of) or date.today()
+    target = as_date(as_of) or date.today()
     frame = _read_history(store_root)
     if frame is None or frame.height == 0:
         return None, None
@@ -347,8 +332,8 @@ def get_st_intervals(
     """
     from src.data.services.st_status_service import normalize_ts_code  # noqa: PLC0415
 
-    start_day = _as_date(start)
-    end_day = _as_date(end)
+    start_day = as_date(start)
+    end_day = as_date(end)
     if store_root is None:
         from src.data.local_store.store import resolve_store_root  # noqa: PLC0415
         from src.utils.config import get_config  # noqa: PLC0415

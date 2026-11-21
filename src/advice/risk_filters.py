@@ -42,19 +42,6 @@ ST_UNKNOWN_POLICY_KEEP = 'keep'
 ST_UNKNOWN_POLICY_DROP = 'drop'
 
 
-def _as_date(value: Any) -> date | None:
-    if value is None or value == '':
-        return None
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    try:
-        return date.fromisoformat(str(value)[:10])
-    except ValueError:
-        return None
-
-
 @dataclass
 class RiskVerdict:
     """单标的在信号日的风险判定。"""

@@ -311,6 +311,7 @@ def _default_store_root() -> Path:
         return DEFAULT_ROOT
 
 
+# 刻意保留：与 utils.dates.as_date 不同——None/非法串/斜杠/空格抛 ValueError（选池 CLI 依赖报错），故不合并。
 def _as_date(value: Any) -> date:
     if isinstance(value, datetime):
         return value.date()

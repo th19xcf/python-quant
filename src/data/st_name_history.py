@@ -289,6 +289,7 @@ def _csv_entry(path: Path, root: Path) -> dict[str, Any]:
     }
 
 
+# 刻意保留：与 utils.dates.as_date 不同——唯一接受 YYYY/MM/DD（东财/公告源容错），故不合并。
 def _as_date(value: Any) -> date | None:
     if value is None or value == '':
         return None

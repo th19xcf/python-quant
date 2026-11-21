@@ -127,6 +127,7 @@ def load_name_history(store_root: Path | str) -> pl.DataFrame:
     return pl.read_parquet(path)
 
 
+# 刻意保留：与 utils.dates.as_date 不同——None/空串返回 None，非法串经 strptime 回退抛 ValueError（混合语义），故不合并。
 def _as_date(value: Any) -> date | None:
     """把 ``date`` / ``datetime`` / ``YYYY-MM-DD`` / ``YYYYMMDD`` 归一成 ``date``。"""
     if value is None:

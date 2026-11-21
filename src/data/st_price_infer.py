@@ -97,6 +97,7 @@ from loguru import logger
 from src.data import st_history
 from src.data.atomic_write import write_parquet_atomic
 from src.risk.execution_rules import ExecutionRules
+from src.utils.dates import as_date
 
 FLAG_SUSPECTED = 'suspected_st'
 SOURCE_PRICE = 'price_inference'
@@ -404,7 +405,7 @@ def _infer_code(ts_code: str, frame: pl.DataFrame | None, counters: dict[str, in
         return []
     dates: list[date] = []
     for value in df['date'].to_list():
-        day = value if isinstance(value, date) else st_history._as_date(value)  # noqa: SLF001
+        day = value if isinstance(value, date) else as_date(value)  # noqa: SLF001
         dates.append(day if day is not None else date(1990, 1, 1))
     runs = _limit_runs(ts_code, dates)
     if not runs:
@@ -702,8 +703,8 @@ def _miss_reasons(missed: list[dict[str, Any]], store: Any) -> dict[str, int]:
     cache: dict[str, pl.DataFrame | None] = {}
     for item in missed:
         code = item['ts_code']
-        start = st_history._as_date(item['start'])  # noqa: SLF001
-        end = st_history._as_date(item['end']) or date.today()  # noqa: SLF001
+        start = as_date(item['start'])  # noqa: SLF001
+        end = as_date(item['end']) or date.today()  # noqa: SLF001
         if start is None:
             continue
         if _regular_limit(code, start) != 0.10:
@@ -873,7 +874,7 @@ def _early_fill(suspected: pl.DataFrame,
 
 def suspected_status_at(store_root: Path | str, code: str, as_of: Any) -> st_history.StHistoryResult | None:
     """疑似区间命中返回 ST 结果（``source=price_inference``），否则 ``None``。"""
-    day = st_history._as_date(as_of)  # noqa: SLF001
+    day = as_date(as_of)  # noqa: SLF001
     frame = load_price_inferred(store_root)
     if day is None or frame is None or frame.height == 0:
         return None
@@ -893,8 +894,8 @@ def suspected_status_at(store_root: Path | str, code: str, as_of: Any) -> st_his
 def suspected_intervals_for_backtest(store_root: Path | str, codes: Iterable[str],
                                      start: Any, end: Any) -> dict[str, list[dict[str, Any]]]:
     """导出疑似区间（``is_suspected=True``），与确证区间结构同构、互不混用。"""
-    start_day = st_history._as_date(start) or date(1990, 1, 1)  # noqa: SLF001
-    end_day = st_history._as_date(end) or date.today()  # noqa: SLF001
+    start_day = as_date(start) or date(1990, 1, 1)  # noqa: SLF001
+    end_day = as_date(end) or date.today()  # noqa: SLF001
     frame = load_price_inferred(store_root)
     if frame is None or frame.height == 0:
         return {}
@@ -944,10 +945,10 @@ def samples(store_root: Path | str, pairs: list[tuple[str, str, str]] | None = N
         dates: list[date] = []
         if frame is not None and 'date' in frame.columns:
             values = [value if isinstance(value, date) else
-                      st_history._as_date(value) for value in frame['date'].to_list()]  # noqa: SLF001
+                      as_date(value) for value in frame['date'].to_list()]  # noqa: SLF001
             dates = [day for day in values if day is not None]
-        c_start_day = st_history._as_date(c_start)  # noqa: SLF001
-        c_end_day = st_history._as_date(c_end)  # noqa: SLF001
+        c_start_day = as_date(c_start)  # noqa: SLF001
+        c_end_day = as_date(c_end)  # noqa: SLF001
         hits = [] if suspected is None else [
             row for row in suspected.filter(
                 (pl.col('ts_code') == code) & pl.col('excluded_s_share').not_()).to_dicts()

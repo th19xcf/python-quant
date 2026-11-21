@@ -81,6 +81,7 @@ def _resolve_store_root(store_root: str | Path | None) -> Path:
     return resolve_store_root(get_config())
 
 
+# 刻意保留：与 utils.dates.as_date 不同——None/非法串抛 ValueError 且先 strip（调用方按参数错误处理），故不合并。
 def _as_date(value: Any) -> date:
     if isinstance(value, datetime):
         return value.date()

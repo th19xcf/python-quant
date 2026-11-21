@@ -222,7 +222,7 @@ class AdviceEngine:
 
         loader = LocalPanelLoader(
             _StoreConfig(self.store_root), min_rows=self.config.min_history_rows)
-        as_of_date = _as_date(as_of)
+        as_of_date = as_date(as_of)
         end = as_of_date or date.today()
         start = loader.default_start(end, max_lookback)
         universe = list(codes) if codes is not None else list_local_stock_codes(
@@ -843,11 +843,6 @@ class AdviceEngine:
         notes.append('仅作风险观察，不建议建仓')
         common['risk_notes'] = notes
         return Recommendation(**common)
-
-
-def _as_date(value: Any) -> date | None:
-    """统一日期归一；原实现会把 datetime 当 date 原样返回（类型不一致）。"""
-    return as_date(value)
 
 
 class _StoreConfig:

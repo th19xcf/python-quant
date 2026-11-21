@@ -21,6 +21,7 @@ from loguru import logger
 
 from src.data.local_store.store import LocalQuoteStore, resolve_store_root
 from src.quant.learning.config import MIN_HISTORY_ROWS
+from src.utils.dates import as_date
 
 _PANEL_COLUMNS = (
     'date', 'ts_code', 'open', 'high', 'low', 'close', 'volume', 'amount',
@@ -52,22 +53,6 @@ class LoadReport:
             'degraded': len(self.degraded),
             'degraded_examples': self.degraded[:5],
         }
-
-
-def _as_date(value: Any) -> date | None:
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    text = str(value)
-    for fmt in ('%Y-%m-%d', '%Y%m%d'):
-        try:
-            return datetime.strptime(text[:10] if '-' in text else text, fmt).date()
-        except ValueError:
-            continue
-    return None
 
 
 def _normalize_frame(frame: pl.DataFrame, ts_code: str) -> pl.DataFrame:
@@ -125,8 +110,8 @@ class LocalPanelLoader:
 
     def load(self, codes: Iterable[str], start: Any, end: Any) -> tuple[pl.DataFrame, LoadReport]:
         """加载多标的日线；缺文件/历史过短的标的跳过并统计。"""
-        start_dt = _as_date(start)
-        end_dt = _as_date(end)
+        start_dt = as_date(start)
+        end_dt = as_date(end)
         report = LoadReport()
         codes = list(dict.fromkeys(str(code).upper() for code in codes if code))
         report.requested = len(codes)

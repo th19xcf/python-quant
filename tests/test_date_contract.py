@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """日期归一化契约测试（网页模型第二轮建议第 3 项·阶段 A）。
 
-锁定两件事：
+锁定三件事：
 1. `src.utils.dates.as_date` 对全部日期/时间戳表示的行为契约；
-2. 19 份存量 `_as_date` 副本已全部收敛到统一真源，此后**不允许出现任何
-   新的解析差异**（含 P0-1 修过的 cost_model np.datetime64 静默失效）。
+2. 存量 `_as_date` 副本不再出现新的解析差异（含 P0-1 修过的
+   cost_model np.datetime64 静默失效）；
+3. `src` 下 `def _as_date` 的实现集合与数量被锁定：8 处已归并到统一真源，
+   仅保留 5 处刻意特殊语义（见各文件 `# 刻意保留` 注释），新增副本即失败。
 """
 from __future__ import annotations
 
+import ast
 import importlib
 from datetime import date, datetime
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -45,20 +49,44 @@ CORE_MODULES = (
     "src.backtest.costs.cost_model",
     "src.data.quality.tradable_universe",
     "src.data.local_store.store",
-    "src.data.st_history",
 )
 
+#: 仍有独立 `_as_date` 实现的模块（本单已把 advice.* / events / industry /
+#: risk_flags / st_history 归并到 as_date，故不再列入）。
 ALL_COPIES = (
-    "src.advice.data", "src.advice.pipeline", "src.advice.regime",
-    "src.advice.risk_filters", "src.backtest.costs.cost_model",
-    "src.backtest.engine.corporate_actions", "src.data.events",
-    "src.data.industry", "src.data.local_store.fund_factors",
+    "src.backtest.costs.cost_model",
+    "src.backtest.engine.corporate_actions", "src.data.local_store.fund_factors",
     "src.data.local_store.share_capital", "src.data.local_store.store",
     "src.data.quality.anomalies", "src.data.quality.clean_set",
-    "src.data.quality.tradable_universe", "src.data.risk_flags",
+    "src.data.quality.tradable_universe",
     "src.data.services.breadth_service", "src.data.services.stock_daily_fill",
-    "src.data.st_history", "src.data.st_name_history",
+    "src.data.st_name_history",
 )
+
+#: 统一后的锁定值：19 个文件各保留 1 个 `def _as_date`（其中
+#: `src/data/managers/data_updater.py` 是函数内局部实现）。
+EXPECTED_AS_DATE_FILES = frozenset({
+    "src/backtest/costs/cost_model.py",
+    "src/backtest/engine/corporate_actions.py",
+    "src/core/usecases/run_backtest.py",
+    "src/data/industry_universe.py",
+    "src/data/local_store/expectation.py",
+    "src/data/local_store/fund_factors.py",
+    "src/data/local_store/share_capital.py",
+    "src/data/local_store/store.py",
+    "src/data/managers/data_updater.py",
+    "src/data/name_consistency.py",
+    "src/data/quality/anomalies.py",
+    "src/data/quality/clean_set.py",
+    "src/data/quality/stale_status.py",
+    "src/data/quality/tradable_universe.py",
+    "src/data/services/breadth_service.py",
+    "src/data/services/stock_daily_fill.py",
+    "src/data/st_name_history.py",
+    "src/data/trading_calendar.py",
+    "src/data/universe_filter.py",
+})
+EXPECTED_AS_DATE_COUNT = 19
 
 
 @pytest.mark.parametrize("label,value", CONTRACT_CASES)
@@ -116,3 +144,25 @@ def test_no_new_date_parser_divergence():
     assert ("src.backtest.costs.cost_model", "np.datetime64") not in divergences
     core_bad = {(m, k) for m, k in divergences if m in CORE_MODULES}
     assert not core_bad, f"PIT/ST/成本核心副本存在日期解析差异: {sorted(core_bad)}"
+
+
+def test_as_date_copies_are_locked():
+    """`src` 下 `def _as_date` 的数量与文件集合锁定；新增副本即失败。
+
+    与「技术指标双口径」守卫同一思路：统一只能收敛到 `src.utils.dates.as_date`，
+    不允许再复制一份。刻意保留的 5 处（universe_filter / industry_universe /
+    name_consistency / st_name_history / trading_calendar）已在源码里用
+    `# 刻意保留` 标明差异与原因。
+    """
+    root = Path(__file__).resolve().parents[1]
+    found: list[tuple[str, int]] = []
+    for path in sorted((root / "src").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "_as_date":
+                found.append((path.relative_to(root).as_posix(), node.lineno))
+    files = {rel for rel, _ in found}
+    details = "\n".join(f"  {rel}:{line}" for rel, line in found)
+    assert files == EXPECTED_AS_DATE_FILES and len(found) == EXPECTED_AS_DATE_COUNT, (
+        "src 下的 `def _as_date` 与锁定清单不一致（新副本请改用 "
+        "src.utils.dates.as_date）:\n" + details)

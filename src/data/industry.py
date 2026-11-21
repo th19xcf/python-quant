@@ -27,6 +27,7 @@ from loguru import logger
 
 from src.data.atomic_write import write_parquet_atomic
 from src.data.snapshot_manifest import write_snapshot_manifest
+from src.utils.dates import as_date
 
 UNKNOWN = 'unknown'
 SOURCE_TDX = 'tdx_hq_cache'
@@ -43,22 +44,6 @@ def resolve_tdx_cache_dir(tdx_data_path: str | Path) -> Path:
     """由 ``vipdoc`` 路径推出 ``T0002/hq_cache`` 目录。"""
     root = Path(str(tdx_data_path))
     return root.parent / 'T0002' / 'hq_cache'
-
-
-def _as_date(value: Any) -> date | None:
-    if value is None or value == '':
-        return None
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    text = str(value)
-    for fmt in ('%Y-%m-%d', '%Y%m%d'):
-        try:
-            return datetime.strptime(text[:10] if '-' in text else text, fmt).date()
-        except ValueError:
-            continue
-    return None
 
 
 def parse_tdxhy(path: Path) -> dict[str, str]:
@@ -118,7 +103,7 @@ def build_snapshot(
     """
     from src.data.local_store.store import LocalQuoteStore  # noqa: PLC0415
 
-    snapshot_date = _as_date(as_of) or date.today()
+    snapshot_date = as_date(as_of) or date.today()
     cache = Path(cache_dir)
     mapping = parse_tdxhy(cache / 'tdxhy.cfg')
     names = parse_industry_names([cache / name for name in _NAME_FILES])
@@ -237,7 +222,7 @@ def load_snapshot(
     store_root: Path | str, as_of: Any = None,
 ) -> tuple[pl.DataFrame | None, date | None]:
     """取 ``as_of`` 不晚于目标日的最大一层行业快照；无可用层返回 ``(None, None)``。"""
-    target = _as_date(as_of) or date.today()
+    target = as_date(as_of) or date.today()
     frame = _read_history(store_root)
     if frame is None or frame.height == 0:
         return None, None

@@ -30,6 +30,7 @@ import polars as pl
 from loguru import logger
 
 from src.data.atomic_write import write_parquet_atomic
+from src.utils.dates import as_date
 
 RISK_EVENT_COOLDOWNS: dict[str, int] = {
     '并购重组': 20,
@@ -132,20 +133,6 @@ def coverage_path(store_root: Path | str) -> Path:
     return Path(store_root) / 'meta' / 'events' / 'coverage.json'
 
 
-def _as_date(value: Any) -> date | None:
-    if value is None or value == '':
-        return None
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    text = str(value)
-    try:
-        return datetime.fromisoformat(text.replace('Z', '')).date()
-    except ValueError:
-        return None
-
-
 def _to_ts_code(stock_code: Any) -> str | None:
     from src.utils.code_converter import parse_code  # noqa: PLC0415
 
@@ -176,8 +163,8 @@ def normalize_announcements(
     missing = need - set(frame.columns)
     if missing:
         raise ValueError(f'原始公告表缺少列: {sorted(missing)}')
-    start_day = _as_date(start)
-    end_day = _as_date(end)
+    start_day = as_date(start)
+    end_day = as_date(end)
     default_source = str(source).strip() if source else ''
 
     rows: list[dict[str, Any]] = []
@@ -493,8 +480,8 @@ def _write_coverage(store_root: Path | str, frame: pl.DataFrame,
                     complete: bool,
                     coverage_start: Any = None,
                     coverage_end: Any = None) -> dict[str, Any]:
-    start_day = _as_date(coverage_start)
-    end_day = _as_date(coverage_end)
+    start_day = as_date(coverage_start)
+    end_day = as_date(coverage_end)
     # 保留既有声明里的附加字段（如分片审计口径），只覆盖本次能计算出的键，
     # 避免一次入库把人工补充的可回溯性说明整体冲掉。
     path = coverage_path(store_root)
@@ -527,8 +514,8 @@ def _write_coverage(store_root: Path | str, frame: pl.DataFrame,
     else:
         data_start = frame['publish_time'].min()
         data_end = frame['publish_time'].max()
-        start_value = start_day or _as_date(data_start)
-        end_value = end_day or _as_date(data_end)
+        start_value = start_day or as_date(data_start)
+        end_value = end_day or as_date(data_end)
         info = {
             'source': recomputed,
             'start': start_value.isoformat() if start_value else None,
@@ -704,7 +691,7 @@ def cooldown_range(publish_time: Any, trading_dates: Sequence[date],
                    days: int) -> tuple[date, date] | None:
     """返回冷却区间 ``[T+1, T+N]``（按交易日计）；日历不足时返回 ``None``。"""
     published = publish_time.date() if isinstance(publish_time, datetime) \
-        else _as_date(publish_time)
+        else as_date(publish_time)
     if published is None or days <= 0:
         return None
     index = bisect_right(list(trading_dates), published)
@@ -748,18 +735,18 @@ class EventStore:
         from src.data.trading_calendar import get_calendar  # noqa: PLC0415
 
         calendar = get_calendar(self.store_root)
-        lo = _as_date(start) or (calendar.dates[0] if calendar.dates else date.today())
-        hi = _as_date(end) or date.today()
+        lo = as_date(start) or (calendar.dates[0] if calendar.dates else date.today())
+        hi = as_date(end) or date.today()
         return calendar.between(lo, hi)
 
     @property
     def covered_range(self) -> tuple[date | None, date | None]:
-        start = _as_date(self.coverage.get('start'))
-        end = _as_date(self.coverage.get('end'))
+        start = as_date(self.coverage.get('start'))
+        end = as_date(self.coverage.get('end'))
         return start, end
 
     def covers(self, as_of: Any) -> bool:
-        day = _as_date(as_of)
+        day = as_date(as_of)
         start, end = self.covered_range
         if not self.available or day is None or start is None or end is None:
             return False
@@ -792,7 +779,7 @@ class EventStore:
     def status(self, code: str, as_of: Any,
                trading_dates: Sequence[date]) -> dict[str, Any]:
         """单标的冷却状态：``cooling`` / ``clear`` / ``unknown``。"""
-        day = _as_date(as_of)
+        day = as_date(as_of)
         base: dict[str, Any] = {
             'status': STATUS_UNKNOWN, 'event_type': '', 'publish_date': '',
             'cooldown_until': '', 'event_id': '', 'reason': '',

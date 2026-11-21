@@ -78,9 +78,9 @@ def load_index_daily(
         pl.col('close').cast(pl.Float64),
     ).sort('date')
     if start is not None:
-        out = out.filter(pl.col('date') >= _as_date(start))
+        out = out.filter(pl.col('date') >= as_date(start, strict=True))
     if end is not None:
-        out = out.filter(pl.col('date') <= _as_date(end))
+        out = out.filter(pl.col('date') <= as_date(end, strict=True))
     return out
 
 
@@ -102,18 +102,10 @@ def load_breadth_snapshot(
         raise FileNotFoundError(f'广度快照不存在：{path}')
     frame = pl.read_parquet(path).sort('trade_date')
     if start is not None:
-        frame = frame.filter(pl.col('trade_date') >= _as_date(start))
+        frame = frame.filter(pl.col('trade_date') >= as_date(start, strict=True))
     if end is not None:
-        frame = frame.filter(pl.col('trade_date') <= _as_date(end))
+        frame = frame.filter(pl.col('trade_date') <= as_date(end, strict=True))
     return frame
-
-
-def _as_date(value: str | date) -> date:
-    """保持原有严格语义（无法解析时抛错），但 datetime 必须归一为 date。"""
-    parsed = as_date(value, strict=True)
-    if parsed is None:
-        raise ValueError(f"无法解析为日期: {value!r}")
-    return parsed
 
 
 # ----------------------------------------------------------------------

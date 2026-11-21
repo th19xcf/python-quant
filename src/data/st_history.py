@@ -57,6 +57,7 @@ from loguru import logger
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic
 from src.data.staging import staging_dir_for_store
 from src.utils.dataframe_columns import resolve_date_column
+from src.utils.dates import as_date
 
 FLAG_ST = 'st'
 FLAG_STAR = '*st'
@@ -184,7 +185,6 @@ _CLOSURE_SCHEMA = {'ts_code': pl.Utf8, 'close_date': pl.Date, 'evidence': pl.Utf
 
 _INTERVAL_CACHE: dict[str, tuple[int, pl.DataFrame]] = {}
 _COVERAGE_CACHE: dict[str, tuple[int, pl.DataFrame]] = {}
-
 
 
 # ----------------------------------------------------------------------
@@ -1555,22 +1555,6 @@ class StHistoryResult:
     suspected: bool = False
 
 
-def _as_date(value: Any) -> date | None:
-    if value is None or value == '':
-        return None
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    text = str(value)
-    for fmt in ('%Y-%m-%d', '%Y%m%d'):
-        try:
-            return datetime.strptime(text[:10], fmt).date()
-        except ValueError:
-            continue
-    return None
-
-
 def _normalize(code: str) -> str:
     text = str(code).strip().upper()
     if '.' in text:
@@ -1586,7 +1570,7 @@ def status_at(store_root: Path | str, code: str, as_of: Any, *,
     ``suspected=True``, ``source='price_inference'``）。默认只认确证区间，
     回测风险过滤走默认值。
     """
-    day = _as_date(as_of)
+    day = as_date(as_of)
     if day is None:
         return StHistoryResult(STATUS_UNKNOWN, reason='bad_date')
     target = _normalize(code)
@@ -1641,8 +1625,8 @@ def intervals_for_backtest(store_root: Path | str, codes: Iterable[str],
     区间外但落在可信窗口内的空档，显式补 ``is_st=False`` 段，让回测把
     「已知非 ST」与「未知」区分开；窗口外不补，保持 unknown。
     """
-    start_day = _as_date(start) or date(1990, 1, 1)
-    end_day = _as_date(end) or date.today()
+    start_day = as_date(start) or date(1990, 1, 1)
+    end_day = as_date(end) or date.today()
     intervals = load_intervals(store_root)
     coverage = load_coverage(store_root)
     if intervals is None or coverage is None:
@@ -1874,7 +1858,7 @@ def _trading_dates(root: Path, start: date, end: date) -> list[date]:
         column = resolve_date_column(frame.columns)
         if column is None:
             return []
-        values = [value if isinstance(value, date) else _as_date(value)
+        values = [value if isinstance(value, date) else as_date(value)
                   for value in frame[column].to_list()]
         return [day for day in values if day is not None]
 
@@ -1970,7 +1954,7 @@ def verify(store_root: Path | str, *, output_dir: Path | str = Path('logs/st_his
         result['sz_cross_validation'] = _sz_cross_validation(root, sz_raw, notices)
         pl.DataFrame(result['sz_cross_validation']['samples']).write_csv(
             out / 'sz_cross_validation_samples.csv')
-    first_cov = _as_date(coverage['coverage_start'].min())
+    first_cov = as_date(coverage['coverage_start'].min())
     start = max(first_cov if first_cov is not None else date(2015, 1, 1), date(2015, 1, 1))
     calendar = _trading_dates(root, start, date.today())
     if calendar:

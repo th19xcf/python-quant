@@ -77,6 +77,7 @@ HOLIDAY_CONFIG = Path(__file__).parent / 'quality' / 'freshness_config.json'
 _CACHE: dict[tuple[str, tuple[int, ...], int, str], TradingCalendar] = {}
 
 
+# 刻意保留：与 utils.dates.as_date 不同——np.datetime64/非字符串一律返回 None且不 strip（映射输入口径），故不合并。
 def _as_date(value: Any) -> date | None:
     if isinstance(value, datetime):
         return value.date()
