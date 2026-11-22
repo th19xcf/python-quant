@@ -231,7 +231,8 @@ def test_stress_window_fill_constraints(window: str) -> None:
         f'{label} 窗口成交 {checked} 笔，但只有 {limit_checked} 笔完成涨跌停比对')
 
     # 窗口内一笔都没成交时不做降级断言：三条约束仍然成立（空集），
-    # 但要在用例报告里可见「本窗口未触发撮合」。
+    # 但本窗口不构成有效样本，必须显式标为 xfail 让「无成交」可见，
+    # 不能用 skip 静默通过。
     if checked == 0:
-        pytest.skip(f'{label} {desc} 窗口内未触发成交（策略在 {start}~{end} 无信号翻转），'
-                    f'本窗口不构成有效样本（全样本 {len(trades)} 笔均在该区间外）')
+        pytest.xfail(f'{label} {desc} 窗口内未触发成交（策略在 {start}~{end} 无信号翻转），'
+                     f'本窗口不构成有效样本（全样本 {len(trades)} 笔均在该区间外）')

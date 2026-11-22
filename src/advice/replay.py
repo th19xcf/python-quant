@@ -41,6 +41,7 @@ from src.advice.turnover import (
     update_holding,
 )
 from src.advice.universe import build_meta, list_local_stock_codes, load_name_map
+from src.data.local_store.store import read_parquet_frame
 from src.risk.execution_rules import ExecutionRules
 from src.utils.config import get_config
 
@@ -566,7 +567,7 @@ class _ReplayTier:
         if not path.is_file():
             return {'path': str(path), 'rows': 0, 'last_ex_date': None}
         try:
-            frame = pl.read_parquet(path, columns=['ex_date'])
+            frame = read_parquet_frame(path, columns=['ex_date'])
         except (OSError, pl.exceptions.PolarsError):
             return {'path': str(path), 'rows': 0, 'last_ex_date': None}
         return {

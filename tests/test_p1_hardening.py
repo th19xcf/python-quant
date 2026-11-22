@@ -84,11 +84,14 @@ class TestPluginPathGuard:
 class TestIndicatorLazyRegistration:
     """P1-5：指标注册改为惰性 + 后台预热"""
 
-    def test_manager_construction_does_not_register(self):
+    def test_manager_construction_does_not_register(self, monkeypatch):
         import src.tech_analysis.indicator_manager as im
 
-        if im._indicators_registered:
-            pytest.skip('其他用例已触发指标注册')
+        # 注册状态是模块级全局量：全量跑时前面的用例通常已通过 calculate_indicator
+        # 触发 ensure_indicators_registered，直接读全局标志会因执行顺序而 skip。
+        # 这里在用例内把标志复位为「未注册」，由 monkeypatch 在结束后还原，
+        # 使单跑与全量跑断言同一件事：构造函数不得触发注册。
+        monkeypatch.setattr(im, '_indicators_registered', False)
         im.IndicatorManager()
         assert not im._indicators_registered
 

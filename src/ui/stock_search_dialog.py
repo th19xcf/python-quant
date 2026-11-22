@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.data.local_store.paths import resolve_store_root
+from src.data.local_store.store import read_parquet_frame
 from src.ui.table_sizing import apply_content_widths, use_interactive_columns
 
 #: 基金 ``fund_basic.fund_type`` → 展示用类型标签；未知类型保留原值，不猜
@@ -43,7 +44,7 @@ def _read_meta_frame(meta_dir, file_name):
         logger.warning(f"本地名录不存在: {path}")
         return pl.DataFrame()
     try:
-        return pl.read_parquet(path)
+        return read_parquet_frame(path)
     except (OSError, ValueError, PolarsError) as exc:
         logger.warning(f"读取本地名录失败 {path}: {exc}")
         return pl.DataFrame()

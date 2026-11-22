@@ -94,9 +94,9 @@ from typing import Any, Iterable
 import polars as pl
 from loguru import logger
 
+from src.core.market_rules import ExecutionRules
 from src.data import st_history
 from src.data.atomic_write import write_parquet_atomic
-from src.risk.execution_rules import ExecutionRules
 from src.utils.dates import as_date
 
 FLAG_SUSPECTED = 'suspected_st'

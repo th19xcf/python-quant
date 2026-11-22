@@ -134,6 +134,53 @@ VARIANTS = [
 KEYS = [v[0] for v in VARIANTS]
 NH = len(HORIZONS)
 
+# ---------------------------------------------------------------- 等频模式 ----
+# v3 新增：等频（quantile）阈值模式与筹码集中度信号。
+# 变体名约定： eq_<指标>_lo/hi = 当日横截面后/前 10% 分位
+#              rl_<指标>_lo/hi = 个股过去 252 日滚动后/前 10% 分位
+# 默认仍是固定阈值（--mode fixed），等价频结果与原 65 变体口径互不影响。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from chip_signals import compute_chip_series  # noqa: E402
+
+OUT_EQ = os.path.join(ROOT, "work", "等频与集中度_2026-11-21")
+EQ_WINDOW = 252
+EQ_MIN_PERIODS = 126
+EQ_Q = (0.10, 0.90)
+EQ_MIN_N_DAY = 30                  # 当日横截面最少股票数，不足则不给阈值
+
+EQ_IND_KEYS = ["rsi", "bias12", "lb", "mfi", "chip_main", "chip_profit", "chip_width"]
+EQ_IND_LABEL = {
+    "rsi": "RSI14", "bias12": "BIAS12", "lb": "量比", "mfi": "MFI14",
+    "chip_main": "筹码主峰占比", "chip_profit": "获利盘比例", "chip_width": "90%成本区间宽度",
+}
+EQ_IND_GROUP = {
+    "rsi": "RSI", "bias12": "摆动", "lb": "量价", "mfi": "量价",
+    "chip_main": "筹码", "chip_profit": "筹码", "chip_width": "筹码",
+}
+EQ_VARIANTS = []
+for _n in EQ_IND_KEYS:
+    EQ_VARIANTS.append((f"eq_{_n}_lo", "买", EQ_IND_GROUP[_n], f"{EQ_IND_LABEL[_n]} 当日横截面后10%"))
+    EQ_VARIANTS.append((f"eq_{_n}_hi", "卖", EQ_IND_GROUP[_n], f"{EQ_IND_LABEL[_n]} 当日横截面前10%"))
+    EQ_VARIANTS.append((f"rl_{_n}_lo", "买", EQ_IND_GROUP[_n], f"{EQ_IND_LABEL[_n]} 个股252日滚动后10%"))
+    EQ_VARIANTS.append((f"rl_{_n}_hi", "卖", EQ_IND_GROUP[_n], f"{EQ_IND_LABEL[_n]} 个股252日滚动前10%"))
+FIXED_EQ_VARIANTS = [
+    ("rsi_lt30", "买", "RSI", "RSI14<30（固定阈值）"),
+    ("rsi_gt70", "卖", "RSI", "RSI14>70（固定阈值）"),
+    ("bias12_ltm10", "买", "摆动", "BIAS12<−10%（固定阈值）"),
+    ("bias12_gt10", "卖", "摆动", "BIAS12>+10%（固定阈值）"),
+    ("lb_lt09", "买", "量价", "量比<0.9（固定阈值）"),
+    ("lb_gt2", "卖", "量价", "量比>2（固定阈值）"),
+    ("mfi_lt20", "买", "量价", "MFI14<20（固定阈值）"),
+    ("mfi_gt80", "卖", "量价", "MFI14>80（固定阈值）"),
+    ("chipmain_lt", "买", "筹码", "筹码主峰占比<训练期p30"),
+    ("chipmain_gt", "卖", "筹码", "筹码主峰占比>训练期p70"),
+    ("chipwidth_lt", "买", "筹码", "90%成本区间宽度<训练期p30"),
+    ("chipwidth_gt", "卖", "筹码", "90%成本区间宽度>训练期p70"),
+]
+EQ_ALL_VARIANTS = EQ_VARIANTS + FIXED_EQ_VARIANTS
+EQ_KEYS = [v[0] for v in EQ_ALL_VARIANTS]
+RL_KEYS = [f"{p}_{n}_{s}" for n in EQ_IND_KEYS for p, s in (("rl", "lo"), ("rl", "hi"))]
+
 
 def load_meta():
     sb = pl.read_parquet(os.path.join(STORE, "meta", "stock_basic.parquet")).to_pandas()
@@ -193,7 +240,7 @@ def limit_pct_arr(code, dates: pd.Series, st: np.ndarray) -> np.ndarray:
     return pct
 
 
-def process(path):
+def process(path, mode="fixed"):
     try:
         raw = pl.read_parquet(path)
     except Exception:
@@ -412,11 +459,37 @@ def process(path):
 
     sig_masks = {}
     unb = {}
-    for key in KEYS:
-        s = sig[key].fillna(False).to_numpy(dtype=bool)
-        m = s & base
-        sig_masks[key] = m & buyable
-        unb[key] = (int((m & limit_block).sum()), int((m & suspended).sum()))
+    want_ind = mode == "eqfreq"
+    ind = {}
+    if want_ind:
+        # 筹码集中度：逐日因果版（tools/chip_signals.py），与固定阈值模式互不影响
+        chip = compute_chip_series(ql.to_numpy(float), qh.to_numpy(float),
+                                   qc.to_numpy(float), vol)
+        ind = {
+            "rsi": rsi.to_numpy(float),
+            "bias12": bias12.to_numpy(float),
+            "lb": lb.to_numpy(float),
+            "mfi": mfi.to_numpy(float),
+            "chip_main": chip["chip_main_share"],
+            "chip_profit": chip["chip_profit_ratio"],
+            "chip_width": chip["chip_width90"],
+        }
+        # 个股滚动 252 日分位（pandas rolling rank，pct=True 即历史分位）
+        for name in EQ_IND_KEYS:
+            rk = pd.Series(ind[name], dtype="float64").rolling(
+                EQ_WINDOW, min_periods=EQ_MIN_PERIODS).rank(pct=True)
+            raw_lo = (rk <= EQ_Q[0]).fillna(False).to_numpy(dtype=bool)
+            raw_hi = (rk >= EQ_Q[1]).fillna(False).to_numpy(dtype=bool)
+            for key, raw in ((f"rl_{name}_lo", raw_lo), (f"rl_{name}_hi", raw_hi)):
+                m = raw & base
+                sig_masks[key] = m & buyable
+                unb[key] = (int((m & limit_block).sum()), int((m & suspended).sum()))
+    else:
+        for key in KEYS:
+            s = sig[key].fillna(False).to_numpy(dtype=bool)
+            m = s & base
+            sig_masks[key] = m & buyable
+            unb[key] = (int((m & limit_block).sum()), int((m & suspended).sum()))
 
     # 基准：全 A（不做池过滤）
     bench = {}
@@ -425,10 +498,20 @@ def process(path):
         ok = np.isfinite(r)
         bench[hz] = (np.bincount(idx[ok], weights=r[ok], minlength=NB),
                      np.bincount(idx[ok], minlength=NB))
-    return {
+    out = {
         "code": code, "idx": idx, "rets": rets, "masks": sig_masks, "unb": unb,
         "buckets": buckets, "bench": bench, "n": n,
     }
+    if want_ind:
+        out["ind"] = {k: v.astype(np.float32) for k, v in ind.items()}
+        out["base"] = base
+        out["buyable"] = buyable
+        out["block"] = limit_block
+        out["susp"] = suspended
+        out["rets"] = {hz: r.astype(np.float32) for hz, r in rets.items()}
+        out["buckets"] = buckets.astype(np.int8)
+        out["idx"] = idx.astype(np.int32)
+    return out
 
 
 def pval_t(t, df):
@@ -460,22 +543,86 @@ def bh_fdr(pvals, alpha=0.05):
     return ok
 
 
-def main() -> int:
-    t0 = time.time()
-    limit = None
-    if "--limit" in sys.argv:
-        limit = int(sys.argv[sys.argv.index("--limit") + 1])
+def _init_acc(keys):
+    ACC = {(k, hz): {"s": np.zeros(NB), "n": np.zeros(NB)} for k in keys for hz in HORIZONS}
+    BUCK = {(k, hz, b): {"s": np.zeros(NB), "n": np.zeros(NB)}
+            for k in keys for hz in (5, 20) for b in range(3)}
+    BENCH = {hz: {"s": np.zeros(NB), "n": np.zeros(NB)} for hz in HORIZONS}
+    return ACC, BUCK, BENCH
+
+
+def _accumulate(r, keys, ACC, BUCK, BENCH, UNB, CODES):
+    idx = r["idx"]
+    for hz in HORIZONS:
+        bs, bc = r["bench"][hz]
+        BENCH[hz]["s"] += bs
+        BENCH[hz]["n"] += bc
+    for k in keys:
+        m = r["masks"][k]
+        if not m.any():
+            continue
+        CODES[k].add(r["code"])
+        UB = r["unb"][k]
+        UNB[k][0] += UB[0]
+        UNB[k][1] += UB[1]
+        for hz in HORIZONS:
+            rr = r["rets"][hz]
+            ok = m & np.isfinite(rr)
+            if not ok.any():
+                continue
+            ii, w = idx[ok], rr[ok]
+            a = ACC[(k, hz)]
+            a["s"] += np.bincount(ii, weights=w, minlength=NB)
+            a["n"] += np.bincount(ii, minlength=NB)
+            if hz in (5, 20):
+                b = r["buckets"][ok]
+                for bi in range(3):
+                    sel = b == bi
+                    if not sel.any():
+                        continue
+                    bb = BUCK[(k, hz, bi)]
+                    bb["s"] += np.bincount(ii[sel], weights=w[sel], minlength=NB)
+                    bb["n"] += np.bincount(ii[sel], minlength=NB)
+
+
+def _stock_files():
     files = []
     for mkt in ("sh", "sz", "bj"):
         files.extend(sorted(glob.glob(os.path.join(STORE, "quotes", "stock", mkt, "*.parquet"))))
-    if limit:
-        files = files[:limit]
-    print(f"[start] files={len(files)} variants={len(KEYS)} horizons={HORIZONS}", flush=True)
+    return files
 
-    ACC = {(k, hz): {"s": np.zeros(NB), "n": np.zeros(NB)} for k in KEYS for hz in HORIZONS}
-    BUCK = {(k, hz, b): {"s": np.zeros(NB), "n": np.zeros(NB)}
-            for k in KEYS for hz in (5, 20) for b in range(3)}
-    BENCH = {hz: {"s": np.zeros(NB), "n": np.zeros(NB)} for hz in HORIZONS}
+
+def process_eq(path):
+    return process(path, mode="eqfreq")
+
+
+def _daily_quantiles(idx, val, qs=EQ_Q, min_n=EQ_MIN_N_DAY):
+    """按日横截面分位切点，返回 (qlo[NB], qhi[NB])。"""
+    qlo, qhi = np.full(NB, np.nan), np.full(NB, np.nan)
+    ok = np.isfinite(val)
+    d, v = idx[ok], val[ok]
+    order = np.argsort(d, kind="stable")
+    d, v = d[order], v[order]
+    uniq, start, counts = np.unique(d, return_index=True, return_counts=True)
+    for u, s, c in zip(uniq, start, counts):
+        if c < min_n:
+            continue
+        seg = v[s:s + c]
+        lo, hi = np.quantile(seg, qs)
+        qlo[int(u)] = lo
+        qhi[int(u)] = hi
+    return qlo, qhi
+
+
+def _year_of(idx):
+    return ((np.datetime64("1990-01-01") + np.asarray(idx, np.int64).astype("timedelta64[D]"))
+            .astype("datetime64[Y]").astype(np.int64) + 1970)
+
+
+def run_fixed(files, out_dir):
+    t0 = time.time()
+    print(f"[start] mode=fixed files={len(files)} variants={len(KEYS)} horizons={HORIZONS}", flush=True)
+    ACC, BUCK, BENCH = _init_acc(KEYS)
     UNB = {k: [0, 0] for k in KEYS}
     CODES = {k: set() for k in KEYS}
     errs = 0
@@ -489,39 +636,90 @@ def main() -> int:
             continue
         if r is None:
             continue
-        idx = r["idx"]
-        for hz in HORIZONS:
-            bs, bc = r["bench"][hz]
-            BENCH[hz]["s"] += bs
-            BENCH[hz]["n"] += bc
-        for k in KEYS:
-            m = r["masks"][k]
-            if not m.any():
-                continue
-            CODES[k].add(r["code"])
-            UB = r["unb"][k]
-            UNB[k][0] += UB[0]
-            UNB[k][1] += UB[1]
-            for hz in HORIZONS:
-                rr = r["rets"][hz]
-                ok = m & np.isfinite(rr)
-                if not ok.any():
-                    continue
-                ii, w = idx[ok], rr[ok]
-                a = ACC[(k, hz)]
-                a["s"] += np.bincount(ii, weights=w, minlength=NB)
-                a["n"] += np.bincount(ii, minlength=NB)
-                if hz in (5, 20):
-                    b = r["buckets"][ok]
-                    for bi in range(3):
-                        sel = b == bi
-                        if not sel.any():
-                            continue
-                        bb = BUCK[(k, hz, bi)]
-                        bb["s"] += np.bincount(ii[sel], weights=w[sel], minlength=NB)
-                        bb["n"] += np.bincount(ii[sel], minlength=NB)
+        _accumulate(r, KEYS, ACC, BUCK, BENCH, UNB, CODES)
         if i % 500 == 0:
             print(f"[{i}/{len(files)}] errs={errs} {time.time()-t0:.0f}s", flush=True)
+    return finalize(VARIANTS, ACC, BUCK, BENCH, UNB, CODES, out_dir, t0, errs)
+
+
+def run_eqfreq(files, out_dir, workers=8):
+    """等频阈值 + 筹码集中度：两阶段（并行采集 → 单进程按日分位聚合）。"""
+    from concurrent.futures import ProcessPoolExecutor
+    t0 = time.time()
+    print(f"[start] mode=eqfreq files={len(files)} variants={len(EQ_KEYS)} workers={workers}", flush=True)
+    recs, errs = [], 0
+    with ProcessPoolExecutor(max_workers=workers) as ex:
+        for i, r in enumerate(ex.map(process_eq, files, chunksize=16), 1):
+            if r is None:
+                errs += 1
+                continue
+            recs.append(r)
+            if i % 500 == 0:
+                print(f"[collect {i}/{len(files)}] errs={errs} {time.time()-t0:.0f}s", flush=True)
+    print(f"[collect done] stocks={len(recs)} errs={errs} {time.time()-t0:.0f}s", flush=True)
+
+    idx_all = np.concatenate([r["idx"] for r in recs])
+    years_all = _year_of(idx_all)
+    QLO, QHI, CHIP_THR = {}, {}, {}
+    for name in EQ_IND_KEYS:
+        vals = np.concatenate([r["ind"][name] for r in recs])
+        QLO[name], QHI[name] = _daily_quantiles(idx_all, vals)
+        if name in ("chip_main", "chip_width"):
+            tr = (years_all >= 2005) & (years_all <= 2014) & np.isfinite(vals)
+            CHIP_THR[name] = tuple(float(x) for x in np.quantile(vals[tr], [0.30, 0.70]))
+        print(f"[quantile] {name} days={int(np.isfinite(QLO[name]).sum())} "
+              f"train_thr={CHIP_THR.get(name)} {time.time()-t0:.0f}s", flush=True)
+        del vals
+    del idx_all, years_all
+
+    ACC, BUCK, BENCH = _init_acc(EQ_KEYS)
+    UNB = {k: [0, 0] for k in EQ_KEYS}
+    CODES = {k: set() for k in EQ_KEYS}
+    for i, r in enumerate(recs, 1):
+        idx = r["idx"]
+        base, buy = r["base"], r["buyable"]
+        block, susp = r["block"], r["susp"]
+        masks = dict(r["masks"])
+        unb = dict(r["unb"])
+        for name in EQ_IND_KEYS:
+            v = r["ind"][name].astype(np.float64)
+            lo, hi = QLO[name][idx], QHI[name][idx]
+            raw_lo = np.isfinite(v) & np.isfinite(lo) & (v <= lo)
+            raw_hi = np.isfinite(v) & np.isfinite(hi) & (v >= hi)
+            for key, raw in ((f"eq_{name}_lo", raw_lo), (f"eq_{name}_hi", raw_hi)):
+                m = raw & base
+                masks[key] = m & buy
+                unb[key] = (int((m & block).sum()), int((m & susp).sum()))
+        rsi_v, bias_v = r["ind"]["rsi"], r["ind"]["bias12"]
+        lb_v, mfi_v = r["ind"]["lb"], r["ind"]["mfi"]
+        cm_v, cw_v = r["ind"]["chip_main"], r["ind"]["chip_width"]
+        fixed = {
+            "rsi_lt30": rsi_v < 30, "rsi_gt70": rsi_v > 70,
+            "bias12_ltm10": bias_v < -10, "bias12_gt10": bias_v > 10,
+            "lb_lt09": lb_v < 0.9, "lb_gt2": lb_v > 2,
+            "mfi_lt20": mfi_v < 20, "mfi_gt80": mfi_v > 80,
+            "chipmain_lt": cm_v <= CHIP_THR["chip_main"][0],
+            "chipmain_gt": cm_v > CHIP_THR["chip_main"][1],
+            "chipwidth_lt": cw_v <= CHIP_THR["chip_width"][0],
+            "chipwidth_gt": cw_v > CHIP_THR["chip_width"][1],
+        }
+        for key, raw in fixed.items():
+            m = np.asarray(raw, dtype=bool) & base
+            masks[key] = m & buy
+            unb[key] = (int((m & block).sum()), int((m & susp).sum()))
+        r2 = {"code": r["code"], "idx": idx.astype(np.int64), "rets": r["rets"],
+              "masks": masks, "unb": unb, "buckets": r["buckets"], "bench": r["bench"]}
+        _accumulate(r2, EQ_KEYS, ACC, BUCK, BENCH, UNB, CODES)
+        if i % 500 == 0:
+            print(f"[agg {i}/{len(recs)}] {time.time()-t0:.0f}s", flush=True)
+    return finalize(EQ_ALL_VARIANTS, ACC, BUCK, BENCH, UNB, CODES, out_dir, t0, errs)
+
+
+def finalize(variants, ACC, BUCK, BENCH, UNB, CODES, out_dir, t0, errs):
+    os.makedirs(out_dir, exist_ok=True)
+    KEYS = [v[0] for v in variants]
+    VARIANTS = variants
+    OUT = out_dir
 
     # 日期→年
     ords = np.arange(NB) + BASE_ORD
@@ -718,6 +916,27 @@ def main() -> int:
                                                  "fdr5", "oos_consistent"]].to_string(index=False), flush=True)
     print(f"[done] errs={errs} elapsed={time.time()-t0:.0f}s", flush=True)
     return 0
+
+
+def main() -> int:
+    def _arg(name, default=None):
+        if name in sys.argv:
+            return sys.argv[sys.argv.index(name) + 1]
+        return default
+
+    mode = _arg("--mode", "fixed")
+    workers = int(_arg("--workers", 8))
+    out_dir = _arg("--out", OUT)
+    limit = _arg("--limit")
+    files = _stock_files()
+    if limit:
+        files = files[:int(limit)]
+    if mode == "fixed":
+        return run_fixed(files, out_dir)
+    if mode == "eqfreq":
+        return run_eqfreq(files, out_dir, workers)
+    print(f"unknown --mode {mode!r}，允许 fixed / eqfreq", flush=True)
+    return 2
 
 
 if __name__ == "__main__":

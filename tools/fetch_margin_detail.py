@@ -45,6 +45,7 @@ if str(ROOT) not in sys.path:
 
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic  # noqa: E402
 from src.data.manifest_refresh import sha256_file  # noqa: E402
+from src.data import margin_quality  # noqa: E402
 from src.data.trading_calendar import trading_dates  # noqa: E402
 
 STORE = ROOT / 'data' / 'local_store'
@@ -235,7 +236,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--refresh', action='store_true')
     parser.add_argument('--offline', action='store_true')
     parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--audit', action='store_true',
+                        help='只重建逐日完整性标记，不抓数')
     args = parser.parse_args(argv)
+
+    if args.audit:
+        marks = margin_quality.build_completeness(STORE)
+        bad = marks.filter(~pl.col('is_complete'))
+        print(f'完整性标记 {marks.height} 天，不完整 {bad.height} 天：'
+              f'{bad["trade_date"].to_list()}')
+        return 0
 
     if args.probe:
         return probe(args.probe)
@@ -281,6 +291,12 @@ def main(argv: list[str] | None = None) -> int:
             time.sleep(REQUEST_SLEEP)
     if touched and not args.dry_run:
         _register_manifest(sorted(set(touched)))
+        marks = margin_quality.build_completeness(STORE)
+        bad = marks.filter(~pl.col('is_complete'))
+        if bad.height:
+            print(f'[WARN] 不完整交易日 {bad.height} 天（已写入 '
+                  f'completeness.parquet，下游按日截面应剔除）：'
+                  f'{bad["trade_date"].to_list()}', flush=True)
     print(f'完成 {len(todo)} 个交易日；失败 {len(failed)} 个'
           f'{"：" + ",".join(sorted(failed)) if failed else ""}；'
           f'正式层 {OUT_DIR}；请求数 {len(todo)}')

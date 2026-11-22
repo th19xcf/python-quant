@@ -95,12 +95,13 @@ def load_breadth_snapshot(
     与 ``breadth_service.get_breadth`` 的区别：这里直接读 parquet，
     避免研究过程写回 ``data/local_store``。
     """
+    from src.data.local_store.store import read_parquet_frame
     from src.data.services.breadth_service import resolve_root, snapshot_path
 
     path = snapshot_path(resolve_root(store_root))
     if not path.is_file():
         raise FileNotFoundError(f'广度快照不存在：{path}')
-    frame = pl.read_parquet(path).sort('trade_date')
+    frame = read_parquet_frame(path).sort('trade_date')
     if start is not None:
         frame = frame.filter(pl.col('trade_date') >= as_date(start, strict=True))
     if end is not None:

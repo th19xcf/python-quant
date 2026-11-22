@@ -145,6 +145,19 @@ def resolve_store_root(config: Any) -> Path:
     return _resolve_store_root(config)
 
 
+def read_parquet_frame(
+    path: Path | str, columns: Iterable[str] | None = None,
+) -> pl.DataFrame:
+    """本地 Parquet 的统一只读入口（越层读取不再各自调 ``pl.read_parquet``）。
+
+    只做路径归一与列裁剪，异常语义与原调用保持一致（OSError / PolarsError
+    原样抛出，由调用方决定告警或降级）；缺文件判定也交给调用方，避免这里
+    把「文件不存在」与「读取失败」混成同一种返回。
+    """
+    return pl.read_parquet(
+        Path(path), columns=list(columns) if columns is not None else None)
+
+
 def _as_date(value: Any) -> date | None:
     """把 str/date/datetime 统一成 date。"""
     if value is None or value == '':

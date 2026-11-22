@@ -35,10 +35,10 @@ from typing import Any, Iterable
 import polars as pl
 from loguru import logger
 
+from src.core.market_rules import ExecutionRules
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic
 from src.data.quality.code_migration import load_entity_index
 from src.data.st_history import load_intervals
-from src.risk.execution_rules import ExecutionRules
 
 #: 快照口径版本号；口径变化时必须改版本，触发全量重建
 BREADTH_VERSION = 'breadth_v1'

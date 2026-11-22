@@ -25,6 +25,7 @@ from src.data.local_store.store import (
     get_local_factor_store,
     get_local_quote_store,
     local_store_enabled,
+    read_parquet_frame,
     remote_database_enabled,
     reset_local_stores,
     resolve_store_root,
@@ -40,6 +41,7 @@ __all__ = [
     'get_local_quote_store',
     'get_local_factor_store',
     'local_store_enabled',
+    'read_parquet_frame',
     'remote_database_enabled',
     'reset_local_stores',
 ]
