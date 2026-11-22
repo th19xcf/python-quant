@@ -12,7 +12,6 @@ from loguru import logger
 
 from src.data.sources import akshare_schema as schema
 from src.utils.code_converter import to_ts_code
-from src.utils.exception_handler import handle_exception_with_retry
 from src.utils.exceptions import DataSourceConnectionError
 
 
@@ -21,13 +20,12 @@ class AkShareEtfMixin:
 
     session: Any
 
-    @handle_exception_with_retry(max_retries=3, retry_delay=2)
     def _fetch_etf_spot(self):
         """
-        获取 ETF 实时行情（带统一重试装饰器）。
+        获取 ETF 实时行情。
 
-        网络类异常包装为 DataSourceConnectionError（可重试），
-        重试 3 次后仍失败则抛出，由调用方捕获处理。
+        退避重试由 akshare_schema.REQUEST_LIMITER 统一负责（3 次、×2 退避），
+        网络类异常包装为 DataSourceConnectionError，由调用方捕获处理。
         """
         try:
             return schema.fetch_spec(schema.ETF_SPOT)

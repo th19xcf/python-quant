@@ -41,7 +41,7 @@ class BaostockStockMixin:
             logger.info("开始从Baostock获取股票基本信息")
 
             # 使用Baostock获取股票基本信息，移除不支持的fields参数
-            rs = bs.query_stock_basic(code_name="")
+            rs = schema.query(bs.query_stock_basic, code_name="")
 
             # 转换为DataFrame
             stock_basic_pd = schema.result_to_frame(rs)
@@ -181,7 +181,8 @@ class BaostockStockMixin:
         bs_code = to_baostock_code(ts_code)
 
         # 使用Baostock获取股票日线数据
-        rs = bs.query_history_k_data_plus(
+        rs = schema.query(
+            bs.query_history_k_data_plus,
             bs_code,
             schema.DAILY_FIELDS,
             start_date=start_date,
@@ -262,14 +263,15 @@ class BaostockStockMixin:
         try:
             if not self._ensure_baostock_login():
                 logger.warning("Baostock登录失败，无法获取股票数据")
-                return pl.DataFrame()
+                raise ConnectionError("Baostock登录失败，无法获取股票数据")
 
             bs_code = self._to_baostock_code(ts_code)
             start_date, end_date = self._process_dates(start_date, end_date,
                                                        default_days=self.config.data.default_days)
 
             # 获取不复权原始价格（adjustflag=3）
-            rs = bs.query_history_k_data_plus(
+            rs = schema.query(
+            bs.query_history_k_data_plus,
                 bs_code,
                 schema.DAILY_FIELDS_BASIC,
                 start_date=start_date, end_date=end_date,
@@ -302,10 +304,11 @@ class BaostockStockMixin:
                 volume_unit='share', date_format='%Y-%m-%d', include_factors=True,
             )
 
-        # 兜底理由：第三方 SDK 异常类型不可预知，失败返回空表
+        # 失败必须上抛：网络/限流异常已在 baostock_schema.query 内退避重试，
+        # 重试耗尽仍失败时按「源故障」上报，不得伪装成空表（无数据）。
         except Exception as e:  # noqa: BLE001
             logger.warning(f"baostock get_stock_data({ts_code}) 失败: {e}")
-            return pl.DataFrame()
+            raise
 
     def _fetch_baostock_factors(self, bs_code: str, start_date: str, end_date: str,
                                 raw_df: pl.DataFrame
@@ -325,7 +328,8 @@ class BaostockStockMixin:
         baostock 的 adjustflag=1（后复权）以上市日为锚，F_t 与查询区间无关，
         可直接落库；qfq 以区间末为锚，仅用于展示，读侧由 as_of 截断。
         """
-        rs = bs.query_history_k_data_plus(
+        rs = schema.query(
+            bs.query_history_k_data_plus,
             bs_code, "date,close", start_date=start_date, end_date=end_date,
             frequency="d", adjustflag="1",
         )

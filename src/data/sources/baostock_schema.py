@@ -7,12 +7,16 @@ handler 层不再出现上游字段字面量（preclose/pctChg 等）；
 任何上游变更只改本文件，与 akshare_schema 对齐。
 """
 
+import socket
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any, Tuple
 
 import pandas as pd
 import polars as pl
 from loguru import logger
+
+from src.data.rate_limit import RateLimiter
 
 # Baostock 查询字段串（集中声明，避免多处字面量漂移）
 DAILY_FIELDS = (
@@ -47,6 +51,40 @@ def result_to_frame(result: Any) -> pd.DataFrame:
     while result.error_code == '0' and result.next():
         rows.append(result.get_row_data())
     return pd.DataFrame(rows, columns=result.fields)
+
+
+#: 重试口径沿用 config.data 既有约定：最多重试 3 次、首次 1.0s、×2 退避、
+#: 单次上限 30s。min_interval=0 保持批量同步原有吞吐，不在取数层新增节流。
+_QUERY_LIMITER = RateLimiter(
+    min_interval=0.0, max_retries=3, backoff_base=1.0, max_delay=30.0,
+    retry_on=(ConnectionError, TimeoutError, OSError, socket.timeout),
+    log_prefix='[baostock] ',
+)
+
+
+def query(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """经统一退避重试执行 baostock 查询，并把「链路失败」与「无数据」分开。
+
+    baostock 把网络中断/超时/限流收敛成 ``result.error_code`` 而不是抛异常，
+    直接转成空表会让上层把故障当成「该标的没有数据」。这里在重试边界内
+    把 ``None`` 或非 ``'0'`` 错误码转成可重试的 ``ConnectionError``：
+    - 重试耗尽后仍失败 → 抛 ConnectionError，由调用方按「源故障」记账；
+    - 查询成功但零行（error_code == '0'）→ 原样返回，仍按「无数据」处理。
+    """
+    func_name = getattr(func, '__name__', 'query')
+
+    def _do() -> Any:
+        result = func(*args, **kwargs)
+        if result is None:
+            raise ConnectionError(f'baostock {func_name} 返回 None（未拿到结果集）')
+        code = getattr(result, 'error_code', '0')
+        if code != '0':
+            message = getattr(result, 'error_msg', '')
+            raise ConnectionError(
+                f'baostock {func_name} 查询失败 error_code={code}: {message}')
+        return result
+
+    return _QUERY_LIMITER.call(_do)
 
 
 def compute_daily_factors(raw_df: pl.DataFrame, hfq_df: pl.DataFrame

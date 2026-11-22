@@ -35,6 +35,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+from loguru import logger
+
 ROOT = Path(__file__).resolve().parents[3]
 for _p in (ROOT, ROOT / 'tools'):
     if str(_p) not in sys.path:
@@ -416,8 +418,8 @@ def say(msg: str) -> None:
         return
     try:
         print(msg, flush=True)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning(f'工作台控制台输出失败（已忽略）: {type(exc).__name__}: {exc}')
 
 
 def read_json(path: Path):
@@ -596,11 +598,12 @@ class AppState:
         try:
             proc.terminate()
             proc.wait(timeout=6)
-        except Exception:
+        except Exception as exc:
+            logger.warning(f'工作台终止子进程失败，改为强制结束（PID={proc.pid}）: {type(exc).__name__}: {exc}')
             try:
                 proc.kill()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(f'工作台强制结束子进程失败（PID={proc.pid}）: {type(exc).__name__}: {exc}')
         return '已发送停止；partial 文件由 runner 保留，正式数据未动'
 
     def snapshot(self) -> dict:
@@ -759,8 +762,8 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         try:
             self.wfile.write(data)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(f'工作台 HTTP 响应写入失败（客户端可能已断开）: {type(exc).__name__}: {exc}')
 
     def _json(self, payload, code: int = 200):
         self._send(json.dumps(payload, ensure_ascii=False).encode('utf-8'),
@@ -853,13 +856,13 @@ def shutdown() -> None:
         httpd, _httpd = _httpd, None
     try:
         STATE.stop_all()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning(f'工作台退出时停止回测任务失败: {type(exc).__name__}: {exc}')
     if httpd is not None:
         try:
             httpd.shutdown()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(f'工作台关闭本地服务失败: {type(exc).__name__}: {exc}')
     shutil.rmtree(TMP, ignore_errors=True)
 
 
@@ -871,8 +874,8 @@ def run_browser_channel(open_browser: bool = True) -> int:
     if open_browser:
         try:
             webbrowser.open(url)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(f'工作台唤起浏览器失败: {type(exc).__name__}: {exc}')
     try:
         while True:
             time.sleep(0.5)

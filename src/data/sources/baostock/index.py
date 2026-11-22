@@ -41,7 +41,7 @@ class BaostockIndexMixin:
             logger.info("开始从Baostock获取指数基本信息")
 
             # 使用Baostock获取所有股票和指数的基本信息
-            rs = bs.query_stock_basic(code_name="", fields="code,code_name,ipoDate,outDate,type,status")
+            rs = schema.query(bs.query_stock_basic, code_name="", fields="code,code_name,ipoDate,outDate,type,status")
 
             # 获取数据
             stock_basic_pd = schema.result_to_frame(rs)
@@ -215,7 +215,8 @@ class BaostockIndexMixin:
         logger.info(f"正在获取{ts_code}的日线数据")
 
         # 使用Baostock获取指数日线数据（上游只认 sh.000001 方言，写库仍用 ts_code）
-        rs = bs.query_history_k_data_plus(
+        rs = schema.query(
+            bs.query_history_k_data_plus,
             self._to_baostock_code(ts_code),
             schema.DAILY_FIELDS_BASIC,
             start_date=start_date,
@@ -279,13 +280,14 @@ class BaostockIndexMixin:
         """
         try:
             if not self._ensure_baostock_login():
-                return pl.DataFrame()
+                raise ConnectionError("Baostock登录失败，无法获取指数数据")
 
             bs_code = self._to_baostock_code(ts_code)
             start_date, end_date = self._process_dates(start_date, end_date,
                                                        default_days=self.config.data.default_days)
 
-            rs = bs.query_history_k_data_plus(
+            rs = schema.query(
+            bs.query_history_k_data_plus,
                 bs_code,
                 schema.DAILY_FIELDS_BASIC,
                 start_date=start_date, end_date=end_date,
@@ -307,7 +309,8 @@ class BaostockIndexMixin:
                 volume_unit='hand', date_format='%Y-%m-%d', include_factors=True,
             )
 
-        # 兜底理由：第三方 SDK 异常类型不可预知，失败返回空表
+        # 失败必须上抛：网络/限流异常已在 baostock_schema.query 内退避重试，
+        # 重试耗尽仍失败时按「源故障」上报，不得伪装成空表（无数据）。
         except Exception as e:  # noqa: BLE001
             logger.warning(f"baostock get_index_data({ts_code}) 失败: {e}")
-            return pl.DataFrame()
+            raise

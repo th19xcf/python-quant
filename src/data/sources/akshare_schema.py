@@ -13,13 +13,16 @@ AkShare 上游接口契约
 """
 
 import math
+import urllib.error
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, Iterable, List, Mapping, Sequence, Tuple
 
 import polars as pl
+import requests
 from loguru import logger
 
+from src.data.rate_limit import RateLimiter
 from src.utils.exceptions import DataIntegrityError
 
 
@@ -166,6 +169,24 @@ def _load_ak():
     return ak
 
 
+#: 命中才退避重试的异常白名单：限流/超时/连接/解析类。
+#: 契约错误（列缺失）不在其中，一次即抛，避免把「上游变了」当成可重试抖动。
+_RETRYABLE_ERRORS = (
+    ConnectionError,
+    TimeoutError,
+    OSError,
+    urllib.error.URLError,
+    requests.exceptions.RequestException,
+)
+
+#: 重试口径沿用 config.data 既有约定：最多重试 3 次、首次 1.0s、×2 退避、
+#: 单次上限 30s。min_interval=0 保持批量同步原有吞吐，不在取数层新增节流。
+REQUEST_LIMITER = RateLimiter(
+    min_interval=0.0, max_retries=3, backoff_base=1.0, max_delay=30.0,
+    retry_on=_RETRYABLE_ERRORS, log_prefix='[akshare] ',
+)
+
+
 def fetch_raw(endpoint: str, **kwargs) -> pl.DataFrame:
     """
     调用 AkShare 端点并转为 Polars DataFrame（不做列校验）
@@ -187,7 +208,7 @@ def fetch_raw(endpoint: str, **kwargs) -> pl.DataFrame:
         raise AkShareContractError(endpoint, reason='端点不存在')
 
     try:
-        raw = func(**kwargs)
+        raw = REQUEST_LIMITER.call(func, **kwargs)
     except Exception as e:
         logger.warning(f"AkShare 端点 {endpoint} 调用失败 {kwargs}: {e}")
         raise

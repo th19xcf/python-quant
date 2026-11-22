@@ -249,7 +249,8 @@ class AkShareIndexMixin:
                 include_factors=True,
             )
 
-        # 兜底理由：第三方接口异常类型不可预知，失败返回空表
+        # 失败必须上抛：限流/超时异常已在 akshare_schema.REQUEST_LIMITER 内退避重试，
+        # 重试耗尽仍失败时按「源故障」上报，不得伪装成空表（无数据）。
         except Exception as e:  # noqa: BLE001
             logger.warning(f"akshare get_index_data({ts_code}) 失败: {e}")
-            return pl.DataFrame()
+            raise

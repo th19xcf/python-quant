@@ -60,7 +60,8 @@ class BaostockMinuteMixin:
 
             for ts_code in ts_codes:
                 try:
-                    rs = bs.query_history_k_data_plus(
+                    rs = schema.query(
+                        bs.query_history_k_data_plus,
                         ts_code,
                         schema.DAILY_FIELDS_BASIC,
                         start_date=start_date,
@@ -175,7 +176,8 @@ class BaostockMinuteMixin:
         """下载单个标的的分钟线并入库（离线模式仅收集结果）"""
         logger.info(f"正在下载{ts_code}的{frequency}分钟线数据")
 
-        rs = bs.query_history_k_data_plus(
+        rs = schema.query(
+            bs.query_history_k_data_plus,
             ts_code,
             schema.MINUTE_FIELDS,
             start_date=start_date,
