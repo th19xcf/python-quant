@@ -39,15 +39,18 @@
   - 沪深主板（2023-02-17 全面注册制起）：上市前 5 个交易日不限价。
   不限价日价格列留空、触及/封板列留空、可买可卖只由停牌决定。
 * 改革前上市的主板/创业板标的「首日」（``listing_phase='legacy'``）按制度
-  分两段，不能一律按「是否触及板块涨跌停」判定（那天根本没有板块涨跌停）：
-  - ``list_date < 2014-01-01``：新股上市首日不设涨跌幅限制，按实际成交价
+  分三段，不能一律按「是否触及板块涨跌停」判定（那天没有板块涨跌停）：
+  - ``trade_date < 2014-01-01``：新股上市首日不设涨跌幅限制，按实际成交价
     可买可卖，价格列留空，``limit_basis='new_stock_legacy_no_limit'``；
-  - ``2014-01-01 <= list_date < 板块注册制改革日``：交易所实行「有效申报
-    价格不高于发行价 144%、不低于 64%」的首日申报区间，涨跌幅相对**发行价**
-    而非前收盘。本地 ``stock_basic`` 无发行价、行情首日 ``pre_close`` 为空，
-    无法复算 44%/36% 边界；本表因此对这段保留 fail-closed（双禁），
-    ``limit_basis='new_stock_legacy_unpriced'``，属数据缺口而非制度口径。
-    补全发行价后应改为按 144%/64% 判定，而不是继续双禁。
+  - ``>= 2014-01-01`` 且 ``meta/new_share`` 有有效发行价（``price>0`` 且
+    ``price_is_zero=False``）：按发行价的 144%/64% 计算涨跌停
+    （+44%/-36%），``limit_basis='new_stock_legacy_44_36'``，``limit_pct``
+    留空（上下边界不对称，以价格列为准）；
+  - ``>= 2014-01-01`` 但缺发行价（``price=0``/``issue_date`` 缺失）或无线
+    上行情：继续 fail-closed（双禁），``limit_basis='new_stock_legacy_unpriced'``。
+  发行价来源 ``data/local_store/meta/new_share.parquet``（3,390 行，仅
+  300646.SZ 的 price=0）；北交所（精选层/新三板平移）首日制度不纳入本次
+  重建，仍走 unpriced 保守分支。
 * ST 状态逐日取自 ``meta/st/daily``（按生效日切换）；取不到时为
   ``unknown``，仍按板块常规幅度计算并由 ``limit_basis='st_unknown'`` 标记。
 * 创业板改革日按 ``ExecutionRules.CHINEXT_REG_DATE`` 逐日切换，不是整段
@@ -94,6 +97,9 @@ MAIN_UNLIMITED_SINCE = date(2023, 2, 17)
 #: 新股首日申报价格区间（发行价 64%~144%）生效日。此前新股首日不设涨跌幅
 #: 限制；此后至注册制改革前，首日涨跌幅相对发行价而非前收盘。
 LEGACY_UNPRICED_SINCE = date(2014, 1, 1)
+#: 2014 年起改革前新股首日申报区间：发行价 ×144% / ×64%。
+LEGACY_UP_PCT = 0.44
+LEGACY_DOWN_PCT = 0.36
 
 MAIN_BOARDS = ('沪市主板', '深市主板')
 OUTPUT_COLUMNS = [
@@ -256,6 +262,25 @@ def _prepare(root: Path, start: date, end: date) -> tuple[pl.DataFrame, dict[str
     frame = (frame.join(basic, on='ts_code', how='left')
              .join(sess.rename({'date': 'list_date', 'sidx': 'lidx'}),
                    on='list_date', how='left'))
+    # 发行价（meta/new_share）：仅用于 2014 年后改革前新股首日的 144%/64%
+    # 申报区间。price_is_zero 或 issue_date 缺失的行不参与，继续保守双禁。
+    ns_path = root / 'meta' / 'new_share.parquet'
+    if ns_path.exists():
+        new_share = pl.read_parquet(ns_path).select([
+            'ts_code',
+            pl.col('issue_date').alias('new_share_issue_date'),
+            pl.col('price').cast(pl.Float64).alias('issue_price'),
+            pl.col('price_is_zero').alias('issue_price_is_zero'),
+        ])
+        frame = frame.join(new_share, on='ts_code', how='left')
+        counters['new_share_rows'] = new_share.height
+    else:
+        frame = frame.with_columns([
+            pl.lit(None, dtype=pl.Date).alias('new_share_issue_date'),
+            pl.lit(None, dtype=pl.Float64).alias('issue_price'),
+            pl.lit(None, dtype=pl.Boolean).alias('issue_price_is_zero'),
+        ])
+        counters['new_share_rows'] = 0
     frame = frame.with_columns(
         (pl.col('sidx').cast(pl.Int64) - pl.col('lidx').cast(pl.Int64) + 1)
         .cast(pl.Int32).alias('listing_days'))
@@ -363,13 +388,52 @@ def _apply_marks(frame: pl.DataFrame, counters: dict[str, Any]) -> pl.DataFrame:
         ]))
     counters['odd_prev_close_rows'] = int(odd.height)
 
+    # 2014 年后、注册制改革前的新股首日：交易所按发行价的 144%/64% 设申报
+    # 区间（+44% / -36%），涨跌幅相对发行价而非前收盘。发行价来自
+    # meta/new_share；price=0 或 issue_date 缺失的不参与，继续保守双禁。
+    # 沪深主板与改革前创业板适用；北交所（精选层/新三板平移）首日制度不
+    # 纳入本次重建，仍走 unpriced 保守分支。
+    legacy_priced = (
+        (pl.col('listing_phase') == 'legacy')
+        & (pl.col('date') >= _date_lit(LEGACY_UNPRICED_SINCE))
+        & (pl.col('issue_price') > 0)
+        & ~pl.col('issue_price_is_zero').fill_null(False)
+        & pl.col('board').is_in(list(MAIN_BOARDS) + ['创业板'])
+    )
+    frame = frame.with_columns(legacy_priced.alias('_legacy_priced'))
+    priced = frame.filter(pl.col('_legacy_priced')).select(['_rid', 'issue_price'])
+    if priced.height:
+        rows = []
+        for rid, issue in priced.iter_rows():
+            rows.append((
+                rid,
+                int(round(ExecutionRules.resolve_limit_price(
+                    issue, LEGACY_UP_PCT, 'buy') * 100)),
+                int(round(ExecutionRules.resolve_limit_price(
+                    issue, LEGACY_DOWN_PCT, 'sell') * 100)),
+            ))
+        fix = pl.DataFrame(rows, schema={'_rid': pl.UInt32, '_lg_up': pl.Int64,
+                                         '_lg_down': pl.Int64}, orient='row')
+        frame = (frame.join(fix, on='_rid', how='left').with_columns([
+            pl.when(pl.col('_legacy_priced')).then(pl.col('_lg_up'))
+            .otherwise(pl.col('_up_c')).alias('_up_c'),
+            pl.when(pl.col('_legacy_priced')).then(pl.col('_lg_down'))
+            .otherwise(pl.col('_down_c')).alias('_down_c'),
+        ]))
+    counters['legacy_priced_rows'] = int(priced.height)
+    counters['legacy_unpriced_rows'] = int(frame.filter(
+        (pl.col('listing_phase') == 'legacy')
+        & (pl.col('date') >= _date_lit(LEGACY_UNPRICED_SINCE))
+        & ~pl.col('_legacy_priced')).height)
+
     suspended = (pl.col('volume').is_null() | ~pl.col('volume').is_finite()
                  | (pl.col('volume') <= 0))
     frame = frame.with_columns(suspended.alias('suspended'))
     counters['suspended_rows'] = int(frame['suspended'].sum())
 
     def _mask(expression: pl.Expr) -> pl.Expr:
-        return pl.when(valid).then(expression).otherwise(None)
+        # 普通日 + 改革前已定价首日都有价格边界；exempt/无前收日不出标记。
+        return pl.when(valid | pl.col('_legacy_priced')).then(expression).otherwise(None)
 
     touch_up = _mask(pl.col('_high_c') >= pl.col('_up_c'))
     touch_down = _mask(pl.col('_low_c') <= pl.col('_down_c'))
@@ -390,25 +454,31 @@ def _apply_marks(frame: pl.DataFrame, counters: dict[str, Any]) -> pl.DataFrame:
     prices_ok = (pl.col('_close_c').is_not_null()
                  & pl.col('prev_close').is_not_null())
     normal = pl.col('listing_phase') == 'normal'
-    # 改革前首日分两段：2014 年前无涨跌幅限制（可按实际价成交）；2014 年起
-    # 为发行价 64%~144% 申报区间，本地无发行价无法复算，保留 fail-closed。
+    # 改革前首日分三段：2014 年前无涨跌幅限制；2014 年起有发行价的行按
+    # 144%/64% 申报区间；缺发行价（price=0 / issue_date 缺失）的仍 fail-closed。
     legacy_no_limit = (pl.col('listing_phase') == 'legacy') & (
-        pl.col('list_date') < _date_lit(LEGACY_UNPRICED_SINCE))
-    legacy_unpriced = (pl.col('listing_phase') == 'legacy') & (
-        pl.col('list_date') >= _date_lit(LEGACY_UNPRICED_SINCE))
+        pl.col('date') < _date_lit(LEGACY_UNPRICED_SINCE))
+    legacy_unpriced = ((pl.col('listing_phase') == 'legacy')
+                       & (pl.col('date') >= _date_lit(LEGACY_UNPRICED_SINCE))
+                       & ~pl.col('_legacy_priced'))
     can_buy = (pl.when(pl.col('listing_phase') == 'exempt').then(~pl.col('suspended'))
                .when(legacy_no_limit).then(~pl.col('suspended'))
+               .when(pl.col('_legacy_priced')).then(
+                   ~pl.col('suspended') & ~blocked_up.fill_null(True))
                .when(legacy_unpriced).then(pl.lit(False))
                .when(~normal | ~prices_ok).then(pl.lit(False))
                .otherwise(~pl.col('suspended') & ~blocked_up.fill_null(True)))
     can_sell = (pl.when(pl.col('listing_phase') == 'exempt').then(~pl.col('suspended'))
                 .when(legacy_no_limit).then(~pl.col('suspended'))
+                .when(pl.col('_legacy_priced')).then(
+                    ~pl.col('suspended') & ~blocked_down.fill_null(True))
                 .when(legacy_unpriced).then(pl.lit(False))
                 .when(~normal | ~prices_ok).then(pl.lit(False))
                 .otherwise(~pl.col('suspended') & ~blocked_down.fill_null(True)))
     limit_basis = (
         pl.when(pl.col('listing_phase') == 'exempt').then(pl.lit('new_stock_exempt'))
         .when(legacy_no_limit).then(pl.lit('new_stock_legacy_no_limit'))
+        .when(pl.col('_legacy_priced')).then(pl.lit('new_stock_legacy_44_36'))
         .when(legacy_unpriced).then(pl.lit('new_stock_legacy_unpriced'))
         .when(pl.col('st_rank') == 2).then(pl.lit('st_unknown'))
         .when((pl.col('st_rank') == 1) & (pl.col('pct') < 10)).then(pl.lit('st'))
@@ -421,10 +491,10 @@ def _apply_marks(frame: pl.DataFrame, counters: dict[str, Any]) -> pl.DataFrame:
         one_up.alias('one_word_up'), one_down.alias('one_word_down'),
         can_buy.alias('can_buy'), can_sell.alias('can_sell'),
         limit_basis.alias('limit_basis'),
-        pl.when(valid).then(pl.col('_up_c') / 100.0).otherwise(None)
-        .alias('limit_up_price'),
-        pl.when(valid).then(pl.col('_down_c') / 100.0).otherwise(None)
-        .alias('limit_down_price'),
+        pl.when(valid | pl.col('_legacy_priced')).then(pl.col('_up_c') / 100.0)
+        .otherwise(None).alias('limit_up_price'),
+        pl.when(valid | pl.col('_legacy_priced')).then(pl.col('_down_c') / 100.0)
+        .otherwise(None).alias('limit_down_price'),
     ])
     _verify_price_rounding(frame)
     _verify_tradeability(frame, counters)
@@ -433,7 +503,9 @@ def _apply_marks(frame: pl.DataFrame, counters: dict[str, Any]) -> pl.DataFrame:
         pl.col('date').alias('trade_date'), pl.col('ts_code'), pl.col('board'),
         pl.col('st_status'), pl.col('listing_days'), pl.col('listing_phase'),
         pl.col('prev_close'), pl.col('prev_close_source'),
-        (pl.col('pct') / 100.0).alias('limit_pct'), pl.col('limit_basis'),
+        (pl.when(pl.col('_legacy_priced'))
+         .then(pl.lit(None, dtype=pl.Float64))
+         .otherwise(pl.col('pct') / 100.0).alias('limit_pct')), pl.col('limit_basis'),
         pl.col('limit_up_price'), pl.col('limit_down_price'),
         pl.col('touch_up'), pl.col('touch_down'),
         pl.col('close_at_up'), pl.col('close_at_down'),
@@ -444,7 +516,9 @@ def _apply_marks(frame: pl.DataFrame, counters: dict[str, Any]) -> pl.DataFrame:
 
 def _verify_price_rounding(frame: pl.DataFrame) -> None:
     """随机抽样把整数分结果与 resolve_limit_price 对拍，不一致即失败。"""
-    sample = frame.filter(pl.col('limit_up_price').is_not_null())
+    sample = frame.filter(
+        pl.col('limit_up_price').is_not_null()
+        & ~pl.col('limit_basis').str.starts_with('new_stock'))
     if sample.height == 0:
         return
     take = min(PRICE_CHECK_SAMPLES, sample.height)
@@ -788,11 +862,12 @@ def build(store_root: Path | str, *, since: str | date = DEFAULT_START,
         'counters': counters,
         'comparison': comparison,
         'caveats': [
-            'listing_phase=legacy 分两段：2014 年前新股首日无涨跌幅限制，'
-            'can_buy/can_sell 只由停牌决定（limit_basis=new_stock_legacy_no_limit）；'
-            '2014 年起首日为发行价 64%~144% 申报区间，本地无发行价无法复算，'
-            '保留 can_buy/can_sell=False（limit_basis=new_stock_legacy_unpriced，'
-            '属数据缺口而非制度口径，补全发行价后应改为 144%/64% 判定）。',
+            'listing_phase=legacy 分三段：2014 年前新股首日无涨跌幅限制，'
+            'can_buy/can_sell 只由停牌决定（new_stock_legacy_no_limit）；'
+            '2014 年起有有效发行价（meta/new_share）的沪深主板与改革前创业板'
+            '首日按发行价 144%/64% 计算（new_stock_legacy_44_36，limit_pct 为空，'
+            '上下边界不对称）；缺发行价（price=0/issue_date 空）或北交所平移'
+            '标的仍保守双禁（new_stock_legacy_unpriced）。',
             'st_status=unknown 仍按板块常规幅度计算，limit_basis=st_unknown 留证。',
             'prev_close_source=derived_prev_close 为行情缺前收时的收盘补齐，'
             '除权日可能与交易所口径不同。',

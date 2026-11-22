@@ -19,6 +19,7 @@ from src.backtest.engine.portfolio_backtest_engine import PortfolioBacktestEngin
 from src.backtest.strategies.base_strategy import BaseStrategy
 from src.data.services.panel_inputs import load_local_dividends, load_st_status
 from src.risk import NoSuspendedTrade, PriceLimitTradable, RiskEngine
+from src.backtest.engine.limit_table_rules import limit_table_enabled
 
 from . import compute
 from .registry import CONDITIONS
@@ -200,7 +201,15 @@ def run_engine(data: Dict[str, pl.DataFrame],
     engine = PortfolioBacktestEngine(used)
     engine.input_contract = BAR_CONTRACT
     engine.price_basis = 'auto'
-    engine.risk_engine = RiskEngine([PriceLimitTradable(), NoSuspendedTrade()])
+    # 涨跌停/可成交性默认由撮合侧 LimitTableRules 取新表；风控闸门只保留
+    # 停牌校验，避免 A 侧 PriceLimitTradable 再按旧口径否决新表放行的订单。
+    # QUANT_LIMIT_INPUT=self 时恢复旧的 A 侧双规则。
+    if limit_table_enabled():
+        engine.limit_table = True
+        engine.risk_engine = RiskEngine([NoSuspendedTrade()])
+    else:
+        engine.limit_table = False
+        engine.risk_engine = RiskEngine([PriceLimitTradable(), NoSuspendedTrade()])
     engine.risk_gate_policy = 'adv_gate'
     engine.set_strategies(strategies)
     engine.set_cost_model(SpecCostModel(spec['_resolved']['cost']))

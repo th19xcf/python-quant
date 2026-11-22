@@ -92,6 +92,7 @@ from src.risk import (
 from src.risk import Order as RiskOrder
 from src.risk import Portfolio as RiskPortfolio
 from src.risk.execution_rules import ExecutionRules, finite_float
+from src.backtest.engine.limit_table_rules import LimitTableRules
 from src.risk.rules import DrawdownTracker
 
 
@@ -739,6 +740,9 @@ class EventBacktestRunner:
         self.performance_analyzer = performance_analyzer
         self.risk_engine = risk_engine
         self.on_missing_risk = on_missing_risk
+        # 裸引擎默认 A 侧自算（合成数据/单测不读盘）；生产 pipeline 显式
+        # 打开后由 LimitTableRules 取 meta/limit/daily，并保留缺失行回退。
+        self.limit_table = False
         self.input_contract = input_contract
         self.price_basis = price_basis
         self.blocked_sell_ttl_days = blocked_sell_ttl_days
@@ -994,7 +998,12 @@ class EventBacktestRunner:
                                   portfolio_strategy: Any | None,
                                   pooled_cash: bool = False) -> tuple[ExecutionRules, AccountBook, RiskGate]:
         """创建撮合规则、账户账本与风控闸门。"""
-        rules = ExecutionRules(lot_size=lot_size)
+        # 生产 pipeline 打开 limit_table 后默认读 meta/limit/daily；表缺失行
+        # 由 LimitTableRules 回退 A 侧自算。裸引擎保持 A 侧，避免单测读盘。
+        if getattr(self, 'limit_table', False):
+            rules = LimitTableRules(lot_size=lot_size)
+        else:
+            rules = ExecutionRules(lot_size=lot_size)
         # 现金桶只分配给会产生活跃信号的标的：universe 里加载了但没配策略的
         # "哑标的"若参与 initial_capital / len(codes) 的等额切分，其份额全程
         # 闲置，冻结比例恰等于无策略标的占比（20 只里只有 5 只配策略 → 75%
