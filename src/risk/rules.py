@@ -24,6 +24,8 @@ from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from typing import AbstractSet, Any, Dict, List, Mapping, Set, Tuple
 
+from src.core.market_rules import ExecutionRules as MarketRules
+
 #: A 股一手 = 100 股。K 线数据契约中成交量列（vol）以“手”为单位，
 #: 风控 Order.qty 以“股”为单位；两者比较前必须统一为手。
 SHARES_PER_LOT = 100
@@ -59,7 +61,13 @@ class Order:
     side:      'buy' | 'sell'
     qty:       股数（整数，A股按 100 股整手）
     price:     计划成交价（开盘价 / 当前价）
-    sector:    板块标签（主板 / 创业板 / 科创板 / 北交所 / ST）
+    sector:    板块标签（主板 / 创业板 / 科创板 / 北交所 / ST）。显式传入时
+               作为覆盖值；留空则由 ``board`` + ``is_st`` 派生（再退化为按
+               ``ts_code`` 派生），派生规则与 ``market_rules.resolve_limit_pct``
+               同源。
+    board:     交易所板块标签（沪市主板 / 深市主板 / 创业板 / 科创板 / 北交所），
+               新表 ``meta/limit/daily.board`` 同口径；用于派生 sector。
+    is_st:     ST 三态（True / False / None 未知），用于派生 sector。
     industry:  行业标签（申万一级行业，如"银行"）
     trade_date: 交易日期（回测时的 Bar 日期）
     prev_close: 前收盘价（涨跌停规则用；由调用方按原始价口径注入）
@@ -71,6 +79,8 @@ class Order:
     qty: int
     price: float
     sector: str = ''
+    board: str = ''
+    is_st: bool | None = None
     industry: str = ''
     trade_date: date | None = None
     prev_close: float | None = None
@@ -555,11 +565,14 @@ class PriceLimitTradable(Rule):
     """
     涨跌停不可成交：buy 委托价触及涨停价、sell 委托价触及跌停价时拒绝。
 
-    涨跌幅按板块差异化（order.sector 承载，含 ST 差异化档位）：
+    涨跌幅优先取 ``order.sector``（显式覆盖，含 ST 差异化档位）；sector 留空时
+    由 ``order.board`` + ``order.is_st`` 派生，board 缺失再按 ``order.ts_code``
+    派生。派生规则与 :mod:`src.core.market_rules` 的 ``resolve_limit_pct`` 同源：
         主板 10% / 创业板 20% / 科创板 20% / 北交所 30% / ST 5%
+        （仅常规幅度 10% 的板块收窄，20%/30% 板块 ST 不收窄）
     涨跌停价按交易所规则四舍五入至 0.01（Decimal half-up，不用银行家舍入）。
 
-    order.prev_close 缺失或 sector 无法匹配档位时 fail-closed 拒绝。
+    order.prev_close 缺失、显式 sector 无法匹配档位时 fail-closed 拒绝。
     注意：prev_close 必须是原始价口径（交易所规则定义在原始价上），
     hfq 复权价在除权日因子跳变会使比值失真。
     """
@@ -597,13 +610,37 @@ class PriceLimitTradable(Rule):
             return None
         return self._limits_for(prev_close, pct)
 
+    def resolve_tier(self, order: Order) -> tuple[float | None, str]:
+        """解析该订单适用的涨跌停幅度与展示用板块标签。
+
+        显式 ``order.sector`` 走档位表（覆盖派生结果）；留空时按
+        ``board + is_st`` 派生，board 无法识别时回退 ``ts_code``。返回
+        ``(None, label)`` 表示显式 sector 不在档位表中，调用方 fail-closed。
+        """
+        if order.sector:
+            return self.limits.get(order.sector), order.sector
+
+        pct = MarketRules.resolve_limit_pct_by_board(
+            order.board, is_st=order.is_st, trade_date=order.trade_date)
+        if pct is not None:
+            label = (MarketRules.resolve_sector_by_board(
+                order.board, is_st=order.is_st, trade_date=order.trade_date)
+                or order.board)
+            return pct, label
+
+        pct = MarketRules.resolve_limit_pct(
+            order.ts_code, is_st=order.is_st, trade_date=order.trade_date)
+        label = MarketRules.resolve_sector(
+            order.ts_code, is_st=order.is_st, trade_date=order.trade_date)
+        return pct, label
+
     def check(self, order: Order, portfolio: Portfolio) -> RuleResult:
         if order.prev_close is None:
             return RuleResult(
                 False,
                 f"单票 {order.ts_code} 缺少前收盘价，无法评估涨跌停，拒绝"
             )
-        limit = self.limits.get(order.sector)
+        limit, label = self.resolve_tier(order)
         if limit is None:
             return RuleResult(
                 False,
@@ -616,13 +653,13 @@ class PriceLimitTradable(Rule):
             return RuleResult(
                 False,
                 f"买入价 {order.price:.2f} 触及涨停价 {limit_up:.2f}"
-                f"（{order.sector} ±{limit:.0%}），无法成交"
+                f"（{label} ±{limit:.0%}），无法成交"
             )
         if order.side == 'sell' and order.price <= limit_down:
             return RuleResult(
                 False,
                 f"卖出价 {order.price:.2f} 触及跌停价 {limit_down:.2f}"
-                f"（{order.sector} ±{limit:.0%}），无法成交"
+                f"（{label} ±{limit:.0%}），无法成交"
             )
         return RuleResult(True)
 

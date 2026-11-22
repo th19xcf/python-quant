@@ -92,7 +92,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from datetime import time as dtime
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
@@ -135,7 +135,10 @@ SIDE_OUTPUTS = (
 )
 #: 构建收尾会整目录重写的台账（内容随行情变动，逐件白名单不现实）。
 SIDE_PREFIXES = ('meta/anomalies/', 'factors/rebuild/',
-                 'meta/financials/parts/valuation/', 'meta/industry/')
+                 'meta/financials/parts/valuation/', 'meta/industry/',
+                 # ST 逐日面板与涨跌停逐日由整目录产出（月分区 + manifest +
+                 # comparison + reconcile + 增量状态），逐个枚举不如按目录放行。
+                 'meta/st/daily/', 'meta/limit/')
 #: ST 区间表日更（risk_flags refresh + st_name_history build + st_history build）会写的件。
 #: supplement 由 ``st_name_history build`` 重建，覆盖窗口随行情末日推进；不重建会
 #: 让沪市/北交所 2,324 只的 ``coverage_end`` 停在最后一次手工构建日。
@@ -204,6 +207,8 @@ AUX_POOL_OUTPUTS = (
 )
 #: 候选池默认重建周期（自然日）
 DEFAULT_POOL_REFRESH_DAYS = 7
+#: ST 逐日 / 涨跌停逐日增量窗口：最近 N 个交易日所在月分区（跨月自然含上月）
+DERIVED_LOOKBACK_SESSIONS = 5
 #: 市场宽度日更会写的件（增量补齐，行情末根未前进时不落盘）。
 AUX_BREADTH_OUTPUTS = (
     'meta/breadth/breadth_daily.parquet',
@@ -242,6 +247,8 @@ STEP_PLAN: tuple[tuple[str, str, bool], ...] = (
     ('factor_panel', '因子面板增量（当日截面按 signal_date 分区 upsert）', False),
     ('b_topn_picks', 'B 股东盈余比候选名单（月末调仓日：行业内前 2 → 前 50 等权）', False),
     ('breadth', '市场宽度增量', False),
+    ('st_daily', 'ST 逐日面板增量（最近 N 个交易日所在月分区）', False),
+    ('limit_daily', '涨跌停逐日增量（依赖 ST 逐日当日结果）', False),
     ('pool', '候选池周更', False),
     ('manifest', 'manifest 回写与校验', True),
     ('clean_set', '洁净集快照', False),
@@ -829,6 +836,204 @@ def _step_st(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
         [sys.executable, '-m', 'src.data.st_history', *store_args, 'build'],
         'ST 区间表重建')
     return build == 0, f'快照 rc=0 / supplement rc=0 / 重建 rc={build}'
+
+
+def _panel_end(root: Path, sub: str, prefix: str) -> date | None:
+    """月分区族的最新 ``trade_date``（文件名排序取最后一月）。"""
+    files = sorted((root / sub).glob(f'{prefix}[0-9][0-9][0-9][0-9][0-9][0-9].parquet'))
+    if not files:
+        return None
+    return pl.read_parquet(files[-1], columns=['trade_date'])['trade_date'].max()
+
+
+def _panel_sessions(root: Path, latest: date, count: int) -> list[date]:
+    """取 ``latest`` 及之前的最近 ``count`` 个交易日（breadth 为准，缺失退日历）。"""
+    breadth = root / 'meta' / 'breadth' / 'breadth_daily.parquet'
+    if breadth.is_file():
+        days = sorted({day for day in pl.read_parquet(
+            breadth, columns=['trade_date'])['trade_date'].to_list()
+            if day is not None and day <= latest})
+        if days:
+            return days[-count:]
+    from src.data.trading_calendar import trading_dates  # noqa: PLC0415
+
+    days = list(trading_dates(latest - timedelta(days=count * 3 + 15), latest, ROOT))
+    return days[-count:]
+
+
+def _hist_digest(root: Path, window_start: date) -> str:
+    """窗口之前的 ST 输入指纹：名称段/官方区间/可信覆盖任一行变化即算历史变更。"""
+    cutoff = pl.lit(window_start, dtype=pl.Date)
+    parts: list[str] = []
+    name_history = root / 'meta' / 'name_history.parquet'
+    if name_history.is_file():
+        frame = pl.read_parquet(name_history,
+                                columns=['ts_code', 'name', 'start_date', 'end_date'])
+        frame = frame.filter(pl.col('start_date') < cutoff).sort(['ts_code', 'start_date'])
+        parts.append(str(frame.hash_rows().sum()))
+    intervals = root / 'meta' / 'st' / 'st_intervals.parquet'
+    if intervals.is_file():
+        frame = pl.read_parquet(intervals,
+                                columns=['ts_code', 'start_date', 'end_date', 'flag'])
+        frame = frame.filter(pl.col('end_date').is_not_null()
+                             & (pl.col('end_date') < cutoff)).sort(['ts_code', 'start_date'])
+        parts.append(str(frame.hash_rows().sum()))
+    coverage = root / 'meta' / 'st' / 'st_coverage.parquet'
+    if coverage.is_file():
+        frame = pl.read_parquet(coverage,
+                                columns=['ts_code', 'coverage_start', 'coverage_end'])
+        frame = frame.filter(pl.col('coverage_end') < cutoff).sort(['ts_code', 'coverage_start'])
+        parts.append(str(frame.hash_rows().sum()))
+    return hashlib.sha256('|'.join(parts).encode('utf-8')).hexdigest()
+
+
+def _missing_panel_months(root: Path, sub: str, prefix: str,
+                          latest: date) -> list[str]:
+    """已有分区序列中间的月份空洞（当月不算，缺首个历史月才算历史变更）。"""
+    names = sorted(path.name for path in (root / sub).glob(f'{prefix}[0-9]*.parquet'))
+    if not names:
+        return []
+    first = names[0][len(prefix):-len('.parquet')]
+    present = set(names)
+    cursor = date(int(first[:4]), int(first[4:6]), 1)
+    missing: list[str] = []
+    while (cursor.year, cursor.month) < (latest.year, latest.month):
+        tag = f'{cursor:%Y%m}'
+        if f'{prefix}{tag}.parquet' not in present:
+            missing.append(tag)
+        cursor = date(cursor.year + (cursor.month == 12),
+                      1 if cursor.month == 12 else cursor.month + 1, 1)
+    return missing
+
+
+def _derived_state_path(root: Path) -> Path:
+    return root / 'meta' / 'st' / 'daily' / 'incremental_state.json'
+
+
+def _derived_window(plan: _Plan, args: argparse.Namespace) -> dict[str, Any]:
+    """本次增量重建起点：默认最近 N 个交易日所在月分区（整月重写）。
+
+    触发全量的条件：``--full-derived``、已有月分区出现中间空洞（历史被删/丢）、
+    窗口之前的 ST 输入指纹与上次不一致（名称段/区间/覆盖被修订）。
+    月末当日所在月本身就是「整月重建」；窗口跨月时上月一并重写，
+    覆盖上月最后一个交易日之后才到的补丁。
+    """
+    count = max(1, args.derived_lookback_days)
+    days = _panel_sessions(plan.root, plan.latest, count)
+    window_start = (days[0] if days else plan.latest).replace(day=1)
+    window_end = days[-1] if days else plan.latest
+    digest = _hist_digest(plan.root, window_start)
+    state: dict[str, Any] = {}
+    state_path = _derived_state_path(plan.root)
+    if state_path.is_file():
+        try:
+            state = json.loads(state_path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            state = {}
+    base = {'digest': digest, 'window_start': window_start}
+    if args.full_derived:
+        return {**base, 'since': date(2005, 1, 1), 'mode': 'full',
+                'note': '--full-derived 强制全量'}
+    missing = _missing_panel_months(plan.root, 'meta/st/daily', 'st_daily_', window_end)
+    if missing:
+        return {**base, 'since': date(2005, 1, 1), 'mode': 'full',
+                'note': f'月分区缺 {len(missing)} 个（{missing[0]}~{missing[-1]}）'}
+    previous = str(state.get('hist_digest') or '')
+    if previous and previous != digest:
+        return {**base, 'since': date(2005, 1, 1), 'mode': 'full',
+                'note': '历史 ST 输入已变更'}
+    note = f'最近 {count} 个交易日 → 整月 {window_start:%Y-%m}'
+    if (window_start.year, window_start.month) != (window_end.year, window_end.month):
+        note += f' + 跨月 {window_end:%Y-%m}'
+    if _is_month_end_signal(plan.root, window_end):
+        note += '（月末整月重建）'
+    return {**base, 'since': window_start, 'mode': 'incremental', 'note': note}
+
+
+def _save_derived_state(plan: _Plan, args: argparse.Namespace,
+                        window: dict[str, Any]) -> None:
+    from src.data.atomic_write import write_text_atomic  # noqa: PLC0415
+
+    path = _derived_state_path(plan.root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_text_atomic(json.dumps({
+        'schema': 'st_daily_incremental/v1',
+        'last_run': date.today().isoformat(),
+        'lookback_sessions': args.derived_lookback_days,
+        'mode': window['mode'],
+        'since': window['since'].isoformat(),
+        'window_start': window['window_start'].isoformat(),
+        'hist_digest': window['digest'],
+    }, ensure_ascii=False, indent=2), path)
+
+
+def _step_st_daily(plan: _Plan, args: argparse.Namespace,
+                   state: dict[str, Any]) -> tuple[bool, str]:
+    """ST 逐日面板增量重建（月分区整月重写）；未推进到行情末日即判失败。"""
+    if args.skip_st_daily:
+        state['st_daily'] = {'ok': True, 'skipped': True}
+        return True, '已跳过（--skip-st-daily）'
+    if args.codes:
+        state['st_daily'] = {'ok': True, 'skipped': True}
+        return True, '代码清单补数模式，跳过低频全市场派生表'
+    window = _derived_window(plan, args)
+    cmd = [sys.executable, str(ROOT / 'tools' / 'build_st_daily.py'),
+           '--since', window['since'].isoformat()]
+    if window['mode'] != 'full':
+        cmd.append('--incremental')
+    started = time.perf_counter()
+    code = _run_module(cmd, 'ST 逐日面板重建')
+    seconds = time.perf_counter() - started
+    quote_end = _daily_index_end(plan.root, kinds=('stock',))
+    panel_end = _panel_end(plan.root, 'meta/st/daily', 'st_daily_')
+    ok = (code == 0 and quote_end is not None and panel_end is not None
+          and panel_end >= quote_end)
+    state['st_daily'] = {'ok': ok, 'since': window['since'].isoformat(),
+                         'mode': window['mode'], 'seconds': seconds}
+    detail = (f"{window['mode']} since {window['since']}（{window['note']}）| "
+              f'面板末日 {panel_end} / 行情末日 {quote_end} | {seconds:.1f}s rc={code}')
+    if not ok:
+        logger.warning('[daily] ST 逐日面板未推进到行情末日（面板 {} / 行情 {}），'
+                       '阻断涨跌停逐日，避免用旧 ST 面板生成', panel_end, quote_end)
+        return False, detail
+    if window['mode'] != 'full':
+        _save_derived_state(plan, args, window)
+    return True, detail
+
+
+def _step_limit_daily(plan: _Plan, args: argparse.Namespace,
+                      state: dict[str, Any]) -> tuple[bool, str]:
+    """涨跌停逐日增量重建；上游 ST 未成功/未推进到行情末日时直接阻断。"""
+    if args.skip_limit_daily:
+        return True, '已跳过（--skip-limit-daily）'
+    if args.skip_st_daily:
+        return True, '已跳过（上游 ST 逐日已跳过）'
+    if args.codes:
+        return True, '代码清单补数模式，跳过低频全市场派生表'
+    upstream = state.get('st_daily') or {}
+    if not upstream.get('ok'):
+        logger.warning('[daily] 涨跌停逐日被阻断：上游 ST 逐日失败/未执行')
+        return False, '上游 ST 逐日失败/未执行，阻断生成（不使用旧 ST 面板）'
+    quote_end = _daily_index_end(plan.root, kinds=('stock',))
+    st_end = _panel_end(plan.root, 'meta/st/daily', 'st_daily_')
+    if quote_end is None or st_end is None or st_end < quote_end:
+        return False, f'ST 面板末日 {st_end} < 行情末日 {quote_end}，阻断生成'
+    since = upstream.get('since') or _derived_window(plan, args)['since'].isoformat()
+    mode = upstream.get('mode') or 'incremental'
+    cmd = [sys.executable, str(ROOT / 'tools' / 'build_limit_board.py'),
+           '--since', since]
+    if mode != 'full':
+        cmd.append('--incremental')
+    started = time.perf_counter()
+    code = _run_module(cmd, '涨跌停逐日重建')
+    seconds = time.perf_counter() - started
+    limit_end = _panel_end(plan.root, 'meta/limit/daily', 'limit_daily_')
+    ok = code == 0 and limit_end is not None and limit_end >= quote_end
+    if not ok:
+        logger.warning('[daily] 涨跌停逐日未推进到行情末日（表 {} / 行情 {}）',
+                       limit_end, quote_end)
+    return ok, (f'{mode} since {since} | 表末日 {limit_end} / 行情末日 {quote_end}'
+                f' | {seconds:.1f}s rc={code}')
 
 
 def _step_basic(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
@@ -1555,6 +1760,8 @@ def _step_list(plan: _Plan, args: argparse.Namespace,
         'factor_panel': lambda: _step_factor_panel(plan, args),
         'b_topn_picks': lambda: _step_b_topn_picks(plan, args),
         'breadth': lambda: _run_breadth(plan),
+        'st_daily': lambda: _step_st_daily(plan, args, state),
+        'limit_daily': lambda: _step_limit_daily(plan, args, state),
         'pool': lambda: _step_pool(plan, args),
         'manifest': lambda: _step_manifest(plan, args, state),
         'clean_set': lambda: _step_clean_set(plan),
@@ -1671,6 +1878,16 @@ def _skip_note(key: str, plan: _Plan, args: argparse.Namespace) -> str:  # noqa:
         return _b_topn_skip_note(plan, args)
     if key == 'st' and args.skip_st_refresh:
         return '  ← 本轮跳过'
+    if key in ('st_daily', 'limit_daily'):
+        if args.codes:
+            return '  ← 代码清单补数模式跳过'
+        if key == 'st_daily' and args.skip_st_daily:
+            return '  ← 本轮跳过（--skip-st-daily）'
+        if key == 'limit_daily' and (args.skip_limit_daily or args.skip_st_daily):
+            return '  ← 本轮跳过'
+        window = _derived_window(plan, args)
+        lead = '依赖 ST 逐日 | ' if key == 'limit_daily' else ''
+        return f"  ← {lead}{window['mode']} since {window['since']}（{window['note']}）"
     if key == 'basic' and (args.skip_basic_refresh
                            or not _basic_due(plan.root, args.basic_refresh_days)):
         return '  ← 本轮跳过（未到期/已关闭）'

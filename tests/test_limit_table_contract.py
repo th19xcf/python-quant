@@ -87,6 +87,51 @@ def test_unknown_code_falls_back_to_main_board_limit():
             == PriceLimitTradable.DEFAULT_LIMITS['主板'])
 
 
+#: (board, 该板块代表代码, is_st, trade_date)
+BOARD_GRID = [
+    ('沪市主板', '600000.SH', False, None),
+    ('深市主板', '000001.SZ', False, None),
+    ('沪市主板', '600000.SH', True, None),
+    ('深市主板', '000001.SZ', True, None),
+    ('科创板', '688001.SH', False, None),
+    ('科创板', '688001.SH', True, None),
+    ('创业板', '300001.SZ', False, AFTER_REFORM),
+    ('创业板', '300001.SZ', True, AFTER_REFORM),
+    ('创业板', '300001.SZ', False, BEFORE_REFORM),
+    ('创业板', '300001.SZ', True, BEFORE_REFORM),
+    ('北交所', '920001.BJ', False, None),
+    ('北交所', '920001.BJ', True, None),
+]
+
+
+@pytest.mark.parametrize('board, probe, is_st, trade_date', BOARD_GRID)
+def test_board_derivation_agrees_with_code(board, probe, is_st, trade_date):
+    """风控按 board+ST 派生，必须与按代码推导的幅度/标签逐个相等。
+
+    风控侧 ``PriceLimitTradable.resolve_tier`` 在 sector 留空时走 board 派生；
+    若 board 口径与 ``resolve_limit_pct`` 分叉，同一笔订单会在撮合与风控
+    两条路径上得到不同涨跌停档位。改革前创业板必须回退到 10% / '主板'。
+    """
+    by_board_pct = ExecutionRules.resolve_limit_pct_by_board(
+        board, is_st=is_st, trade_date=trade_date)
+    by_code_pct = ExecutionRules.resolve_limit_pct(
+        probe, is_st=is_st, trade_date=trade_date)
+    assert by_board_pct == by_code_pct
+    assert (ExecutionRules.resolve_sector_by_board(
+        board, is_st=is_st, trade_date=trade_date)
+        == ExecutionRules.resolve_sector(probe, is_st=is_st, trade_date=trade_date))
+    assert (PriceLimitTradable.DEFAULT_LIMITS[
+        ExecutionRules.resolve_sector_by_board(
+            board, is_st=is_st, trade_date=trade_date)] == by_board_pct)
+
+
+def test_unknown_board_returns_none_for_fallback():
+    """未知 board 返回 None，由调用方回退按 ts_code 推导。"""
+    assert ExecutionRules.resolve_limit_pct_by_board('') is None
+    assert ExecutionRules.resolve_sector_by_board('未知板块') is None
+
+
+
 def test_block_reason_without_prev_close_does_not_fake_limit_breach():
     """昨收缺失（None / 0 / 负数）时不做涨跌停判定，只保留停牌拦截。
 

@@ -593,14 +593,16 @@ class RiskGate:
               adv_volume: float | None = None,
               prev_close: float | None = None,
               sector: str = '',
+              board: str = '',
+              is_st: bool | None = None,
               suspended: Set[str] | None = None) -> Dict[str, Any] | None:
         """
         审查一笔候选订单。
 
         bar_volume 为当日 Bar 成交量，供 MaxOrderVolumeRatio 等流动性规则使用；
-        prev_close 为原始价口径前收盘价（PriceLimitTradable 用），sector 为
-        resolve_sector 推导的板块标签；两者都必须由调用方注入，否则
-        PriceLimitTradable 会按 fail-closed 拒绝全部订单。
+        prev_close 为原始价口径前收盘价（PriceLimitTradable 用）；sector 为
+        显式板块标签（覆盖值），留空时 PriceLimitTradable 会按 board + is_st
+        派生（board 再缺失则按 ts_code 派生），派生规则与撮合侧同源。
         suspended 为当日停牌集合，供 NoSuspendedTrade 使用。
 
         Returns:
@@ -616,6 +618,8 @@ class RiskGate:
             qty=qty,
             price=price,
             sector=sector,
+            board=board,
+            is_st=is_st,
             industry=self.industry_map.get(ts_code, ''),
             trade_date=trade_date,
             prev_close=prev_close,
@@ -2130,19 +2134,21 @@ class EventBacktestRunner:
     ) -> None:
         """按买/卖方向派发已通过可成交校验的订单。"""
         # 风控闸门所需上下文：原始价口径前收盘（交易所涨跌停定义在原始价上）
-        # 与板块标签必须由撮合内核注入，缺一 PriceLimitTradable 就会 fail-closed。
+        # 与板块来源。板块不再要求调用方先算好 sector：这里只注入交易所 board
+        # （由代码推导，新表同名口径）与 ST 三态，由 PriceLimitTradable 按
+        # board + is_st 派生幅度与档位；显式 sector 仍可覆盖。
         risk_prev_close = (
             bar.pre_close if bar.pre_close is not None and bar.pre_close > 0
             else (bar.prev_close_raw if bar.prev_close_raw is not None
                   else bar.prev_close))
-        sector = (ctx.rules.resolve_sector(code, bar.is_st, trade_day)
-                  if ctx.gate.risk_engine is not None else '')
+        board = (ctx.rules.resolve_board_label(code)
+                 if ctx.gate.risk_engine is not None else '')
 
         if intent.action == 'buy':
             self._execute_buy(
                 ctx, code=code, date=date, bar=bar, exec_price=exec_price,
                 intent=intent, order_confidence=order_confidence,
-                prev_close=risk_prev_close, sector=sector,
+                prev_close=risk_prev_close, board=board,
                 budget_override=budget_override,
             )
             return
@@ -2151,7 +2157,7 @@ class EventBacktestRunner:
         self._execute_sell(
             ctx, code=code, date=date, bar=bar, exec_price=exec_price,
             intent=intent, order_confidence=order_confidence,
-            prev_close=risk_prev_close, sector=sector,
+            prev_close=risk_prev_close, board=board,
         )
 
     @staticmethod
@@ -2255,7 +2261,7 @@ class EventBacktestRunner:
     def _execute_buy(
         self, ctx: RunContext, *, code: str, date: Any, bar: Bar,
         exec_price: float, intent: SignalIntent, order_confidence: str,
-        prev_close: float | None, sector: str,
+        prev_close: float | None, board: str,
         budget_override: float | None = None,
     ) -> None:
         """买入执行：按目标仓位/资金比例估算整手、逐手回退成本、风控、记账。
@@ -2340,8 +2346,8 @@ class EventBacktestRunner:
             ts_code=code, side='buy', qty=shares, price=exec_price,
             trade_date=date, book=book, equity_curve=ctx.equity_curve,
             bar_volume=bar.volume, adv_volume=bar.adv_volume,
-            prev_close=prev_close, sector=sector,
-            suspended=bar.suspended,
+            prev_close=prev_close, sector='', board=board,
+            is_st=bar.is_st, suspended=bar.suspended,
         )
         if rejection is not None:
             ctx.rejected_orders.append(rejection)
@@ -2376,7 +2382,7 @@ class EventBacktestRunner:
     def _execute_sell(
         self, ctx: RunContext, *, code: str, date: Any, bar: Bar,
         exec_price: float, intent: SignalIntent, order_confidence: str,
-        prev_close: float | None, sector: str,
+        prev_close: float | None, board: str,
     ) -> None:
         """卖出执行：按 fraction / target_weight 计算卖出股数，风控通过后记账。
 
@@ -2431,8 +2437,8 @@ class EventBacktestRunner:
             ts_code=code, side='sell', qty=shares, price=exec_price,
             trade_date=date, book=book, equity_curve=ctx.equity_curve,
             bar_volume=bar.volume, adv_volume=bar.adv_volume,
-            prev_close=prev_close, sector=sector,
-            suspended=bar.suspended,
+            prev_close=prev_close, sector='', board=board,
+            is_st=bar.is_st, suspended=bar.suspended,
         )
         if rejection is not None:
             ctx.rejected_orders.append(rejection)

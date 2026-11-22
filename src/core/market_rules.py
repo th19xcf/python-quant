@@ -115,6 +115,26 @@ class ExecutionRules:
     #: 920 为北交所新号段（如 920001.BJ），代码段会随时间新增，后缀判定更可靠。
     BJ_PREFIXES = ('83', '87', '88', '920')
 
+    #: 交易所板块标签（新表 ``meta/limit/daily.board`` 口径）→ 探针代码。
+    #: 风控侧按 board 派生幅度时不另写一份档位表，而是用同一板块的代表代码
+    #: 走 ``_resolve_board_limit_pct``，从而与 ``resolve_limit_pct`` 共用
+    #: 号段、创业板改革日与 ST 收窄逻辑；改规则只需改一处。
+    BOARD_PROBE_CODE = {
+        '沪市主板': '600000.SH',
+        '深市主板': '000001.SZ',
+        '主板': '600000.SH',
+        '创业板': '300001.SZ',
+        '科创板': '688001.SH',
+        '北交所': '920001.BJ',
+    }
+
+    #: 风控板块标签（Order.sector）取值，与 PriceLimitTradable 档位表同键。
+    SECTOR_MAIN = '主板'
+    SECTOR_CHINEXT = '创业板'
+    SECTOR_STAR = '科创板'
+    SECTOR_BSE = '北交所'
+    SECTOR_ST = 'ST'
+
     def __init__(self, lot_size: int = 100):
         self.lot_size = lot_size
 
@@ -201,14 +221,53 @@ class ExecutionRules:
             return ExecutionRules.DEFAULT_LIMIT_PCT
 
         regular = ExecutionRules._resolve_board_limit_pct(ts_code, trade_date)
+        return ExecutionRules._apply_st(
+            regular, is_st=is_st, is_fund=ExecutionRules.is_fund(ts_code))
 
-        # 仅常规幅度为 10% 的板块，ST 才收窄到 5%；
-        # 20%/30% 板块（改革后创业板、科创板、北交所）的 ST 股票与普通股同幅度；
-        # 场内基金无 ST 概念，不参与收窄。
-        if (is_st and regular == 0.10
-                and not ExecutionRules.is_fund(ts_code)):
+    @staticmethod
+    def _apply_st(regular: float, *, is_st: bool | None,
+                  is_fund: bool = False) -> float:
+        """在板块常规幅度上叠加 ST 收窄（唯一真源的最后一层）。
+
+        只有常规幅度为 10% 的板块（主板、B 股、改革前创业板）的 ST 股票才
+        收窄到 5%；20%/30% 板块的 ST 与普通股同幅度；场内基金无 ST 概念。
+        所有按代码、按 board 的入口都必须经过本函数，避免两处各自写一遍
+        收窄条件而漂移。
+        """
+        if (is_st and regular == ExecutionRules.DEFAULT_LIMIT_PCT
+                and not is_fund):
             return ExecutionRules.ST_LIMIT_PCT
         return regular
+
+    @staticmethod
+    def resolve_limit_pct_by_board(board: str = '', is_st: bool | None = None,
+                                   trade_date: date | None = None) -> float | None:
+        """按交易所板块标签（新表 ``board``）与 ST 状态推导涨跌停幅度。
+
+        与 :meth:`resolve_limit_pct` 同源：board 先映射到该板块的代表代码，
+        再走同一套 ``_resolve_board_limit_pct`` + ST 收窄逻辑。无法识别的
+        board 返回 ``None``，调用方应回退到按 ``ts_code`` 推导。
+
+        规则矩阵（常规幅度 → ST 是否收窄）：
+
+        ============ ========== ==========================================
+        board        常规幅度   ST 处理
+        ============ ========== ==========================================
+        沪市主板     10%        收窄为 5%
+        深市主板     10%        收窄为 5%
+        创业板       20%（改革日 2020-08-24 前 10%）
+                                改革后 20% 不收窄；改革前 10% 收窄为 5%
+        科创板       20%        不收窄（与普通股同幅度）
+        北交所       30%        不收窄（与普通股同幅度）
+        ============ ========== ==========================================
+
+        场内基金不在本函数范围（无 board 标签），仍由 ``ts_code`` 入口判定。
+        """
+        probe = ExecutionRules.BOARD_PROBE_CODE.get((board or '').strip())
+        if probe is None:
+            return None
+        regular = ExecutionRules._resolve_board_limit_pct(probe, trade_date)
+        return ExecutionRules._apply_st(regular, is_st=is_st, is_fund=False)
 
     @staticmethod
     def resolve_sector(ts_code: str = '', is_st: bool | None = None,
@@ -257,6 +316,55 @@ class ExecutionRules:
                 # B 股（SH_B / SZ_B）在风控侧按主板 10% 口径
                 return '主板'
         return '主板'
+
+    @staticmethod
+    def resolve_sector_by_board(board: str = '', is_st: bool | None = None,
+                                trade_date: date | None = None) -> str | None:
+        """按 board + ST 状态推导风控板块标签，与 ``resolve_limit_pct_by_board`` 同源。
+
+        保证 ``PriceLimitTradable.DEFAULT_LIMITS[返回值] == resolve_limit_pct_by_board(...)``。
+        无法识别的 board 返回 ``None``（调用方回退按 ``ts_code`` 的 resolve_sector）。
+        改革前创业板常规幅度回退到 10%，风控标签同样回退为 ``'主板'``，与
+        按代码推导的 ``resolve_sector`` 一致。
+        """
+        regular = ExecutionRules.resolve_limit_pct_by_board(
+            board, is_st=is_st, trade_date=trade_date)
+        if regular is None:
+            return None
+        label = (board or '').strip()
+        if is_st and regular == ExecutionRules.ST_LIMIT_PCT:
+            return ExecutionRules.SECTOR_ST
+        if label == '科创板':
+            return ExecutionRules.SECTOR_STAR
+        if label == '创业板':
+            return (ExecutionRules.SECTOR_CHINEXT
+                    if regular == 0.20 else ExecutionRules.SECTOR_MAIN)
+        if label == '北交所':
+            return ExecutionRules.SECTOR_BSE
+        return ExecutionRules.SECTOR_MAIN
+
+    @staticmethod
+    def resolve_board_label(ts_code: str = '') -> str:
+        """按证券代码推导交易所板块标签（新表 ``board`` 口径）。
+
+        只用于把风控订单的板块来源补齐为显式 board；场内基金与无法识别的
+        代码返回空串，调用方回退到按 ``ts_code`` 推导幅度。
+        """
+        ts_code = (ts_code or '').strip().upper()
+        code = ts_code.split('.')[0]
+        if not code or ExecutionRules.is_fund(ts_code):
+            return ''
+        if code.startswith(('688', '689')):
+            return '科创板'
+        if code.startswith(('300', '301')):
+            return '创业板'
+        if ts_code.endswith('.BJ') or code.startswith(ExecutionRules.BJ_PREFIXES):
+            return '北交所'
+        if code.startswith(('600', '601', '603', '605', '900')):
+            return '沪市主板'
+        if code.startswith(('000', '001', '002', '003', '200')):
+            return '深市主板'
+        return ''
 
     @staticmethod
     def resolve_limit_price(prev_close: float, limit: float, side: str) -> float:

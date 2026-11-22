@@ -472,10 +472,29 @@ class TestPriceLimitTradable:
         order = Order('000001.SZ', 'buy', 100, 10.5, sector='主板')
         assert not rule.check(order, empty_portfolio).passed
 
-    def test_unknown_sector_fail_closed(self, empty_portfolio):
+    def test_empty_sector_derives_from_code(self, empty_portfolio):
+        """sector 留空时按 board + is_st / ts_code 派生（不再 fail-closed）。"""
         rule = PriceLimitTradable()
         order = Order('000001.SZ', 'buy', 100, 10.5, sector='', prev_close=10.0)
-        assert not rule.check(order, empty_portfolio).passed
+        assert rule.check(order, empty_portfolio).passed
+        order_board = Order(
+            '600000.SH', 'buy', 100, 10.5, sector='', board='沪市主板',
+            prev_close=10.0)
+        assert rule.check(order_board, empty_portfolio).passed
+        order_st = Order(
+            '600000.SH', 'buy', 100, 10.6, sector='', board='沪市主板',
+            is_st=True, prev_close=10.0)
+        assert not rule.check(order_st, empty_portfolio).passed  # ST 涨停 10.50
+
+    def test_explicit_sector_overrides_board(self, empty_portfolio):
+        """显式 sector 覆盖 board 派生结果（向后兼容）。"""
+        rule = PriceLimitTradable()
+        order = Order(
+            '688001.SH', 'buy', 100, 11.5, sector='主板', board='科创板',
+            prev_close=10.0)
+        result = rule.check(order, empty_portfolio)
+        assert not result.passed
+        assert '主板 ±10%' in result.reason
 
     def test_limit_price_rounding(self, empty_portfolio):
         """涨跌停价按交易所口径四舍五入：10.05 × 1.1 = 11.055 → 11.06"""

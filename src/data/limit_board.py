@@ -38,10 +38,16 @@
   - 北交所（2021-11-15 起）：上市首日不限价；
   - 沪深主板（2023-02-17 全面注册制起）：上市前 5 个交易日不限价。
   不限价日价格列留空、触及/封板列留空、可买可卖只由停牌决定。
-* 改革前上市的主板/创业板/北交所标的「首日」涨跌幅另有 44%/36% 等历史
-  制度，无法用统一百分比还原；本表把这类 ``listing_phase='legacy'`` 的
-  首日标记为「不可买/不可卖」（保守：不假设可成交），价格列留空，并在
-  manifest ``caveats`` 里写明。
+* 改革前上市的主板/创业板标的「首日」（``listing_phase='legacy'``）按制度
+  分两段，不能一律按「是否触及板块涨跌停」判定（那天根本没有板块涨跌停）：
+  - ``list_date < 2014-01-01``：新股上市首日不设涨跌幅限制，按实际成交价
+    可买可卖，价格列留空，``limit_basis='new_stock_legacy_no_limit'``；
+  - ``2014-01-01 <= list_date < 板块注册制改革日``：交易所实行「有效申报
+    价格不高于发行价 144%、不低于 64%」的首日申报区间，涨跌幅相对**发行价**
+    而非前收盘。本地 ``stock_basic`` 无发行价、行情首日 ``pre_close`` 为空，
+    无法复算 44%/36% 边界；本表因此对这段保留 fail-closed（双禁），
+    ``limit_basis='new_stock_legacy_unpriced'``，属数据缺口而非制度口径。
+    补全发行价后应改为按 144%/64% 判定，而不是继续双禁。
 * ST 状态逐日取自 ``meta/st/daily``（按生效日切换）；取不到时为
   ``unknown``，仍按板块常规幅度计算并由 ``limit_basis='st_unknown'`` 标记。
 * 创业板改革日按 ``ExecutionRules.CHINEXT_REG_DATE`` 逐日切换，不是整段
@@ -85,6 +91,9 @@ TRADE_CHECK_SAMPLES = 2000
 STAR_UNLIMITED_SINCE = date(2019, 7, 22)
 BSE_UNLIMITED_SINCE = date(2021, 11, 15)
 MAIN_UNLIMITED_SINCE = date(2023, 2, 17)
+#: 新股首日申报价格区间（发行价 64%~144%）生效日。此前新股首日不设涨跌幅
+#: 限制；此后至注册制改革前，首日涨跌幅相对发行价而非前收盘。
+LEGACY_UNPRICED_SINCE = date(2014, 1, 1)
 
 MAIN_BOARDS = ('沪市主板', '深市主板')
 OUTPUT_COLUMNS = [
@@ -381,17 +390,26 @@ def _apply_marks(frame: pl.DataFrame, counters: dict[str, Any]) -> pl.DataFrame:
     prices_ok = (pl.col('_close_c').is_not_null()
                  & pl.col('prev_close').is_not_null())
     normal = pl.col('listing_phase') == 'normal'
+    # 改革前首日分两段：2014 年前无涨跌幅限制（可按实际价成交）；2014 年起
+    # 为发行价 64%~144% 申报区间，本地无发行价无法复算，保留 fail-closed。
+    legacy_no_limit = (pl.col('listing_phase') == 'legacy') & (
+        pl.col('list_date') < _date_lit(LEGACY_UNPRICED_SINCE))
+    legacy_unpriced = (pl.col('listing_phase') == 'legacy') & (
+        pl.col('list_date') >= _date_lit(LEGACY_UNPRICED_SINCE))
     can_buy = (pl.when(pl.col('listing_phase') == 'exempt').then(~pl.col('suspended'))
-               .when(pl.col('listing_phase') == 'legacy').then(pl.lit(False))
+               .when(legacy_no_limit).then(~pl.col('suspended'))
+               .when(legacy_unpriced).then(pl.lit(False))
                .when(~normal | ~prices_ok).then(pl.lit(False))
                .otherwise(~pl.col('suspended') & ~blocked_up.fill_null(True)))
     can_sell = (pl.when(pl.col('listing_phase') == 'exempt').then(~pl.col('suspended'))
-                .when(pl.col('listing_phase') == 'legacy').then(pl.lit(False))
+                .when(legacy_no_limit).then(~pl.col('suspended'))
+                .when(legacy_unpriced).then(pl.lit(False))
                 .when(~normal | ~prices_ok).then(pl.lit(False))
                 .otherwise(~pl.col('suspended') & ~blocked_down.fill_null(True)))
     limit_basis = (
         pl.when(pl.col('listing_phase') == 'exempt').then(pl.lit('new_stock_exempt'))
-        .when(pl.col('listing_phase') == 'legacy').then(pl.lit('new_stock_legacy'))
+        .when(legacy_no_limit).then(pl.lit('new_stock_legacy_no_limit'))
+        .when(legacy_unpriced).then(pl.lit('new_stock_legacy_unpriced'))
         .when(pl.col('st_rank') == 2).then(pl.lit('st_unknown'))
         .when((pl.col('st_rank') == 1) & (pl.col('pct') < 10)).then(pl.lit('st'))
         .when(pl.col('st_rank') == 1).then(pl.lit('st_wide'))
@@ -647,7 +665,16 @@ def _compare(marks: pl.DataFrame, root: Path,
 # 主流程
 # ----------------------------------------------------------------------
 def build(store_root: Path | str, *, since: str | date = DEFAULT_START,
-          codes: Iterable[str] | None = None) -> dict[str, Any]:
+          codes: Iterable[str] | None = None,
+          incremental: bool = False) -> dict[str, Any]:
+    """重建涨跌停标记。``incremental=True`` 只重写 ``since`` 起的月分区：
+
+    - 不删除 ``since`` 之前的旧月分区；
+    - manifest 的 ``files`` / ``rows`` 按「历史登记 + 本次重建」合并成全表口径，
+      另记 ``mode`` / ``window`` / ``rebuilt``；
+    - 跳过 breadth 对拍并保留上一份 ``comparison.json`` /
+      ``reconcile_daily.parquet``（对拍需读全历史行情，不适合日更）。
+    """
     root = Path(store_root)
     start = since if isinstance(since, date) else date.fromisoformat(str(since))
     sessions = _sessions(root)
@@ -694,11 +721,22 @@ def build(store_root: Path | str, *, since: str | date = DEFAULT_START,
             'sha256': _sha256(path),
         })
     for stale in out_dir.glob('limit_daily_[0-9][0-9][0-9][0-9][0-9][0-9].parquet'):
-        if stale.name not in produced:
+        if not incremental and stale.name not in produced:
             stale.unlink()
 
-    comparison, daily = _compare(marks, root, counters)
-    if daily.height:
+    if incremental:
+        # 对拍要按代码回看全历史行情算首日行号，日更窗口增量不做，保留上一份结果。
+        comparison: dict[str, Any] = {
+            'mode': 'incremental',
+            'skipped': '窗口增量未重算 breadth 对拍（需读全历史行情），'
+                       '沿用上一份 comparison.json / reconcile_daily.parquet',
+            'max_abs_diff': None,
+            'dates_with_diff': None,
+        }
+        daily = None
+    else:
+        comparison, daily = _compare(marks, root, counters)
+    if daily is not None and daily.height:
         write_parquet_atomic(daily, reconcile_path(root))
 
     built_at = datetime.now().isoformat(timespec='seconds')
@@ -711,14 +749,35 @@ def build(store_root: Path | str, *, since: str | date = DEFAULT_START,
         'lag_trading_days': _lag_trading_days(sessions, end, panel_end),
         'state': 'ok' if panel_end is None or panel_end >= end else 'warn',
     }
+    prev_manifest: dict[str, Any] = {}
+    if incremental and manifest_path(root).is_file():
+        try:
+            prev_manifest = json.loads(manifest_path(root).read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            prev_manifest = {}
+    if incremental:
+        merged = {item['path']: item for item in (prev_manifest.get('files') or [])
+                  if isinstance(item, dict) and 'path' in item}
+        merged.update({item['path']: item for item in files})
+        panel_files = [merged[name] for name in sorted(merged)]
+        range_start = min(item['start'] for item in panel_files)
+        range_end = max(item['end'] for item in panel_files)
+    else:
+        panel_files = files
+        range_start, range_end = str(start), str(end)
     manifest = {
         'schema': SCHEMA_VERSION,
+        'mode': 'incremental' if incremental else 'full',
         'built_at': built_at,
-        'range': {'start': str(start), 'end': str(end)},
-        'trading_days': len([day for day in sessions if start <= day <= end]),
-        'rows': counters['rows'],
+        'range': {'start': range_start, 'end': range_end},
+        'window': {'since': str(start), 'end': str(end)},
+        'rebuilt': [item['path'] for item in files],
+        'trading_days': len([day for day in sessions
+                             if date.fromisoformat(range_start) <= day
+                             <= date.fromisoformat(range_end)]),
+        'rows': sum(item['rows'] for item in panel_files),
         'codes': counters['codes'],
-        'files': files,
+        'files': panel_files,
         'freshness': freshness,
         'rules': {
             'limit_pct': 'src.core.market_rules.ExecutionRules.resolve_limit_pct',
@@ -729,8 +788,11 @@ def build(store_root: Path | str, *, since: str | date = DEFAULT_START,
         'counters': counters,
         'comparison': comparison,
         'caveats': [
-            'listing_phase=legacy（改革前主板/创业板首日）历史涨跌幅另制，'
-            '无法用统一百分比还原：价格列留空、can_buy/can_sell=False（保守）。',
+            'listing_phase=legacy 分两段：2014 年前新股首日无涨跌幅限制，'
+            'can_buy/can_sell 只由停牌决定（limit_basis=new_stock_legacy_no_limit）；'
+            '2014 年起首日为发行价 64%~144% 申报区间，本地无发行价无法复算，'
+            '保留 can_buy/can_sell=False（limit_basis=new_stock_legacy_unpriced，'
+            '属数据缺口而非制度口径，补全发行价后应改为 144%/64% 判定）。',
             'st_status=unknown 仍按板块常规幅度计算，limit_basis=st_unknown 留证。',
             'prev_close_source=derived_prev_close 为行情缺前收时的收盘补齐，'
             '除权日可能与交易所口径不同。',
@@ -742,8 +804,9 @@ def build(store_root: Path | str, *, since: str | date = DEFAULT_START,
     }
     write_text_atomic(json.dumps(freshness, ensure_ascii=False, indent=2),
                       freshness_path(root))
-    write_text_atomic(json.dumps(comparison, ensure_ascii=False, indent=2, default=str),
-                      comparison_path(root))
+    if not incremental:
+        write_text_atomic(json.dumps(comparison, ensure_ascii=False, indent=2,
+                                     default=str), comparison_path(root))
     write_text_atomic(json.dumps(manifest, ensure_ascii=False, indent=2, default=str),
                       manifest_path(root))
     logger.info(f'[limit] 落盘 {len(files)} 个月分区 / {marks.height} 行 / '
@@ -789,11 +852,14 @@ def load_marks(store_root: Path | str, start: date, end: date,
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description='重建逐股逐日涨跌停标记')
     parser.add_argument('--since', default=DEFAULT_START.isoformat())
+    parser.add_argument('--incremental', action='store_true',
+                        help='窗口增量：只重写 --since 起的月分区，保留其余分区与上一份对拍')
     args = parser.parse_args(argv)
     from src.data.local_store.store import resolve_store_root  # noqa: PLC0415
     from src.utils.config import get_config  # noqa: PLC0415
 
-    summary = build(resolve_store_root(get_config()), since=args.since)
+    summary = build(resolve_store_root(get_config()), since=args.since,
+                    incremental=args.incremental)
     logger.info(json.dumps({
         'rows': summary['manifest']['rows'],
         'max_abs_diff': summary['comparison']['max_abs_diff'],
