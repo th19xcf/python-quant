@@ -21,6 +21,7 @@ from loguru import logger
 from src.advice.config import (
     OBSERVE_ONLY_TIERS,
     AdviceConfig,
+    MarginFilterConfig,
     default_config,
     default_output_tiers,
 )
@@ -38,6 +39,14 @@ from src.utils.config import get_config
 
 def _parse_date(value: str | None) -> date | None:
     return date.fromisoformat(value) if value else None
+
+
+def _margin_filter_config(args: argparse.Namespace) -> MarginFilterConfig:
+    return MarginFilterConfig(
+        enabled=bool(getattr(args, 'margin_filter', False)),
+        lookback_days=int(getattr(args, 'margin_lookback_days', 5)),
+        exclude_top_pct=float(getattr(args, 'margin_exclude_top_pct', 0.10)),
+    )
 
 
 def _project_root() -> Path:
@@ -75,7 +84,8 @@ def _run_generate(args: argparse.Namespace) -> int:
         return 2
     config: AdviceConfig = default_config(
         factor_set=args.factor_set,
-        soft_filter_enabled=not args.no_soft_filter)
+        soft_filter_enabled=not args.no_soft_filter,
+        margin_filter=_margin_filter_config(args))
     engine = AdviceEngine(config=config)
     daily_dir = Path(args.daily_dir) if args.daily_dir else Path(args.out_dir) / 'daily'
     result = engine.generate(as_of=as_of, equity=args.equity,
@@ -108,7 +118,8 @@ def _run_replay(args: argparse.Namespace) -> int:
     results = run_replay(
         config=default_config(
             factor_set=args.factor_set,
-            soft_filter_enabled=not args.no_soft_filter),
+            soft_filter_enabled=not args.no_soft_filter,
+            margin_filter=_margin_filter_config(args)),
         start=_parse_date(args.start),
         end=_parse_date(args.end),
         max_symbols=args.max_symbols,
@@ -198,6 +209,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help='因子集：legacy=原 12 因子，extended=扩展因子集')
     parser.add_argument('--no-soft-filter', action='store_true',
                         help='关闭 extended 模式的软筛选（用于 A/B）')
+    parser.add_argument('--margin-filter', action='store_true',
+                        help='启用融资余额增速最高分位剔除（仅新建仓，默认关闭）')
+    parser.add_argument('--margin-lookback-days', type=int, default=5,
+                        help='融资余额增速回看交易日数，默认 5')
+    parser.add_argument('--margin-exclude-top-pct', type=float, default=0.10,
+                        help='剔除横截面最高比例，默认 0.10（最高 10%%）')
     parser.add_argument('--daily-dir', default=None,
                         help='每日归档目录（默认 out-dir/daily）')
     parser.add_argument('--no-daily', action='store_true', help='本次不写每日归档')

@@ -24,6 +24,7 @@ from src.advice.config import AdviceConfig, default_config
 from src.advice.data import LocalPanelLoader, panel_trading_dates
 from src.advice.eligibility import check_eligibility
 from src.advice.factor_panel import compute_factor_panel
+from src.advice.margin_filter import MarginMomentumFilter
 from src.advice.pipeline import AdviceEngine
 from src.advice.portfolio import Candidate, allocate
 from src.advice.risk_filters import RiskContext
@@ -194,6 +195,10 @@ class _ReplayTier:
         if not store_root:
             store_root = get_config().data.local_store_path
         self.risk = RiskContext(self.config.risk, store_root, self.dates)
+        self.margin_filter = (MarginMomentumFilter(self.config.margin_filter,
+                                                   store_root)
+                              if self.config.margin_filter.enabled else None)
+        self.margin_filtered = 0
 
     def run(self) -> ReplayResult:
         rules = ExecutionRules()
@@ -278,11 +283,16 @@ class _ReplayTier:
     def _buy_candidates(self, rows: dict[str, dict], day: date,
                         record: bool = True) -> list[tuple[dict, Candidate]]:
         result: list[tuple[dict, Candidate]] = []
+        excluded = (self.margin_filter.excluded_codes(day)
+                    if self.margin_filter is not None else set())
         for code, row in rows.items():
             if code in self.positions:
                 continue
             percentile = float(row.get('score_percentile') or 0.0)
             if percentile < self.tier.buy_percentile:
+                continue
+            if excluded and code in excluded:
+                self.margin_filtered += 1
                 continue
             eligibility = check_eligibility(
                 row, self.tier, self.config, 'buy',
@@ -484,6 +494,9 @@ class _ReplayTier:
         sample = self._sample_rows()
         positions = self._positions_ledger()
         diagnostics = self._diagnostics()
+        filter_stats = dict(self.risk.counts)
+        if self.margin_filter is not None:
+            filter_stats['margin_filtered'] = self.margin_filtered
         return ReplayResult(
             tier=self.tier.key, label=self.tier.label, start=self.dates[0],
             end=self.dates[-1], initial_equity=self.initial, final_equity=final,
@@ -493,7 +506,7 @@ class _ReplayTier:
             sell_count=self.sell_count, avg_holding_days=avg_days,
             annual_turnover=annual_turnover, untradable_skipped=self.skipped,
             equity_curve=self.equity_curve, sample_rows=sample,
-            filter_stats=dict(self.risk.counts),
+            filter_stats=filter_stats,
             filter_audit=list(self.risk.audit),
             positions=positions, position_daily=self.position_daily,
             daily=self.daily, diagnostics=diagnostics)

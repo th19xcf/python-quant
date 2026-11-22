@@ -15,6 +15,7 @@
 from src.advice.config import (
     TIER_PRESETS,
     AdviceConfig,
+    MarginFilterConfig,
     PortfolioConstraints,
     TierConfig,
     TradingCosts,
@@ -29,6 +30,7 @@ __all__ = [
     'AdviceConfig',
     'AdviceEngine',
     'AdviceResult',
+    'MarginFilterConfig',
     'PortfolioConstraints',
     'Recommendation',
     'ReplayResult',

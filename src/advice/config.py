@@ -171,6 +171,37 @@ class SoftFilterConfig:
 
 
 @dataclass(frozen=True)
+class MarginFilterConfig:
+    """融资余额 5 日增速分位剔除（选股侧可选闸门，默认关闭）。
+
+    仅作用于新建仓候选：剔除当日横截面「融资余额 N 日增速」排名最高的
+    ``exclude_top_pct`` 部分。依据 ``work/个股两融买点_2026-11-22/结论.md``
+    ——该高增速档在 5/20 日均显著跑输且跨市值稳健，是本轮唯一的反向效应。
+
+    ``enabled=False`` 时完全不读两融数据，选股行为与未接入本过滤器逐位一致。
+    两融数据缺失或当日被 ``completeness.parquet`` 标记不完整时整体跳过过滤
+    并记日志，不把「无数据」当成「未触发」去误剔除。
+    """
+
+    enabled: bool = False
+    #: 增速回看交易日数（5 日增速 = 与第 5 个更早交易日比较）
+    lookback_days: int = 5
+    #: 剔除横截面最高比例（0.10 = 最高 10%）
+    exclude_top_pct: float = 0.10
+    #: 有效两融截面少于该只数时不计算分位（数据不完整），直接跳过
+    min_universe: int = 100
+
+    def validate(self) -> None:
+        if self.lookback_days <= 0:
+            raise ValueError(f'lookback_days 必须为正，实际 {self.lookback_days}')
+        if not 0.0 < self.exclude_top_pct < 1.0:
+            raise ValueError(
+                f'exclude_top_pct 必须在 (0, 1) 内，实际 {self.exclude_top_pct}')
+        if self.min_universe < 1:
+            raise ValueError(f'min_universe 必须为正，实际 {self.min_universe}')
+
+
+@dataclass(frozen=True)
 class TierConfig:
     """单个持有期档位的完整参数。"""
 
@@ -302,6 +333,9 @@ class AdviceConfig:
     factor_set: str = 'legacy'
     #: 软筛选（仅 extended 生效）
     soft_filter: SoftFilterConfig = field(default_factory=SoftFilterConfig)
+    #: 融资余额增速分位剔除（仅选股链路，默认关闭）
+    margin_filter: MarginFilterConfig = field(
+        default_factory=MarginFilterConfig)
     #: 归一化方式：'zscore'（默认）或 'percentile'
     normalization: str = 'zscore'
 
@@ -330,14 +364,18 @@ def default_output_tiers(
 
 
 def default_config(factor_set: str = 'extended',
-                   soft_filter_enabled: bool = True) -> AdviceConfig:
-    """返回一套默认参数（默认启用扩展因子集）。
+                   soft_filter_enabled: bool = True,
+                   margin_filter: MarginFilterConfig | None = None
+                   ) -> AdviceConfig:
+    """返回一套默认参数（默认启用扩展因子集，两融剔除默认关闭）。
 
     ``factor_set='legacy'`` 时完全回到原 12 因子与无软筛选行为，
-    用于 A/B 对照。
+    用于 A/B 对照。``margin_filter`` 不传时保持关闭。
     """
     if factor_set not in ('legacy', 'extended'):
         raise ValueError(f"factor_set 只能是 legacy/extended，实际 {factor_set!r}")
+    margin = margin_filter or MarginFilterConfig()
+    margin.validate()
     tiers = dict(TIER_PRESETS)
     if factor_set == 'extended':
         from src.advice.factor_sets import build_extended_tiers
@@ -347,4 +385,5 @@ def default_config(factor_set: str = 'extended',
         tiers=tiers,
         factor_set=factor_set,
         soft_filter=SoftFilterConfig(enabled=soft_filter_enabled),
+        margin_filter=margin,
     )

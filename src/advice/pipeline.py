@@ -30,6 +30,7 @@ from src.advice.data import LocalPanelLoader, panel_trading_dates
 from src.advice.eligibility import EligibilityResult, check_eligibility
 from src.advice.factor_panel import compute_factor_panel
 from src.advice.ic_monitor import ic_gate_decision, monitor_note, run_ic_monitor
+from src.advice.margin_filter import MarginMomentumFilter
 from src.advice.models import (
     DIRECTION_AVOID,
     DIRECTION_BUY,
@@ -260,6 +261,9 @@ class AdviceEngine:
         result.exec_date_basis = exec_basis
         result.exec_status = resolve_exec_status(earliest_exec, gen_at)
         soft_enabled = extended and self.config.soft_filter.enabled
+        margin_filter = (MarginMomentumFilter(self.config.margin_filter,
+                                              self.store_root)
+                         if self.config.margin_filter.enabled else None)
         for tier in selected:
             scored = attach_score(
                 factors, tier, min_history_rows=self.config.min_history_rows)
@@ -274,7 +278,8 @@ class AdviceEngine:
             advice, new_state = self._run_tier(
                 scored, trade_date, meta, tier, float(equity), state,
                 trading_dates, report.summary(), risk, earliest_exec,
-                block_new_buys=blocked, gate_reason=gate_reason)
+                block_new_buys=blocked, gate_reason=gate_reason,
+                margin_filter=margin_filter)
             advice.notes.append(monitor_note(monitor))
             result.tiers[tier.key] = advice
             if persist_state:
@@ -295,6 +300,7 @@ class AdviceEngine:
                   earliest_exec: date | None = None,
                   block_new_buys: bool = False,
                   gate_reason: str = '',
+                  margin_filter: MarginMomentumFilter | None = None,
                   ) -> tuple[TierAdvice, dict[str, HoldingState]]:
         """单档位闭环：候选筛选 → 持仓决策 → 仓位分配 → 换手上限 → 组装清单。"""
         latest = scored.filter(pl.col('date') == trade_date)
@@ -331,7 +337,8 @@ class AdviceEngine:
 
         candidates, avoid_rows, ranked = self._scan_candidates(
             scored, rows, trade_date, meta, tier, state, risk,
-            block_new_buys, gate_reason, funnel, advice.notes)
+            block_new_buys, gate_reason, funnel, advice.notes,
+            margin_filter=margin_filter)
         best_pct = candidates[0][1].score_percentile if candidates else None
         funnel['funnel_candidates'] = len(candidates)
 
@@ -363,11 +370,22 @@ class AdviceEngine:
         gate_reason: str,
         funnel: dict[str, int],
         notes: list[str],
+        margin_filter: MarginMomentumFilter | None = None,
     ) -> tuple[list[tuple[dict, Candidate, Any]], list[tuple[dict, Any]],
                list[dict]]:
         """按软筛选 + 分数达标 + 可交易 + 成本门槛扫出候选池、回避行与排序全量行。"""
         candidates: list[tuple[dict, Candidate, Any]] = []
         avoid_rows: list[tuple[dict, Any]] = []
+        excluded: set[str] = set()
+        if margin_filter is not None:
+            excluded, status = margin_filter.status_for(trade_date)
+            if status.applied:
+                notes.append(
+                    f"两融剔除：融资余额{self.config.margin_filter.lookback_days}"
+                    f"日增速最高{self.config.margin_filter.exclude_top_pct:.0%}"
+                    f" 剔除 {status.excluded}/{status.universe} 只（仅新建仓）")
+            else:
+                notes.append(f"两融剔除跳过（{status.reason}）")
         if block_new_buys:
             notes.append(gate_reason)
         if 'soft_pass' in scored.columns:
@@ -383,6 +401,8 @@ class AdviceEngine:
         # IC 门禁触发时清空候选池：本期不出新建仓，只保留持仓的持有/卖出管理
         loop_entries = [] if block_new_buys else ranked
         for entry in loop_entries:
+            if excluded and str(entry.get('ts_code')) in excluded:
+                continue
             candidate, avoid = self._evaluate_buy_entry(
                 entry, trade_date, tier, state, risk, meta)
             if candidate is not None:
