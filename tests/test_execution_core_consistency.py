@@ -724,6 +724,29 @@ def test_limit_price_rounded_to_cent_by_exchange_rule():
     assert rules.is_tradable('sell', open_price=9.04, close=9.04, **down_kw) is True
 
 
+def test_limit_price_normalizes_noisy_prev_close_to_cent():
+    """回退前收带浮点噪声时，涨跌停价必须先归一到分，不能带噪声进 Decimal。
+
+    回归实证（影子对拍余留 2 行）：缺 ``pre_close`` 回退上一根收盘时，行情
+    里存的是 12.949999999999998 / 44.349999999999994（真实值 12.95 / 44.35）。
+    旧实现 ``Decimal(str(prev_close))`` 直接乘幅度，得跌停价 11.65 / 39.91，
+    比交易所口径 11.66 / 39.92 低一分，卖侧因此偏乐观。
+    """
+    # 600461.SH 2015-08-26：12.95 × 0.9 = 11.655 → 11.66；× 1.1 = 14.245 → 14.25
+    assert ExecutionRules.resolve_limit_price(
+        12.949999999999998, 0.10, 'sell') == 11.66
+    assert ExecutionRules.resolve_limit_price(
+        12.949999999999998, 0.10, 'buy') == 14.25
+    # 002353.SZ 2015-09-30：44.35 × 0.9 = 39.915 → 39.92；× 1.1 = 48.785 → 48.79
+    assert ExecutionRules.resolve_limit_price(
+        44.349999999999994, 0.10, 'sell') == 39.92
+    assert ExecutionRules.resolve_limit_price(
+        44.349999999999994, 0.10, 'buy') == 48.79
+    # 正常路径（交易所 pre_close 本身即分精度）归一后结果不变
+    assert ExecutionRules.resolve_limit_price(12.95, 0.10, 'sell') == 11.66
+    assert ExecutionRules.resolve_limit_price(44.35, 0.10, 'sell') == 39.92
+
+
 def test_limit_price_numeric_anchors_cover_every_board():
     """P1-5：四类档位的涨跌停价必须落到具体数值（== 比较），不能只断言布尔放行。
 

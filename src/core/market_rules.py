@@ -269,14 +269,23 @@ class ExecutionRules:
           边界上少取一分（算出 11.05，交易所公布 11.06），一字板因此被误判
           可成交、系统性虚增收益；
         - 用 ROUND_HALF_UP 而非内置 round()（银行家舍入，.5 向偶数靠拢），
-          与交易所"四舍五入"口径一致。
+          与交易所"四舍五入"口径一致；
+        - 前收先归一到分再乘。行情前收可能是 12.949999999999998 这类浮点
+          噪声（真实值 12.95，多为缺 ``pre_close`` 时回退上一根收盘所致），
+          直接 ``Decimal(str(...))`` 会带着噪声去乘，12.95×0.9=11.655 被算成
+          11.654999999999998 → 11.65，比交易所的 11.66 低一分。偏离分位不足
+          ``1e-9`` 的前收视为噪声并归一到分（正常 pre_close 本身即分精度，
+          是恒等变换）；真正带分位以上小数的历史前收保持原值，不改既有口径。
 
         Args:
             prev_close: 前收盘价（原始价，非复权价）
             limit: 涨跌停幅度（如 0.10 / 0.20）
             side: 'buy' 取涨停价，'sell' 取跌停价
         """
-        base = Decimal(str(prev_close))
+        raw = Decimal(str(prev_close))
+        cent = raw.quantize(PRICE_TICK, rounding=ROUND_HALF_UP)
+        # 仅吸收双精度表示噪声（约 1e-14 量级），不动真实的小数位
+        base = cent if abs(raw - cent) <= Decimal('1e-9') else raw
         pct = Decimal(str(limit))
         factor = Decimal('1') + pct if side == 'buy' else Decimal('1') - pct
         return float((base * factor).quantize(PRICE_TICK, rounding=ROUND_HALF_UP))
