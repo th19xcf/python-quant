@@ -47,6 +47,19 @@ ACTIONS = {'create', 'update', 'delete'}
 BOM = b'\xef\xbb\xbf'
 
 
+@dataclass(frozen=True)
+class EncodingIssue:
+    """一处非法 UTF-8 字节：文件字节偏移 + 行号 + 原始字节。"""
+
+    byte_offset: int
+    line_no: int
+    raw: bytes
+
+    def describe(self) -> str:
+        return (f'第 {self.line_no} 行 / 字节偏移 {self.byte_offset} '
+                f'/ 非法字节 {self.raw.hex(" ")}')
+
+
 @dataclass
 class LedgerReport:
     """单个台账文件的体检结果。"""
@@ -61,6 +74,7 @@ class LedgerReport:
     header_ok: bool = False
     bad_column_rows: list[int] = field(default_factory=list)
     value_violations: dict[str, int] = field(default_factory=dict)
+    encoding_issues: list[EncodingIssue] = field(default_factory=list)
 
     @property
     def last_row_complete(self) -> bool:
@@ -79,6 +93,7 @@ class BaselineReport:
     rows_regressed: bool = False
     is_prefix: bool = False
     same_row_count_bytes_differ: bool = False
+    encoding_issues: list[EncodingIssue] = field(default_factory=list)
 
 
 @dataclass
@@ -100,12 +115,41 @@ def _parse_rows(lines: list[str]) -> list[list[str]]:
     return [next(csv.reader([line])) if line else [] for line in lines]
 
 
+def _decode_tolerant(
+    raw: bytes, *, offset: int = 0,
+) -> tuple[str, list[EncodingIssue]]:
+    """按 UTF-8 解码；遇非法字节登记位置后继续，不再整体抛错。
+
+    ``offset`` 为 ``raw`` 在文件中的起始偏移（带 BOM 时为 3），用于把报告里
+    的偏移换算回文件绝对位置。非法字节用 ``U+FFFD`` 占位，既不丢行结构，
+    也让该行仍会被「列数不符」规则二次点名。
+    """
+    issues: list[EncodingIssue] = []
+    chunks: list[str] = []
+    pos = 0
+    line_no = 1
+    while pos < len(raw):
+        try:
+            chunks.append(raw[pos:].decode('utf-8'))
+            break
+        except UnicodeDecodeError as exc:
+            start = pos + exc.start
+            end = pos + exc.end
+            chunks.append(raw[pos:start].decode('utf-8'))
+            line_no += raw[pos:start].count(b'\n')
+            issues.append(EncodingIssue(offset + start, line_no, raw[start:end]))
+            chunks.append('\ufffd')
+            pos = end
+    return ''.join(chunks), issues
+
+
 def inspect_ledger(path: Path) -> LedgerReport:
     """读取并体检台账：编码、行尾、末行完整、列数、值域。"""
     raw = path.read_bytes()
     report = LedgerReport(path=path, size_bytes=len(raw), sha256=_sha256(raw))
     report.has_bom = raw.startswith(BOM)
-    text = raw[len(BOM):].decode('utf-8') if report.has_bom else raw.decode('utf-8')
+    base = len(BOM) if report.has_bom else 0
+    text, report.encoding_issues = _decode_tolerant(raw[base:], offset=base)
 
     report.ends_with_newline = text.endswith('\n')
     lines = text.split('\n')
@@ -151,7 +195,7 @@ def compare_baseline(current: LedgerReport, baseline_path: Path) -> BaselineRepo
         return BaselineReport(path=baseline_path, available=False)
     base_raw = baseline_path.read_bytes()
     current_raw = current.path.read_bytes()
-    base_text = base_raw.decode('utf-8')
+    base_text, base_issues = _decode_tolerant(base_raw)
     base_lines = base_text.split('\n')
     # 无论基线是否以换行结尾，都只统计「完整行」；末段（空串或残行）不计入
     base_lines = base_lines[:-1]
@@ -167,6 +211,7 @@ def compare_baseline(current: LedgerReport, baseline_path: Path) -> BaselineRepo
         same_row_count_bytes_differ=(
             current.row_count == base_rows and current_raw != base_raw
         ),
+        encoding_issues=base_issues,
     )
 
 
@@ -203,6 +248,10 @@ def check_ledger(
 
     if ledger.has_bom:
         failures.append(f'文件带 UTF-8 BOM：{ledger.path}')
+    if ledger.encoding_issues:
+        preview = '；'.join(issue.describe() for issue in ledger.encoding_issues[:5])
+        failures.append(
+            f'非法 UTF-8 字节 {len(ledger.encoding_issues)} 处（{ledger.path}）：{preview}')
     if not ledger.ends_with_newline:
         failures.append('末行未以换行结尾（疑似被截断）')
     if not ledger.header_ok:
@@ -224,6 +273,12 @@ def check_ledger(
         if not baseline.available:
             failures.append(f'基线文件不存在，无法校验只增不减：{baseline.path}')
         else:
+            if baseline.encoding_issues:
+                preview = '；'.join(
+                    issue.describe() for issue in baseline.encoding_issues[:5])
+                failures.append(
+                    f'基线含 {len(baseline.encoding_issues)} 处非法 UTF-8：'
+                    f'{baseline.path}：{preview}')
             if baseline.rows_regressed:
                 failures.append(
                     f'行数倒退：当前 {ledger.row_count} 行 < 基线 {baseline.row_count} 行')
@@ -248,6 +303,10 @@ def render(result: CheckResult) -> str:
     ]
     if ledger.bad_column_rows:
         lines.append(f'  列数不符行号：{ledger.bad_column_rows[:20]}')
+    if ledger.encoding_issues:
+        lines.append(f'  非法 UTF-8 字节 {len(ledger.encoding_issues)} 处：')
+        for issue in ledger.encoding_issues[:10]:
+            lines.append(f'    - {issue.describe()}')
     if ledger.value_violations:
         lines.append(
             '  历史值域缺陷（仅统计，不回写）：'

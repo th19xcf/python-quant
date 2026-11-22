@@ -11,7 +11,8 @@ packages = [
 ]
 
 [tool.poetry.dependencies]
-python = ">=3.14,<3.16"
+# 下限只做声明（3.12），当前环境仍是 3.14；实际切换需重新 lock 并重建环境
+python = ">=3.12,<3.16"
 # 数据处理
 pandas = "==3.1.0"
 polars = "==2.1.0"
@@ -27,9 +28,7 @@ py-mini-racer = "==0.6.0"
 tushare = "^1.4.29"
 # 技术分析
 numba = "==0.68.1"
-# UI框架
-pyside6 = "==6.12.0"
-pyqtgraph = "==0.14.0"
+# 图表：plotly 生成 HTML 报告，不是桌面 GUI，保留在主依赖
 plotly = "==7.1.0"
 # 数据库
 pymysql = "==1.2.3"
@@ -122,6 +121,17 @@ pytdx = "==1.72"
 mootdx = "==0.11.7"
 tdxpy = "==0.2.7"
 
+[tool.poetry.group.gui]
+# 可选组：桌面 GUI（PySide6 + pyqtgraph）
+# `poetry install --without gui` 只装核心回测/因子引擎，不装 Qt；
+# src/main.py 以 try/except ImportError 保护 GUI 导入，CLI 子命令无需 Qt；
+# 缺包时 tests/ 中依赖 Qt 的用例由 pytest.importorskip 跳过。
+optional = true
+
+[tool.poetry.group.gui.dependencies]
+pyside6 = "==6.12.0"
+pyqtgraph = "==0.14.0"
+
 [[tool.poetry.source]]
 name = "mirrors"
 url = "https://pypi.tuna.tsinghua.edu.cn/simple"
@@ -133,7 +143,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.black]
 line-length = 88
-target-version = ['py314']
+target-version = ['py312']
 include = '\.pyi?$'
 extend-exclude = '''
 /(\.
@@ -159,7 +169,7 @@ markers = [
 
 [tool.ruff]
 line-length = 88
-target-version = "py314"
+target-version = "py312"
 exclude = ["venv", ".venv", "build", "dist"]
 
 [tool.ruff.lint]
@@ -246,7 +256,7 @@ max-complexity = 15
 "src/utils/logger.py" = ["T201"]
 
 [tool.mypy]
-python_version = "3.14"
+python_version = "3.12"
 mypy_path = "."
 explicit_package_bases = true
 ignore_missing_imports = true

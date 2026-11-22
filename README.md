@@ -2,7 +2,7 @@
 
 基于 Windows 平台的 Python 量化分析系统，专注于 A 股技术分析、回测引擎、多因子选股与可视化。
 
-**技术栈**：Python 3.14（`>=3.14,<3.16`）/ PySide6 / Polars / SQLAlchemy + MySQL / Loguru / Poetry（`poetry.lock` 锁定全部传递依赖）
+**技术栈**：Python 声明 `>=3.12,<3.16`（当前环境仍是 3.14）/ PySide6（可选组 `gui`）/ Polars / SQLAlchemy + MySQL / Loguru / Poetry（`poetry.lock` 锁定全部传递依赖）
 
 ---
 
@@ -13,7 +13,8 @@
 git clone <your-repo> && cd quant
 
 # 2. 安装依赖（Poetry 按 poetry.lock 精确安装，跨机器版本可复现）
-poetry install              # 运行时 + dev（pytest / ruff / mypy）
+poetry install              # 运行时 + dev（含 gui 组）
+poetry install --without gui # 无桌面：只装核心回测/因子引擎，不装 PySide6
 poetry install --with gpu   # 可选：仅 CUDA 环境，额外安装 cupy
 
 # 3. 配置数据库与通达信路径
@@ -340,7 +341,8 @@ cp .env.example .env
 ## 开发约定
 
 - 依赖管理：Poetry；运行时直接依赖固定为 `==` 版本，`poetry.lock` 锁定全部传递依赖（不要在未更新锁文件的情况下手工 `pip install` 升级依赖，否则回测结果不可复现）
-- 可选依赖组：`dev`（pytest / ruff / mypy / black，默认安装）、`gpu`（`cupy-cuda12x`，`poetry install --with gpu`）；GPU 缺失时 `gpu_acceleration.py` 自动降级为 NumPy
+- 可选依赖组：`dev`（pytest / ruff / mypy / black，默认安装）、`gui`（PySide6 / pyqtgraph）、`gpu`（`cupy-cuda12x`，`poetry install --with gpu`）；`poetry install --without gui` 只装核心回测与因子引擎，缺 Qt 时 CLI 子命令照常运行，仅桌面窗口启动会提示安装 gui 组；GPU 缺失时 `gpu_acceleration.py` 自动降级为 NumPy
+- Python 版本声明：`pyproject.toml` 下限已改为 `>=3.12`，ruff / black 的 `target-version` 与 mypy 的 `python_version` 同步为 `py312`。本次只改声明，未重新 lock、未重建环境；实际切到 3.12 需重新 `poetry lock` 并重建 venv，且需先验证工具链自身（pytest 9 / mypy 2 / black 26 / ruff 0.17）的 `requires-python` 与 3.12 行为，存在工具链不支持 3.12 的前置风险
 - `gpu` 组是「运行时依赖固定 `==`」的唯一例外写法：PyPI 的 `cupy` 14.2.0 只发布 sdist（`cupy-14.2.0.tar.gz`，无任何 wheel），Windows + cp314 无法安装，因此声明变体分发 `cupy-cuda12x = "==14.2.0"`（提供 `cp314-cp314-win_amd64.whl`，`import cupy` 名称不变）；CUDA 13.x 环境把依赖名换成 `cupy-cuda13x = "==14.2.0"` 即可，代码无需改动
 - 提交路径：项目目录 `e:\code\python\quant` 为 Git 仓库；每次提交前先同步备份目录 `G:\git\python-quant`（保持相同相对路径）
 - 数据库迁移：Alembic（`.\.venv\Scripts\python.exe -m alembic upgrade head`；改表必须先 `alembic revision --autogenerate -m "..."` 生成脚本，禁止手写 DDL，`create_tables()` 内部已走 `alembic upgrade head`）
