@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 
 from src.backtest.costs.cost_model import COST_DEFAULTS
+from src.core.tradability import TradabilityConfig
 from src.quant.learning.config import MIN_HISTORY_ROWS
 
 
@@ -171,6 +172,18 @@ class SoftFilterConfig:
 
 
 @dataclass(frozen=True)
+class TradabilityFilterConfig(TradabilityConfig):
+    """实盘建议层的可交易性过滤：默认开启。
+
+    与研究回测层分开配置：``backtest/runner`` 的 spec 缺省
+    ``TradabilityConfig.research_default()``（关闭，保持历史结果可比）；
+    实盘给出买入建议前先把「当天根本买不到」的票筛掉，因此这里默认开启。
+    """
+
+    enabled: bool = True
+
+
+@dataclass(frozen=True)
 class MarginFilterConfig:
     """融资余额 5 日增速分位剔除（选股侧可选闸门，默认关闭）。
 
@@ -199,6 +212,87 @@ class MarginFilterConfig:
                 f'exclude_top_pct 必须在 (0, 1) 内，实际 {self.exclude_top_pct}')
         if self.min_universe < 1:
             raise ValueError(f'min_universe 必须为正，实际 {self.min_universe}')
+
+
+@dataclass(frozen=True)
+class Rev5ExcludeConfig:
+    """近 N 日复权收益最高分位剔除（排除层规则一，默认关闭）。
+
+    口径沿用 ``work/REV5与异常换手_2026-11-22/factor_definition.md``：
+    ``REV5[t] = -(close_hfq[t]/close_hfq[t-window] - 1)``，Q1（最低 REV5，
+    即近 5 日涨幅最大）为被剔除组；等价地按近 5 日复权收益排名剔除最高
+    ``exclude_top_pct``。只用当日及以前数据，停牌导致的窗口缺口置空。
+    """
+
+    enabled: bool = False
+    #: 收益回看交易日数（位置差 = window）
+    window: int = 5
+    #: 剔除横截面最高比例（0.20 = 最高 20%）
+    exclude_top_pct: float = 0.20
+    #: 有效截面少于该只数时整体跳过（数据不完整）
+    min_universe: int = 100
+
+    def validate(self) -> None:
+        if self.window <= 0:
+            raise ValueError(f'REV5 window 必须为正，实际 {self.window}')
+        if not 0.0 < self.exclude_top_pct < 1.0:
+            raise ValueError(
+                f'REV5 exclude_top_pct 必须在 (0, 1) 内，实际 {self.exclude_top_pct}')
+        if self.min_universe < 1:
+            raise ValueError(f'REV5 min_universe 必须为正，实际 {self.min_universe}')
+
+
+@dataclass(frozen=True)
+class AtoExcludeConfig:
+    """异常换手最高分位剔除（排除层规则二，默认关闭）。
+
+    口径沿用同一份研究：``ATO[t] = turn[t] / mean(turn[t-20..t-1])``，
+    分母不含当日且要求过去 20 个该股交易日内至少 15 个非空观测；
+    缺失不插值。剔除当日 ATO 最高的 ``exclude_top_pct``。
+    """
+
+    enabled: bool = False
+    #: 均换手回看交易日数（不含当日）
+    lookback_days: int = 20
+    #: 分母窗口最少非空观测数
+    min_obs: int = 15
+    exclude_top_pct: float = 0.20
+    min_universe: int = 100
+
+    def validate(self) -> None:
+        if self.lookback_days <= 0:
+            raise ValueError(
+                f'ATO lookback_days 必须为正，实际 {self.lookback_days}')
+        if not 1 <= self.min_obs <= self.lookback_days:
+            raise ValueError(
+                f'ATO min_obs 必须在 [1, {self.lookback_days}] 内，'
+                f'实际 {self.min_obs}')
+        if not 0.0 < self.exclude_top_pct < 1.0:
+            raise ValueError(
+                f'ATO exclude_top_pct 必须在 (0, 1) 内，实际 {self.exclude_top_pct}')
+        if self.min_universe < 1:
+            raise ValueError(f'ATO min_universe 必须为正，实际 {self.min_universe}')
+
+
+@dataclass(frozen=True)
+class ExclusionLayerConfig:
+    """统一排除层：三条独立开关的「新建仓拦截」规则。
+
+    默认全部关闭；全部关闭时排除层不读取任何额外数据，输出与未接入时
+    逐位一致。融资余额增速继续复用既有 ``MarginMomentumFilter`` 实现。
+    """
+
+    rev5: Rev5ExcludeConfig = field(default_factory=Rev5ExcludeConfig)
+    ato: AtoExcludeConfig = field(default_factory=AtoExcludeConfig)
+    margin: MarginFilterConfig = field(default_factory=MarginFilterConfig)
+
+    def any_enabled(self) -> bool:
+        return bool(self.rev5.enabled or self.ato.enabled or self.margin.enabled)
+
+    def validate(self) -> None:
+        self.rev5.validate()
+        self.ato.validate()
+        self.margin.validate()
 
 
 @dataclass(frozen=True)
@@ -333,9 +427,12 @@ class AdviceConfig:
     factor_set: str = 'legacy'
     #: 软筛选（仅 extended 生效）
     soft_filter: SoftFilterConfig = field(default_factory=SoftFilterConfig)
-    #: 融资余额增速分位剔除（仅选股链路，默认关闭）
-    margin_filter: MarginFilterConfig = field(
-        default_factory=MarginFilterConfig)
+    #: 统一排除层（三条规则各自开关，默认全部关闭）
+    exclusion: ExclusionLayerConfig = field(
+        default_factory=ExclusionLayerConfig)
+    #: 可交易性过滤（实盘建议层默认开启，研究回测层由 runner spec 默认关闭）
+    tradability: TradabilityFilterConfig = field(
+        default_factory=TradabilityFilterConfig)
     #: 归一化方式：'zscore'（默认）或 'percentile'
     normalization: str = 'zscore'
 
@@ -365,17 +462,22 @@ def default_output_tiers(
 
 def default_config(factor_set: str = 'extended',
                    soft_filter_enabled: bool = True,
-                   margin_filter: MarginFilterConfig | None = None
+                   margin_filter: MarginFilterConfig | None = None,
+                   exclusion: ExclusionLayerConfig | None = None
                    ) -> AdviceConfig:
-    """返回一套默认参数（默认启用扩展因子集，两融剔除默认关闭）。
+    """返回一套默认参数（默认启用扩展因子集，排除层三条规则默认全关）。
 
     ``factor_set='legacy'`` 时完全回到原 12 因子与无软筛选行为，
-    用于 A/B 对照。``margin_filter`` 不传时保持关闭。
+    用于 A/B 对照。``margin_filter`` 是旧入口，等价于只覆盖排除层的
+    融资余额规则；``exclusion`` 给出完整排除层配置。两者同时给出时
+    ``margin_filter`` 优先覆盖 ``exclusion.margin``。
     """
     if factor_set not in ('legacy', 'extended'):
         raise ValueError(f"factor_set 只能是 legacy/extended，实际 {factor_set!r}")
-    margin = margin_filter or MarginFilterConfig()
-    margin.validate()
+    layer = exclusion or ExclusionLayerConfig()
+    if margin_filter is not None:
+        layer = replace(layer, margin=margin_filter)
+    layer.validate()
     tiers = dict(TIER_PRESETS)
     if factor_set == 'extended':
         from src.advice.factor_sets import build_extended_tiers
@@ -385,5 +487,5 @@ def default_config(factor_set: str = 'extended',
         tiers=tiers,
         factor_set=factor_set,
         soft_filter=SoftFilterConfig(enabled=soft_filter_enabled),
-        margin_filter=margin,
+        exclusion=layer,
     )

@@ -30,7 +30,8 @@ from src.advice.data import LocalPanelLoader, panel_trading_dates
 from src.advice.eligibility import EligibilityResult, check_eligibility
 from src.advice.factor_panel import compute_factor_panel
 from src.advice.ic_monitor import ic_gate_decision, monitor_note, run_ic_monitor
-from src.advice.margin_filter import MarginMomentumFilter
+from src.advice.exclusion_layer import ExclusionLayer
+from src.advice.tradability import TradabilityLayer
 from src.advice.models import (
     DIRECTION_AVOID,
     DIRECTION_BUY,
@@ -261,9 +262,11 @@ class AdviceEngine:
         result.exec_date_basis = exec_basis
         result.exec_status = resolve_exec_status(earliest_exec, gen_at)
         soft_enabled = extended and self.config.soft_filter.enabled
-        margin_filter = (MarginMomentumFilter(self.config.margin_filter,
-                                              self.store_root)
-                         if self.config.margin_filter.enabled else None)
+        exclusion = (ExclusionLayer(self.config.exclusion, self.store_root,
+                                    history=factors)
+                     if self.config.exclusion.any_enabled() else None)
+        tradability = (TradabilityLayer(self.config.tradability, self.store_root)
+                       if self.config.tradability.switch_enabled() else None)
         for tier in selected:
             scored = attach_score(
                 factors, tier, min_history_rows=self.config.min_history_rows)
@@ -279,7 +282,7 @@ class AdviceEngine:
                 scored, trade_date, meta, tier, float(equity), state,
                 trading_dates, report.summary(), risk, earliest_exec,
                 block_new_buys=blocked, gate_reason=gate_reason,
-                margin_filter=margin_filter)
+                exclusion=exclusion, tradability=tradability)
             advice.notes.append(monitor_note(monitor))
             result.tiers[tier.key] = advice
             if persist_state:
@@ -300,7 +303,8 @@ class AdviceEngine:
                   earliest_exec: date | None = None,
                   block_new_buys: bool = False,
                   gate_reason: str = '',
-                  margin_filter: MarginMomentumFilter | None = None,
+                  exclusion: ExclusionLayer | None = None,
+                  tradability: TradabilityLayer | None = None,
                   ) -> tuple[TierAdvice, dict[str, HoldingState]]:
         """单档位闭环：候选筛选 → 持仓决策 → 仓位分配 → 换手上限 → 组装清单。"""
         latest = scored.filter(pl.col('date') == trade_date)
@@ -338,7 +342,7 @@ class AdviceEngine:
         candidates, avoid_rows, ranked = self._scan_candidates(
             scored, rows, trade_date, meta, tier, state, risk,
             block_new_buys, gate_reason, funnel, advice.notes,
-            margin_filter=margin_filter)
+            exclusion=exclusion, tradability=tradability)
         best_pct = candidates[0][1].score_percentile if candidates else None
         funnel['funnel_candidates'] = len(candidates)
 
@@ -370,22 +374,30 @@ class AdviceEngine:
         gate_reason: str,
         funnel: dict[str, int],
         notes: list[str],
-        margin_filter: MarginMomentumFilter | None = None,
+        exclusion: ExclusionLayer | None = None,
+        tradability: TradabilityLayer | None = None,
     ) -> tuple[list[tuple[dict, Candidate, Any]], list[tuple[dict, Any]],
                list[dict]]:
-        """按软筛选 + 分数达标 + 可交易 + 成本门槛扫出候选池、回避行与排序全量行。"""
+        """按可交易性 + 排除层 + 软筛选 + 分数达标 + 可交易 + 成本门槛扫出候选池。"""
         candidates: list[tuple[dict, Candidate, Any]] = []
         avoid_rows: list[tuple[dict, Any]] = []
         excluded: set[str] = set()
-        if margin_filter is not None:
-            excluded, status = margin_filter.status_for(trade_date)
-            if status.applied:
-                notes.append(
-                    f"两融剔除：融资余额{self.config.margin_filter.lookback_days}"
-                    f"日增速最高{self.config.margin_filter.exclude_top_pct:.0%}"
-                    f" 剔除 {status.excluded}/{status.universe} 只（仅新建仓）")
-            else:
-                notes.append(f"两融剔除跳过（{status.reason}）")
+        if exclusion is not None:
+            result = exclusion.status_for(trade_date)
+            excluded = set(result.codes)
+            notes.extend(result.notes())
+        if tradability is not None:
+            codes = [str(entry.get('ts_code')) for entry in rows]
+            amounts = {
+                str(entry['ts_code']): float(entry['amount_ma20'])
+                for entry in rows
+                if entry.get('amount_ma20') is not None
+            }
+            tr = tradability.status_for(trade_date, codes, amounts)
+            excluded |= set(tr.codes)
+            for item, count in tr.summary().items():
+                funnel[f'funnel_tradability_{item}'] = count
+            notes.extend(tr.notes())
         if block_new_buys:
             notes.append(gate_reason)
         if 'soft_pass' in scored.columns:
