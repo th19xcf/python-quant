@@ -40,6 +40,9 @@ ROLE_TOTAL_MV_YI = 'total_mv_yi'
 ROLE_CATEGORY = 'category'
 ROLE_RAW_OPEN = 'raw_open'
 ROLE_RAW_CLOSE = 'raw_close'
+#: 交易所前收盘（已按除权除息调整的参考价）。涨跌停判定的唯一前收来源，
+#: 缺失时回退到上一根 bar 的原始收盘。
+ROLE_PRE_CLOSE = 'pre_close'
 #: 引擎派生列（不在输入里，由 _prepare_universe 生成，仅在此声明语义）
 ROLE_ADV_VOLUME = 'adv_volume'
 ROLE_ADV20 = 'adv20'
@@ -199,6 +202,8 @@ BAR_CONTRACT = FrameContract('bar', (
     ColumnSpec(ROLE_CATEGORY, 'category', False, '品种标签（ETF / 行业主题）'),
     ColumnSpec(ROLE_RAW_OPEN, 'raw_open', False, 'hfq 出口原始开盘价，与 raw_close 成对'),
     ColumnSpec(ROLE_RAW_CLOSE, 'raw_close', False, 'hfq 出口原始收盘价'),
+    ColumnSpec(ROLE_PRE_CLOSE, 'pre_close', False,
+               '交易所前收盘（除权调整后参考价），涨跌停判定用；缺失回退上一根原始收盘'),
 ))
 
 #: 因子契约：指标预计算的产物，策略读取前必须存在。

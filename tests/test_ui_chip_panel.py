@@ -1,5 +1,10 @@
 """筹码栏显隐单测：Ctrl+U 作用域、按钮同步、隐藏后主图铺满、视口保持。"""
 
+import pytest
+
+# GUI 属于可选组 gui；未安装 PySide6 时整文件跳过
+pytest.importorskip("PySide6.QtWidgets")
+
 from types import SimpleNamespace
 
 from PySide6.QtCore import QEvent, QPointF, Qt

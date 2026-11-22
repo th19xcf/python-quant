@@ -1,5 +1,10 @@
 """导航 Mixin 与表格交互管理器测试（离屏，无网络/数据库）。"""
 
+import pytest
+
+# GUI 属于可选组 gui；未安装 PySide6 时整文件跳过
+pytest.importorskip("PySide6.QtWidgets")
+
 from pathlib import Path
 from types import SimpleNamespace
 

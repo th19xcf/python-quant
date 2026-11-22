@@ -4,6 +4,11 @@
 _update_tooltips 直接对 None 调用 .lower() 触发 AttributeError。
 """
 
+import pytest
+
+# GUI 属于可选组 gui；未安装 PySide6 时整文件跳过
+pytest.importorskip("PySide6.QtWidgets")
+
 import src.ui.event_handlers.mouse_handlers as mouse_handlers
 from src.ui.event_handlers.mouse_handlers import MouseHandler
 

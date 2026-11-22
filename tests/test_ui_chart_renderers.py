@@ -1,5 +1,10 @@
 """图表指标渲染 Mixin 单元测试（离屏 pyqtgraph，不依赖网络/数据库）。"""
 
+import pytest
+
+# GUI 属于可选组 gui；未安装 PySide6 时整文件跳过
+pytest.importorskip("PySide6.QtWidgets")
+
 from types import SimpleNamespace
 
 import numpy as np

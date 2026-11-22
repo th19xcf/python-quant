@@ -1,5 +1,10 @@
 """主窗口离屏冒烟测试，作为 UI 重构的回归基线。"""
 
+import pytest
+
+# GUI 属于可选组 gui；未安装 PySide6 时整文件跳过
+pytest.importorskip("PySide6.QtWidgets")
+
 from types import SimpleNamespace
 
 from PySide6.QtGui import QFont, QFontMetrics

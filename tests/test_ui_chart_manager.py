@@ -1,5 +1,10 @@
 """ChartManager 单元测试：数据准备、坐标轴、标签渲染与指标绘制（离屏）。"""
 
+import pytest
+
+# GUI 属于可选组 gui；未安装 PySide6 时整文件跳过
+pytest.importorskip("PySide6.QtWidgets")
+
 from types import SimpleNamespace
 
 import numpy as np

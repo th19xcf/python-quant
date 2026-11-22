@@ -10,6 +10,11 @@ P1 加固项回归测试
 - V-05 状态机回测工具的类数棘轮（只允许追加函数，禁止新增类）
 """
 
+import pytest
+
+# GUI 属于可选组 gui；未安装 PySide6 时整文件跳过
+pytest.importorskip("PySide6.QtWidgets")
+
 import ast
 import time
 from pathlib import Path

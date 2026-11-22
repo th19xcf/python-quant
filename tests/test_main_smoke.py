@@ -1,5 +1,10 @@
 """main 入口冒烟测试：参数解析与启动/清理流程（外部依赖全部打桩）。"""
 
+import pytest
+
+# GUI 属于可选组 gui；未安装 PySide6 时整文件跳过
+pytest.importorskip("PySide6.QtWidgets")
+
 import sys
 from types import SimpleNamespace
 

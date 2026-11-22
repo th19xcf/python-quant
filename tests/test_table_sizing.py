@@ -5,6 +5,11 @@
 
 from __future__ import annotations
 
+import pytest
+
+# GUI 属于可选组 gui；未安装 PySide6 时整文件跳过
+pytest.importorskip("PySide6.QtWidgets")
+
 import re
 from pathlib import Path
 

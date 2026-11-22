@@ -367,6 +367,33 @@ def test_limit_check_uses_raw_prices_blocks_buy_on_ex_dividend_limit_up():
     assert any(o['reason'] == 'not_tradable' for o in result['expired_orders'])
 
 
+def test_limit_check_uses_exchange_pre_close_on_ex_rights_day():
+    """除权除息日必须用交易所前收（除权参考价），不得用上一根未调整收盘。
+
+    d3 为 10 转 10 除权日：上一根收盘 10.0，交易所前收 5.0，开盘 5.1。
+    用上一根收盘判定会把 5.1 误判为跌停（≤9.0）挡住卖出；用前收 5.0
+    判定跌停价 4.5，卖出应正常成交。
+    """
+    days = 3
+    dates = pd.date_range('2023-01-02', periods=days, freq='B')
+    df = pl.DataFrame({
+        'date': dates,
+        'open': [10.0, 10.0, 5.1],
+        'high': [10.0, 10.0, 5.1],
+        'low': [10.0, 10.0, 5.1],
+        'close': [10.0, 10.0, 5.1],
+        'volume': [1_000_000.0] * days,
+        'pre_close': [10.0, 10.0, 5.0],
+    })
+    engine = BacktestEngine(df)
+    engine.set_strategy(_IndexSignalStrategy({0: 'buy', 1: 'sell'}))
+    result = engine.run_backtest(initial_capital=100_000.0, ts_code='600000.SH')
+
+    sells = [t for t in result['trades'] if t['signal'] == 'sell']
+    assert len(sells) == 1, '除权日按交易所前收判定，卖出不得被误判为跌停'
+    assert result['blocked_reason_counts'] == {}
+
+
 def test_limit_pct_resolves_by_board_prefix():
     """涨跌停幅度必须按代码前缀自适应推导，且不存在可覆盖的 limit_pct 假旋钮。"""
     def resolve(code):

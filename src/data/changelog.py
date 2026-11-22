@@ -224,6 +224,57 @@ def _find_recent_duplicate(
     return None
 
 
+def _lock_fd(fd: int) -> None:
+    """对锁文件描述符加独占锁（跨进程串行化追加）。"""
+    if os.name == "nt":
+        import msvcrt
+
+        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(fd, fcntl.LOCK_EX)
+
+
+def _unlock_fd(fd: int) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        try:
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+    else:
+        import fcntl
+
+        fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+def _append_line(target: Path, line: str) -> None:
+    """严格编码后，在跨进程锁内单次 ``write`` + ``fsync`` 追加一行。
+
+    历史事故（2026-11-13 / 11-18）：台账里出现 6 行单列残片（``0x89``、
+    ``86 99 e7 9b 98 ef bc 89``），夹在完整记录之间，内容是被截断的相邻行
+    ``reason`` 尾部。文本层缓冲 + 多进程并发追加是唯一能产生「半截 UTF-8
+    字符 + 换行」的路径，故这里不再经过文本缓冲：先严格编码成字节（孤立
+    代理项等直接抛错，不会写出坏字节），再在锁文件保护下一次性写盘。
+    """
+    payload = line.encode("utf-8")
+    if not payload.endswith(b"\n"):
+        raise ValueError("台账行必须以换行结尾")
+    lock = target.with_name(target.name + ".lock")
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock, os.O_CREAT | os.O_RDWR)
+    try:
+        _lock_fd(fd)
+        with open(target, "ab", buffering=0) as f:
+            f.write(payload)
+            os.fsync(f.fileno())
+    finally:
+        _unlock_fd(fd)
+        os.close(fd)
+
+
 def append_event(
     *,
     action: str,
@@ -302,8 +353,7 @@ def append_event(
                 f"台账行结构异常：表头 {width} 列，序列化后 {len(cells)} 列；"
                 f"字段含未转义的逗号/换行（task={task!r}）"
             )
-        with open(target, "a", encoding="utf-8", newline="\n") as f:
-            f.write(line)
+        _append_line(target, line)
     return {**row, "duplicate": "false"}
 
 

@@ -1,6 +1,11 @@
 
 """IndicatorLabelManager 与共享指标展示表的一致性测试（无需 GUI 环境）"""
 
+import pytest
+
+# GUI 属于可选组 gui；未安装 PySide6 时整文件跳过
+pytest.importorskip("PySide6.QtWidgets")
+
 import polars as pl
 
 from src.ui.indicator_labels import IndicatorLabelManager

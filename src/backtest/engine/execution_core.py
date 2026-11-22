@@ -70,6 +70,7 @@ from src.backtest.engine.input_contract import (
     ROLE_HIGH,
     ROLE_LOW,
     ROLE_OPEN,
+    ROLE_PRE_CLOSE,
     ROLE_RAW_CLOSE,
     ROLE_RAW_OPEN,
     ROLE_TOTAL_MV,
@@ -212,6 +213,9 @@ class Bar(NamedTuple):
     total_mv_yi: float | None = None
     #: 品种细分标签（如 ETF 的 'sector' / 'industry' / 'theme'），影响 ETF 档位
     category: str | None = None
+    #: 交易所前收盘（已按除权除息调整的参考价），仅用于涨跌停判定；
+    #: 缺失时由 _select_check_prices 回退到上一根 bar 的原始收盘
+    pre_close: float | None = None
 
 
 class SlippageInputs(TypedDict):
@@ -900,9 +904,11 @@ class EventBacktestRunner:
         return (cols[resolved[ROLE_CLOSE]], get(ROLE_OPEN), get(ROLE_HIGH),
                 get(ROLE_LOW), get(ROLE_VOLUME), get(ROLE_RAW_OPEN),
                 get(ROLE_RAW_CLOSE),
-                # 以下四项是派生列，键名固定为语义角色（不是源列名）
+                # 前四项是派生列，键名固定为语义角色（不是源列名）；
+                # 末项 pre_close 是可选输入列（交易所前收盘）
                 cols.get(ROLE_ADV_VOLUME), cols.get(ROLE_ADV20),
-                cols.get(ROLE_TOTAL_MV_YI), cols.get(ROLE_CATEGORY))
+                cols.get(ROLE_TOTAL_MV_YI), cols.get(ROLE_CATEGORY),
+                get(ROLE_PRE_CLOSE))
 
     def _require_adv_inputs(self, gate: RiskGate,
                             column_data: Dict[str, Dict[str, list]]) -> None:
@@ -1684,7 +1690,8 @@ class EventBacktestRunner:
                 # （列引用已在 run() 中按标的一次性解析为 bar_columns[code] 元组）
                 (close_col, open_col, high_col, low_col,
                  volume_col, raw_open_col, raw_close_col,
-                 adv_col, adv20_col, mv_yi_col, category_col) = bar_columns[code]
+                 adv_col, adv20_col, mv_yi_col, category_col,
+                 pre_close_col) = bar_columns[code]
                 # A24：行情值统一归一到有限 float，字符串/Decimal/NaN/inf 不再
                 # 在后续比较或费用计算中抛 TypeError
                 close_price = finite_float(close_col[pos])
@@ -1739,6 +1746,10 @@ class EventBacktestRunner:
                                      if mv_yi_col is not None else None),
                         category=(category_col[pos]
                                   if category_col is not None else None),
+                        # 交易所前收盘（除权调整后）优先用于涨跌停判定，
+                        # 避免除权日把跳空误判成跌停；缺失时判定层回退上一收盘
+                        pre_close=(finite_float(pre_close_col[pos])
+                                   if pre_close_col is not None else None),
                     )
                     if defer_buy:
                         deferred_buys.append((code, pos, bar))
@@ -2076,7 +2087,8 @@ class EventBacktestRunner:
 
         check_open, check_prev, check_close = self._select_check_prices(
             bar.open_price, bar.prev_close, bar.close,
-            bar.raw_open, bar.prev_close_raw, bar.raw_close)
+            bar.raw_open, bar.prev_close_raw, bar.raw_close,
+            bar.pre_close)
         detail = ctx.rules.block_reason(
             intent.action, prev_close=check_prev, open_price=check_open,
             high=bar.high, low=bar.low, close=check_close, volume=bar.volume,
@@ -2119,7 +2131,9 @@ class EventBacktestRunner:
         # 风控闸门所需上下文：原始价口径前收盘（交易所涨跌停定义在原始价上）
         # 与板块标签必须由撮合内核注入，缺一 PriceLimitTradable 就会 fail-closed。
         risk_prev_close = (
-            bar.prev_close_raw if bar.prev_close_raw is not None else bar.prev_close)
+            bar.pre_close if bar.pre_close is not None and bar.pre_close > 0
+            else (bar.prev_close_raw if bar.prev_close_raw is not None
+                  else bar.prev_close))
         sector = (ctx.rules.resolve_sector(code, bar.is_st, trade_day)
                   if ctx.gate.risk_engine is not None else '')
 
@@ -2202,7 +2216,8 @@ class EventBacktestRunner:
 
         check_open, check_prev, check_close = self._select_check_prices(
             bar.open_price, bar.prev_close, bar.close,
-            bar.raw_open, bar.prev_close_raw, bar.raw_close)
+            bar.raw_open, bar.prev_close_raw, bar.raw_close,
+            bar.pre_close)
         if not rules.is_tradable(intent.action, prev_close=check_prev,
                                  open_price=check_open, high=bar.high, low=bar.low,
                                  close=check_close, volume=bar.volume,
@@ -2221,11 +2236,18 @@ class EventBacktestRunner:
     def _select_check_prices(
         open_price: float | None, prev_close: float | None, close: float | None,
         open_raw: float | None, prev_close_raw: float | None,
-        close_raw: float | None,
+        close_raw: float | None, pre_close: float | None = None,
     ) -> tuple[float | None, float | None, float | None]:
-        """涨跌停判定用价：有原始价（hfq 输入）时优先原始价，否则用主列价。"""
+        """涨跌停判定用价：有原始价（hfq 输入）时优先原始价，否则用主列价。
+
+        前收取交易所口径：``pre_close`` 是已按除权除息调整的参考价，优先级
+        最高，避免把除权日跳空误判成涨跌停；缺失/非正时回退上一根 bar 收盘。
+        """
         check_open = open_raw if open_raw is not None else open_price
-        check_prev = prev_close_raw if prev_close_raw is not None else prev_close
+        if pre_close is not None and pre_close > 0:
+            check_prev = pre_close
+        else:
+            check_prev = prev_close_raw if prev_close_raw is not None else prev_close
         check_close = close_raw if close_raw is not None else close
         return check_open, check_prev, check_close
 

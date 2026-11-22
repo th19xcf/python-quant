@@ -7,6 +7,8 @@
 """
 
 # 标准库导入
+from __future__ import annotations
+
 import argparse
 import os
 import signal
@@ -17,16 +19,10 @@ from pathlib import Path
 # 第三方库导入
 from alembic.util.exc import CommandError
 from loguru import logger
-from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QApplication
 from sqlalchemy.exc import SQLAlchemyError
 
 # 添加项目根目录到Python路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
-
-# 真实 QApplication 类的引用：测试会把 main 模块里的 QApplication 打桩成假对象，
-# 用它在退出前判定「是不是真的 GUI 进程」，避免把测试进程一起硬退出
-_REAL_QAPPLICATION = QApplication
 
 from src.data.data_manager import DataManager
 from src.data.services.sync_service import (
@@ -37,8 +33,28 @@ from src.data.services.sync_service import (
 )
 from src.database.db_manager import DatabaseManager
 from src.plugin.plugin_manager import PluginManager
-from src.ui.main_window import MainWindow
-from src.ui.theme_manager import ThemeManager
+
+# 桌面 GUI 依赖属于可选组 gui（`poetry install --with gui`）。
+# 缺 PySide6 时保持模块可导入，CLI 子命令（--sync-* 等）照常运行；
+# 只有真正启动桌面窗口的 _launch_gui 会因 _HAS_GUI=False 抛出明确错误。
+try:
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication
+
+    from src.ui.main_window import MainWindow
+    from src.ui.theme_manager import ThemeManager
+
+    _HAS_GUI = True
+except ImportError:  # 无 Qt 环境（gui 组未安装）
+    QTimer = None  # type: ignore[assignment,misc]
+    QApplication = None  # type: ignore[assignment,misc]
+    MainWindow = None  # type: ignore[assignment,misc]
+    ThemeManager = None  # type: ignore[assignment,misc]
+    _HAS_GUI = False
+
+# 真实 QApplication 类的引用：测试会把 main 模块里的 QApplication 打桩成假对象，
+# 用它在退出前判定「是不是真的 GUI 进程」，避免把测试进程一起硬退出
+_REAL_QAPPLICATION = QApplication
 
 # 内部模块导入
 from src.utils.config import config_manager, get_config, remote_sources_enabled
@@ -589,6 +605,11 @@ def _cleanup_system(plugin_manager, db_manager):
 
 def _launch_gui(config, data_manager, plugin_manager):
     """创建桌面主窗口并运行 Qt 事件循环，返回 (app, 退出码)。"""
+    if not _HAS_GUI:
+        raise RuntimeError(
+            "桌面 GUI 依赖未安装：请执行 `poetry install --with gui`"
+            "（或手动安装 PySide6 / pyqtgraph）后再启动窗口"
+        )
     # QtWebEngine 必须先于 QApplication 就绪（共享 GL 上下文），否则内嵌工作台标签页
     # 会在创建时被 Chromium 拒绝；缺 QtWebEngine 时只降级该标签页，不影响主界面。
     from PySide6.QtCore import QCoreApplication, Qt

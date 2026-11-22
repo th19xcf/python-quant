@@ -1,5 +1,10 @@
 """指标提示文本渲染层测试：纯 Python，不需要 GUI 环境。"""
 
+import pytest
+
+# GUI 属于可选组 gui；未安装 PySide6 时整文件跳过
+pytest.importorskip("PySide6.QtWidgets")
+
 import subprocess
 import sys
 from pathlib import Path

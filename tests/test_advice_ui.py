@@ -2,6 +2,11 @@
 
 """每日推荐 UI 契约测试：DTO→表格映射、筛选排序、空状态与页面装配。"""
 
+import pytest
+
+# GUI 属于可选组 gui；未安装 PySide6 时整文件跳过
+pytest.importorskip("PySide6.QtWidgets")
+
 from datetime import date, datetime
 
 import pytest
