@@ -45,10 +45,11 @@ from collections.abc import Iterator, Mapping, MutableMapping
 from dataclasses import dataclass
 from datetime import date, datetime
 from types import MappingProxyType
-from typing import Any, Dict, List, NamedTuple, Set, Tuple, TypedDict, TypeIs
+from typing import Any, Dict, List, NamedTuple, Set, Tuple, TypedDict
 
 import polars as pl
 from loguru import logger
+from typing_extensions import TypeIs
 
 from src.backtest.costs.cost_model import CostModel
 from src.backtest.engine.corporate_actions import (
