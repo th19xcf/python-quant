@@ -34,6 +34,11 @@
 
     python tools/build_st_daily.py              # 全量重建
     python tools/build_st_daily.py --since 2015-01-01
+    python tools/build_st_daily.py --since 2026-11-01 --incremental  # 日更增量
+
+``--incremental`` 只重建 ``--since`` 起的月分区并保留其余分区（不删除），
+manifest 的 ``files`` 与 ``rows`` 按「历史登记 + 本次重建」合并成全表口径，
+另记 ``mode`` / ``window`` / ``rebuilt`` 说明本次只动了哪些月。
 """
 
 from __future__ import annotations
@@ -285,9 +290,19 @@ def _comparison(out_dir: Path, intervals: pl.DataFrame | None) -> dict[str, Any]
     return result
 
 
+def _merge_files(prev: dict[str, Any], rebuilt: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """增量重建时把「历史 manifest 登记 + 本次重建」合并成全表文件清单。"""
+    merged = {item['path']: item for item in (prev.get('files') or [])
+              if isinstance(item, dict) and 'path' in item}
+    merged.update({item['path']: item for item in rebuilt})
+    return [merged[name] for name in sorted(merged)]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description='重建逐日 ST 状态面板')
     parser.add_argument('--since', default=DEFAULT_START.isoformat())
+    parser.add_argument('--incremental', action='store_true',
+                        help='增量：保留 --since 之前的月分区，manifest 合并成全表口径')
     args = parser.parse_args(argv)
 
     nh = pl.read_parquet(NAME_HISTORY)
@@ -336,18 +351,33 @@ def main(argv: list[str] | None = None) -> int:
                          OUT_DIR / 'st_daily_intervals.parquet')
 
     produced = {item['path'] for item in files}
-    for stale in OUT_DIR.glob('st_daily_[0-9][0-9][0-9][0-9][0-9][0-9].parquet'):
-        if stale.name not in produced:
-            stale.unlink()
+    if not args.incremental:
+        for stale in OUT_DIR.glob('st_daily_[0-9][0-9][0-9][0-9][0-9][0-9].parquet'):
+            if stale.name not in produced:
+                stale.unlink()
 
     comparison = _comparison(OUT_DIR, intervals)
+    prev_manifest: dict[str, Any] = {}
+    manifest_path = OUT_DIR / 'manifest.json'
+    if args.incremental and manifest_path.is_file():
+        try:
+            prev_manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            prev_manifest = {}
+    panel_files = _merge_files(prev_manifest, files) if args.incremental else files
+    range_start = min(item['start'] for item in panel_files)
+    range_end = max(item['end'] for item in panel_files)
     manifest = {
+        'mode': 'incremental' if args.incremental else 'full',
         'built_at': datetime.now().isoformat(timespec='seconds'),
-        'range': {'start': str(start), 'end': str(as_of)},
-        'trading_days': len(days),
-        'universe_codes': universe.height,
-        'rows': sum(item['rows'] for item in files),
-        'files': files,
+        'range': {'start': range_start, 'end': range_end},
+        'window': {'since': str(start), 'end': str(as_of)},
+        'rebuilt': [item['path'] for item in files],
+        'trading_days': len(_session_days(date.fromisoformat(range_start), as_of)),
+        'universe_codes': (prev_manifest.get('universe_codes')
+                           if prev_manifest else universe.height),
+        'rows': sum(item['rows'] for item in panel_files),
+        'files': panel_files,
         'sources': {
             'primary': f'{NAME_HISTORY.relative_to(ROOT)}（tushare namechange，'
                        'start_date=生效日）',

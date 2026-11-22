@@ -28,13 +28,20 @@
     14. B 候选名单      tools/b_topn_picks.py --date <目标日>（仅目标日为月末调仓日
                        时产出：申万一级行业内前 2 → 合并前 50 等权；只写 reports/）
     15. 市场宽度增量    src.data.services.breadth_service.refresh
-    16. 候选池周更      tools/build_multi_asset_etf_pool.py --apply（未到期不跑）
-    17. 回写与校验      manifest 回写 → 逐件 rows/bytes/sha256 对账 → 预期差集为 0
-    18. 洁净集快照      python -m src.data.quality.clean_set build
-    19. 保鲜体检        src.data.quality.freshness_check --summary
-    20. 版本记录        src.data.data_version（失败只告警，不改数据）
-    21. 备份            tools/backup_critical_assets.py（必须在所有写 data/ 的步骤之后）
-    22. 门禁            tools/daily_data_gate.py（必须在备份之后）
+    16. ST 逐日面板     tools/build_st_daily.py --since <窗口月首> --incremental
+                       只重写最近 N（默认 5）个交易日所在月分区；月末当天即整月重建，
+                       窗口跨月时上月一并重写；历史 ST 输入指纹变了或月分区有空洞
+                       则转全量（见 ``_derived_window``）
+    17. 涨跌停逐日      tools/build_limit_board.py --since <同上> --incremental
+                       依赖第 16 步的当日 ST 结果：第 16 步失败或面板末日 < 行情末日
+                       时本步直接阻断（不使用旧 ST 面板静默生成）
+    18. 候选池周更      tools/build_multi_asset_etf_pool.py --apply（未到期不跑）
+    19. 回写与校验      manifest 回写 → 逐件 rows/bytes/sha256 对账 → 预期差集为 0
+    20. 洁净集快照      python -m src.data.quality.clean_set build
+    21. 保鲜体检        src.data.quality.freshness_check --summary
+    22. 版本记录        src.data.data_version（失败只告警，不改数据）
+    23. 备份            tools/backup_critical_assets.py（必须在所有写 data/ 的步骤之后）
+    24. 门禁            tools/daily_data_gate.py（必须在备份之后）
 
 口径与边界::
 
@@ -49,6 +56,17 @@
     - 致命步（行情采集、本地构建、基金行情刷新、复权因子刷新、回写校验、
       备份、门禁）任一失败，退出码为 1；其余步骤失败只记录，不影响退出码。
       备份/门禁的先后顺序是硬约束，新增步骤只能插在它们之前。
+    - ST 逐日/涨跌停逐日固定排在「市场宽度」之后（第 16、17 步）：两者都只吃
+      行情 + 名称/ST 区间，涨跌停还要读当天的 ST 面板，故必须先后相邻；第 16 步
+      失败或面板末日 < 行情末日时，第 17 步直接判失败，不落旧 ST 结果。
+      增量窗口 = 最近 5 个交易日所在月分区（月末当天即整月重写，跨月含上月），
+      历史 ST 输入（名称段/官方区间/可信覆盖的起始月）逐月指纹变化、月分区出现
+      中间空洞或 ``--full-derived`` 时转全量；``--skip-st-daily`` 连带跳过第 17 步。
+      实测（2026-11-22，单月分区窗口）：ST 逐日 2.5s、涨跌停逐日 4.2s，日更总
+      时长净增约 7s；涨跌停增量跳过需读全历史行情的 breadth 对拍（沿用上一份
+      comparison.json / reconcile_daily.parquet）。保鲜体检已把两张表按「每交易日」
+      登记（st_daily / limit_board_daily，lag≥1 告警、≥3 严重），增量只重写最新
+      月分区，门禁据此判定「最近交易日是否更新」。
     - 采集固定 ``workers=1``（单连接串行），限流参数沿用 TencentClient 默认
       ``min_interval=0.05`` / ``max_retries=3``，本入口不暴露也不修改。
     - 补数先按代码清单把缺口落到 ``_staging/<批次>/``（``gaps.parquet`` +
@@ -861,30 +879,34 @@ def _panel_sessions(root: Path, latest: date, count: int) -> list[date]:
     return days[-count:]
 
 
-def _hist_digest(root: Path, window_start: date) -> str:
-    """窗口之前的 ST 输入指纹：名称段/官方区间/可信覆盖任一行变化即算历史变更。"""
-    cutoff = pl.lit(window_start, dtype=pl.Date)
-    parts: list[str] = []
-    name_history = root / 'meta' / 'name_history.parquet'
-    if name_history.is_file():
-        frame = pl.read_parquet(name_history,
-                                columns=['ts_code', 'name', 'start_date', 'end_date'])
-        frame = frame.filter(pl.col('start_date') < cutoff).sort(['ts_code', 'start_date'])
-        parts.append(str(frame.hash_rows().sum()))
-    intervals = root / 'meta' / 'st' / 'st_intervals.parquet'
-    if intervals.is_file():
-        frame = pl.read_parquet(intervals,
-                                columns=['ts_code', 'start_date', 'end_date', 'flag'])
-        frame = frame.filter(pl.col('end_date').is_not_null()
-                             & (pl.col('end_date') < cutoff)).sort(['ts_code', 'start_date'])
-        parts.append(str(frame.hash_rows().sum()))
-    coverage = root / 'meta' / 'st' / 'st_coverage.parquet'
-    if coverage.is_file():
-        frame = pl.read_parquet(coverage,
-                                columns=['ts_code', 'coverage_start', 'coverage_end'])
-        frame = frame.filter(pl.col('coverage_end') < cutoff).sort(['ts_code', 'coverage_start'])
-        parts.append(str(frame.hash_rows().sum()))
-    return hashlib.sha256('|'.join(parts).encode('utf-8')).hexdigest()
+def _hist_month_digests(root: Path) -> dict[str, str]:
+    """逐月指纹（名称段/官方区间/可信覆盖）：只有窗口之前的月份变化才算历史变更。
+
+    按月分桶而非整表一个 hash：``name_history`` 每天会追加新简称段，整表 hash
+    必然天天变；按月比对后，新增当月行不影响历史月份，重写旧区间才会被发现。
+    """
+    parts: dict[str, list[str]] = {}
+
+    def _feed(path: Path, columns: list[str], date_col: str) -> None:
+        if not path.is_file():
+            return
+        frame = pl.read_parquet(path, columns=columns)
+        frame = frame.filter(pl.col(date_col).is_not_null())
+        frame = frame.with_columns(pl.col(date_col).dt.strftime('%Y-%m').alias('_m'))
+        for (month,), part in frame.sort(['_m', 'ts_code']).group_by(
+                '_m', maintain_order=True):
+            parts.setdefault(month, []).append(str(part.drop('_m').hash_rows().sum()))
+
+    # name_history 的 end_date 会在改名当天把旧简称段收口，属于「新信息」而不是
+    # 历史改写；coverage_end 每天随行情推进。两者都不进指纹，否则每天都判历史变更。
+    _feed(root / 'meta' / 'name_history.parquet',
+          ['ts_code', 'name', 'start_date'], 'start_date')
+    _feed(root / 'meta' / 'st' / 'st_intervals.parquet',
+          ['ts_code', 'start_date', 'end_date', 'flag'], 'start_date')
+    _feed(root / 'meta' / 'st' / 'st_coverage.parquet',
+          ['ts_code', 'coverage_start'], 'coverage_start')
+    return {month: hashlib.sha256('|'.join(values).encode('utf-8')).hexdigest()
+            for month, values in parts.items()}
 
 
 def _missing_panel_months(root: Path, sub: str, prefix: str,
@@ -922,7 +944,7 @@ def _derived_window(plan: _Plan, args: argparse.Namespace) -> dict[str, Any]:
     days = _panel_sessions(plan.root, plan.latest, count)
     window_start = (days[0] if days else plan.latest).replace(day=1)
     window_end = days[-1] if days else plan.latest
-    digest = _hist_digest(plan.root, window_start)
+    hist_months = _hist_month_digests(plan.root)
     state: dict[str, Any] = {}
     state_path = _derived_state_path(plan.root)
     if state_path.is_file():
@@ -930,7 +952,7 @@ def _derived_window(plan: _Plan, args: argparse.Namespace) -> dict[str, Any]:
             state = json.loads(state_path.read_text(encoding='utf-8'))
         except (OSError, ValueError):
             state = {}
-    base = {'digest': digest, 'window_start': window_start}
+    base = {'hist_months': hist_months, 'window_start': window_start}
     if args.full_derived:
         return {**base, 'since': date(2005, 1, 1), 'mode': 'full',
                 'note': '--full-derived 强制全量'}
@@ -938,10 +960,16 @@ def _derived_window(plan: _Plan, args: argparse.Namespace) -> dict[str, Any]:
     if missing:
         return {**base, 'since': date(2005, 1, 1), 'mode': 'full',
                 'note': f'月分区缺 {len(missing)} 个（{missing[0]}~{missing[-1]}）'}
-    previous = str(state.get('hist_digest') or '')
-    if previous and previous != digest:
+    boundary = f'{window_start:%Y-%m}'
+    stored = state.get('hist_months') or {}
+    changed = [month for month, digest in stored.items()
+               if month < boundary and hist_months.get(month) != digest]
+    changed.extend(month for month in hist_months
+                   if stored and month < boundary and month not in stored)
+    if changed:
+        changed.sort()
         return {**base, 'since': date(2005, 1, 1), 'mode': 'full',
-                'note': '历史 ST 输入已变更'}
+                'note': f'历史 ST 输入已变更（{len(changed)} 个月，最早 {changed[0]}）'}
     note = f'最近 {count} 个交易日 → 整月 {window_start:%Y-%m}'
     if (window_start.year, window_start.month) != (window_end.year, window_end.month):
         note += f' + 跨月 {window_end:%Y-%m}'
@@ -957,13 +985,13 @@ def _save_derived_state(plan: _Plan, args: argparse.Namespace,
     path = _derived_state_path(plan.root)
     path.parent.mkdir(parents=True, exist_ok=True)
     write_text_atomic(json.dumps({
-        'schema': 'st_daily_incremental/v1',
+        'schema': 'st_daily_incremental/v2',
         'last_run': date.today().isoformat(),
         'lookback_sessions': args.derived_lookback_days,
         'mode': window['mode'],
         'since': window['since'].isoformat(),
         'window_start': window['window_start'].isoformat(),
-        'hist_digest': window['digest'],
+        'hist_months': window['hist_months'],
     }, ensure_ascii=False, indent=2), path)
 
 
@@ -1959,6 +1987,15 @@ def main(argv: list[str] | None = None) -> int:
                         help='目标持仓清单的资金规模（元，仅 --target-holdings 生效）')
     parser.add_argument('--skip-st-refresh', action='store_true',
                         help='跳过 ST 区间表日更（risk_flags refresh + st_history build）')
+    parser.add_argument('--skip-st-daily', action='store_true',
+                        help='跳过 ST 逐日面板增量（tools/build_st_daily.py，meta/st/daily）')
+    parser.add_argument('--skip-limit-daily', action='store_true',
+                        help='跳过涨跌停逐日增量（tools/build_limit_board.py，meta/limit/daily）')
+    parser.add_argument('--derived-lookback-days', type=int,
+                        default=DERIVED_LOOKBACK_SESSIONS,
+                        help='ST/涨跌停增量窗口：最近 N 个交易日所在月分区（默认 5）')
+    parser.add_argument('--full-derived', action='store_true',
+                        help='强制 ST/涨跌停全量重建（历史源被修订后使用）')
     parser.add_argument('--skip-fund-refresh', action='store_true',
                         help='跳过基金行情刷新（通达信本地增量）')
     parser.add_argument('--skip-factor-refresh', action='store_true',
