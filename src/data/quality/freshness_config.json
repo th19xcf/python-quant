@@ -327,6 +327,28 @@
       "note": "表内无时间戳，只能取文件 mtime；新增上市/退市须一周内由 tools/build_stock_basic.py 重建。覆盖分母取 daily_index 的股票代码数，只用于兜住「行情已更新、基础表大面积缺行」这类粗粒度异常。"
     },
     {
+      "key": "new_share",
+      "label": "新股发行价",
+      "category": "基础资料",
+      "freshness_field": "file_mtime",
+      "source": {
+        "kind": "file_mtime",
+        "path": "meta/new_share.parquet"
+      },
+      "cadence": {
+        "unit": "calendar_day",
+        "expected_interval": 7,
+        "warn_multiple": 2,
+        "critical_multiple": 4,
+        "label": "每周（自然日）"
+      },
+      "coverage": {
+        "gate": false,
+        "why": "发行价是逐只新股的一次性事实，不是逐日截面，覆盖率占比无判定意义；漏补由 tools/build_new_share.py --refresh 全量重拉兜底"
+      },
+      "note": "表内无更新戳，只能取文件 mtime；2014 年后新股按 IPO 批次补充，price=0 行原样保留并用 price_is_zero 标出。"
+    },
+    {
       "key": "stock_turnover",
       "label": "个股换手率",
       "category": "因子",
