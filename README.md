@@ -348,7 +348,17 @@ cp .env.example .env
 - 质量门禁（目前只在本地命令执行，仓库未接入 CI）：
   - `ruff check src tests`（pyflakes / bugbear / bandit / isort / mccabe C901 等全量规则）
   - `mypy src`（覆盖 src 下全部业务模块，配置见 `pyproject.toml [tool.mypy]`）
-  - `pytest --cov=src`（覆盖率门禁 `[tool.coverage.report] fail_under = 71`，2026-11-21 实测 71.04% = 43,526/61,268；模块阶梯 `src/backtest` 73 / `src/backtest/engine` 89 / `src/risk` 85 / `src/data/quality` 76。整包按 73 而非 85 登记，是因为 `src/backtest/runner` 实测仅 47.51%、`src/backtest/visualization` 仅 16.22%，整包并不具备 85% 覆盖；门槛只盯关键路径，撮合内核 `src/backtest/engine` 单列 89，这两个子模块不应把内核门槛拉低。该闸门目前只在本地命令执行，仓库未接入 CI）
+  - 全量覆盖率（可复现命令，判定以 `coverage.json` 的 `totals` 为准；仓库根的 `.coverage` 可能来自某次局部运行，不能当全量证据）：
+
+    ```
+    .\.venv\Scripts\python.exe -m pytest tests -q --cov=src --cov-report=json:coverage.json --cov-fail-under=0
+    .\.venv\Scripts\python.exe tools/check_module_coverage.py --coverage-json coverage.json
+    ```
+
+    第一条产出全量报告（`--cov-fail-under=0` 只为让报告先落盘），第二条按 `[tool.coverage-gates]` 逐模块判定。
+    2026-11-22 复测：`src` 70.54% = 43,207/61,253，低于 `[tool.coverage.report] fail_under = 71`，缺口约 0.46pp（约 283 条语句）；按「只许上调」规则不下调门槛，以补测试恢复。
+    模块阶梯实测：`src/backtest` 73.21%（门槛 73）/ `src/backtest/engine` 89.52%（89）/ `src/risk` 94.13%（85）/ `src/data/quality` 77.03%（76）/ `src/data/local_store` 88.90%（85），均达标。
+    整包 `src/backtest` 按 73 而非 85 登记，是因为 `src/backtest/runner` 实测仅 47.51%、`src/backtest/visualization` 仅 16.22%；门槛只盯关键路径，撮合内核 `src/backtest/engine` 单列 89。该闸门目前只在本地命令执行，仓库未接入 CI。
 
 ---
 

@@ -18,15 +18,16 @@ from tools import check_module_coverage as gate
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = REPO_ROOT / 'pyproject.toml'
 
-# 已登记门槛的模块 → 门槛值。2026-11-21 实测：src/backtest 73.51%（被 runner 47.51%、
-# visualization 16.22% 稀释）、src/backtest/engine 89.41%、src/risk 95.18%、
-# src/data/quality 76.78%。整包按 73 登记、撮合内核单列 89，避免可视化/编排把
-# 关键路径门槛拉低；数值只允许上调，未达标模块不得为了让门禁变绿而调低。
+# 已登记门槛的模块 → 门槛值。2026-11-22 全量实测：src/backtest 73.21%（被 runner、
+# visualization 稀释）、src/backtest/engine 89.52%、src/risk 94.13%、
+# src/data/quality 77.03%、src/data/local_store 88.90%。整包按 73 登记、撮合内核单列 89，
+# 避免可视化/编排把关键路径门槛拉低；数值只允许上调，未达标模块不得为了让门禁变绿而调低。
 EXPECTED_MODULE_GATES = {
     'src/backtest': 73,
     'src/backtest/engine': 89,
     'src/risk': 85,
     'src/data/quality': 76,
+    'src/data/local_store': 85,
 }
 
 
@@ -87,6 +88,7 @@ def test_gate_passes_at_threshold(tmp_path):
         'src\\backtest\\strategies\\x.py': _summary(85, 100),
         'src\\backtest\\engine\\base_engine.py': _summary(89, 100),
         'src\\data\\quality\\checker.py': _summary(76, 100),
+        'src\\data\\local_store\\store.py': _summary(85, 100),
     })
     assert gate.main(['--coverage-json', str(cov), '--pyproject', str(PYPROJECT)]) == 0
 
