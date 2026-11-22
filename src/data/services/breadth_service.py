@@ -175,10 +175,26 @@ def _local_max_date(store_root: Path | str) -> date | None:
 # 计算
 # ----------------------------------------------------------------------
 def _st_pairs(store_root: Path | str, dates: list[date]) -> pl.DataFrame:
-    """把 ST 区间展开成 (ts_code, date) 明细，用于逐行判定 is_st。"""
-    intervals = load_intervals(store_root)
+    """把 ST 状态展开成 (ts_code, date) 明细，用于逐行判定 is_st。
+
+    优先使用新 ST 逐日面板 ``meta/st/daily/st_daily_YYYYMM.parquet``（逐日
+    精确状态），面板缺失时回退 ``meta/st/st_intervals.parquet`` 区间展开。
+    """
     empty = pl.DataFrame(schema={'ts_code': pl.Utf8, 'date': pl.Date})
-    if intervals is None or intervals.height == 0 or not dates:
+    if not dates:
+        return empty
+    panel_files = sorted((Path(store_root) / 'meta' / 'st' / 'daily')
+                         .glob('st_daily_[0-9]*.parquet'))
+    if panel_files:
+        return (pl.scan_parquet([str(path) for path in panel_files],
+                                extra_columns='ignore')
+                .filter((pl.col('trade_date') >= dates[0])
+                        & (pl.col('trade_date') <= dates[-1])
+                        & pl.col('status').is_in(['st', '*st']))
+                .select('ts_code', pl.col('trade_date').alias('date'))
+                .collect().unique())
+    intervals = load_intervals(store_root)
+    if intervals is None or intervals.height == 0:
         return empty
     intervals = intervals.filter(
         pl.col('flag').is_in(['st', '*st'])
