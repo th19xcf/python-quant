@@ -46,10 +46,15 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_LEDGER = ROOT / 'logs' / 'task_ledger.csv'
 FIELDS = [
     'dispatched_at', 'session_id', 'title', 'phase',
-    'turns', 'rounds', 'tool_calls', 'duration_min', 'note',
+    'turns', 'rounds', 'tool_calls', 'duration_min', 'note', 'budget_calls',
 ]
-#: 旧账本表头（无 ``rounds`` 列），读取时仍接受。
-LEGACY_FIELDS = [field for field in FIELDS if field != 'rounds']
+#: 读取时仍接受的旧表头：9 列（无 budget_calls）与 8 列（再缺 rounds）。
+LEGACY_FIELDS = [field for field in FIELDS if field != 'budget_calls']
+HEADER_VARIANTS = (
+    FIELDS,
+    LEGACY_FIELDS,
+    [field for field in LEGACY_FIELDS if field != 'rounds'],
+)
 PHASES = ('dispatch', 'done')
 #: 轮次闸门：同一任务累计达到 15 轮即换会话（与 60 次硬停分工不同）。
 TURN_SWITCH_ROUNDS = 15
@@ -94,11 +99,10 @@ def _read_rows(path: Path) -> list[dict[str, Any]]:
     with path.open('r', encoding='utf-8-sig', newline='') as handle:
         reader = csv.DictReader(handle)
         fieldnames = reader.fieldnames or []
-        if fieldnames not in (FIELDS, LEGACY_FIELDS):
+        if fieldnames not in HEADER_VARIANTS:
             raise SystemExit(
                 f'账本表头不符：{path}\n'
-                f'期望 {",".join(FIELDS)}\n'
-                f'或旧表头 {",".join(LEGACY_FIELDS)}\n'
+                f'期望 {" 或 ".join(",".join(v) for v in HEADER_VARIANTS)}\n'
                 f'实际 {",".join(fieldnames)}')
         rows: list[dict[str, Any]] = []
         for raw in reader:
@@ -204,6 +208,7 @@ def cmd_add(args: argparse.Namespace) -> int:
         'tool_calls': '' if args.tool_calls is None else str(args.tool_calls),
         'duration_min': '' if args.duration_min is None else str(args.duration_min),
         'note': note,
+        'budget_calls': '' if args.budget_calls is None else str(args.budget_calls),
     }
     body = ','.join(row[field] for field in FIELDS)
 
@@ -235,11 +240,11 @@ def append_finalize_row(
 ) -> str:
     """收口自动记账：追加一行 done；同一提交已记过则返回 ``duplicate`` 不重复写。
 
-    映射到 9 列：``dispatched_at`` 记时间、``session_id`` / ``title`` 记任务标识
+    映射到当前列：``dispatched_at`` 记时间、``session_id`` / ``title`` 记任务标识
     （缺省用提交短哈希）、``rounds`` 记轮次（显式入参优先，否则取同标识既有行数
     +1；找不到派单行写 ``unknown`` 并在 stderr 告警、不阻断）、``tool_calls``
     记调用数（未知写 ``unknown``）、``duration_min`` 记耗时（未知留空）、
-    ``note`` 记 ``commit <短哈希>`` 供去重。
+    ``note`` 记 ``commit <短哈希>`` 供去重、``budget_calls`` 沿用同标识派单行的预算。
     """
     short = commit[:7]
     marker = f'commit {short}'
@@ -259,6 +264,11 @@ def append_finalize_row(
         else:
             rounds_text = UNKNOWN
             print(f'警告：账本里没有任务标识 {ident} 的派单行，轮次写 {UNKNOWN}', file=sys.stderr)
+    budget_text = ''
+    for prior in reversed([row for row in rows if _same_task(row, ident, ident)]):
+        if str(prior.get('budget_calls') or '').strip():
+            budget_text = str(prior['budget_calls'])
+            break
     row = {
         'dispatched_at': when or _now(),
         'session_id': ident,
@@ -269,6 +279,7 @@ def append_finalize_row(
         'tool_calls': UNKNOWN if tool_calls is None else str(tool_calls),
         'duration_min': '' if duration_min is None else str(duration_min),
         'note': marker,
+        'budget_calls': budget_text,
     }
     _append_rows(ledger, [row])
     return 'written'
@@ -421,6 +432,7 @@ def main(argv: list[str] | None = None) -> int:
     add.add_argument('--rounds', type=int,
                      help='同一任务累计轮次；缺省取该任务既有行数 +1')
     add.add_argument('--tool-calls', type=int)
+    add.add_argument('--budget-calls', type=int, help='派单预算调用数，用于超支率统计')
     add.add_argument('--duration-min', type=float)
     add.add_argument('--note', default='')
     add.add_argument('--dispatched-at', default='',

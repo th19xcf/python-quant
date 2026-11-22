@@ -13,7 +13,7 @@ from tools.task_ledger import (
     ABSOLUTE_MAX_TOOL_CALLS,
     FIELDS,
     HARD_STOP_TOOL_CALLS,
-    LEGACY_FIELDS,
+    HEADER_VARIANTS,
     TURN_SWITCH_ROUNDS,
     _read_rows,
     append_finalize_row,
@@ -57,8 +57,7 @@ def test_append_finalize_row_creates_file_with_header(tmp_path):
     )
     assert state == 'written'
     lines = ledger.read_text(encoding='utf-8').splitlines()
-    assert lines[0] == ('dispatched_at,session_id,title,phase,turns,rounds,'
-                        'tool_calls,duration_min,note')
+    assert lines[0] == ','.join(FIELDS)
     rows = _rows(ledger)
     assert len(rows) == 1
     row = rows[0]
@@ -110,9 +109,9 @@ def test_add_accepts_explicit_rounds(tmp_path):
 
 
 def test_legacy_header_reads_and_upgrades_on_append(tmp_path):
-    """旧 8 列账本可读；追加时表头升级为 9 列，旧行内容不改、rounds 留空。"""
+    """旧 8 列账本可读；追加时表头升级为当前列，旧行内容不改、rounds 留空。"""
     ledger = tmp_path / 'task_ledger.csv'
-    header = ','.join(LEGACY_FIELDS)
+    header = ','.join(HEADER_VARIANTS[-1])
     ledger.write_text(
         header + '\n2026-11-17T09:00:00,s1,T1,dispatch,3,20,5.0,\n', encoding='utf-8')
 

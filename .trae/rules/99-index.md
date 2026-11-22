@@ -11,6 +11,7 @@ alwaysApply: true
 | `data-governance-detail.md` DG-7 | 断点文件三条判定（预计 ≥10 分钟、跨运行续跑、含外部采集，三者同时才强制 `progress.csv` / `failed.csv`） | 开采集或构建任务、定断点与续跑方案前 |
 | `data-governance-detail.md` DG-36 | 审计防误报四条（存在性过滤、事件公式复算 1e-12、反例自测与 1,171 条复权键集、24 小时内同名结论只判是否仍成立） | 写任何审计判据、对拍脚本、差异归因前 |
 | `task-scheduling.md` | 超时催办、并行边界、断点续跑、单会话体量/微调归并闸门、采集限流、提交串行、hunk 隔离、审计/迁移/周期任务编排（N3 / N5 / N7 / N9） | 并行派发、接管任务、外部采集、同文件并行编辑、迁移改名、24 小时内复核定性前 |
+| `token-efficiency.md` | R1~R10（派单约束引用化、同主题只探一单、单结果单消息、先探源、预算与回报上限、大文件只 grep、提交一句话、超预算 20% 硬停、核对类起算 10 次、主会话禁零信息占位）+ 每周复核表 / 阈值 / 写回位置；配套 `dispatch-template.md` 与 `tools/dispatch_cost_report.py` | 派单、收口、每周复盘前 |
 | `patrol.md` | `stalled` 判定门槛、恢复方式、读取时机（运行状态只认 `logs/patrol_status.json`） | 读 `logs/patrol_status.json` 或处置 alert 前 |
 | `analysis-readonly.md` | 分析/回测/基线校准类任务只读消费侧、改引擎或改数据须单独成单并先跑基线对比、diff 越界判定 | 开跑分析、回测、基线校准任务前 |
 | `naming-conventions.md` | 默认「人看的产物用中文名」（交付物/报告/图表/导出表格与HTML/临时脚本/研究脚本/中间产物）+ `_YYYY-MM-DD` 版本后缀、机器消费名（源码模块与包、配置键、库表字段、测试对应名、工具入口名）用英文、冲突时保代码可加载名并注中文含义、禁止追溯改名 | 新建文件、确认交付物命名前 |
