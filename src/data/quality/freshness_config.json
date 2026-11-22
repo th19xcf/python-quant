@@ -643,6 +643,41 @@
       "note": "由 tools/build_st_daily.py 按月分区生成（2005 起，ts_code×trade_date 唯一）；源头是 tushare namechange 生效日 + 交易所 ST 区间，切换不含未来信息。"
     },
     {
+      "key": "limit_board_daily",
+      "label": "逐股逐日涨跌停标记",
+      "category": "派生指标",
+      "freshness_field": "trade_date",
+      "source": {
+        "kind": "latest_glob_max",
+        "path_glob": "meta/limit/daily/limit_daily_[0-9]*.parquet",
+        "column": "trade_date"
+      },
+      "cadence": {
+        "unit": "trading_day",
+        "expected_interval": 1,
+        "warn_multiple": 1,
+        "critical_multiple": 3,
+        "label": "每交易日"
+      },
+      "coverage": {
+        "count": {
+          "kind": "latest_glob_distinct",
+          "path_glob": "meta/limit/daily/limit_daily_[0-9]*.parquet",
+          "column": "ts_code"
+        },
+        "expected": {
+          "kind": "meta_distinct",
+          "path": "meta/daily_index.parquet",
+          "filter": {"column": "data_type", "value": "stock"},
+          "column": "ts_code"
+        },
+        "min_ratio": 0.9,
+        "critical_ratio": 0.8,
+        "why": "分母含全历史已退市代码，最新月分区只含当月在市标的"
+      },
+      "note": "由 tools/build_limit_board.py 按月分区生成；规则复用 src.core.market_rules.ExecutionRules（不另写一套），ST 取 meta/st/daily 生效日，价格整数分与 resolve_limit_price 抽样对拍。"
+    },
+    {
       "key": "industry",
       "label": "行业分类快照",
       "category": "状态快照",
