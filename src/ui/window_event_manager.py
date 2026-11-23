@@ -14,7 +14,7 @@ class WindowEventManager:
     def __init__(self, window):
         self.window = window
 
-    def subscribe_events(self):
+    def subscribe_events(self) -> None:
         """订阅事件"""
         subscribe('data_updated', self.window._handle_data_updated)
         subscribe('data_error', self.window._handle_data_error)

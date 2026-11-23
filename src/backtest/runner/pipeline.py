@@ -15,11 +15,13 @@ from loguru import logger
 
 from src.backtest.costs.cost_model import CostModel
 from src.backtest.engine.input_contract import BAR_CONTRACT
+from src.backtest.engine.limit_table_rules import limit_table_enabled
 from src.backtest.engine.portfolio_backtest_engine import PortfolioBacktestEngine
 from src.backtest.strategies.base_strategy import BaseStrategy
 from src.data.services.panel_inputs import load_local_dividends, load_st_status
 from src.risk import NoSuspendedTrade, PriceLimitTradable, RiskEngine
-from src.backtest.engine.limit_table_rules import limit_table_enabled
+from src.risk.tradability import latest_mean_amount
+from src.utils.dates import as_date
 
 from . import compute
 from .registry import CONDITIONS
@@ -30,8 +32,9 @@ class SpecCostModel(CostModel):
 
     与引擎默认的两处显式差异（由规格决定，不改引擎默认值）：
     - 滑点固定为规格 bps（引擎默认按市值 15/20/30bp 分档）；
-    - ``stamp_tax_basis=fixed_0.1%`` 时卖出印花税固定千 1
-      （引擎默认按历史时间表，2023-08-28 起 0.05%）。
+    - 印花税按 ``stamp_tax_basis`` 解析：``historical``（默认）按成交日取
+      时间表（2023-08-28 起卖出 0.05%，之前 0.1%）；``fixed_0.0%`` 为零成本
+      实验。旧值 ``fixed_0.1%`` 已废弃，传入时按 ``historical`` 处理。
     过户费不覆盖，沿用引擎默认。
     """
 
@@ -42,13 +45,13 @@ class SpecCostModel(CostModel):
             'slippage': cost['slippage_bps'] / 10000.0,
             'impact_coef': cost['impact_coef'],
         }
-        if cost['stamp_tax_basis'] == 'fixed_0.1%':
-            params['stamp_tax_rate'] = 0.001
-        elif cost['stamp_tax_basis'] == 'fixed_0.0%':
+        basis = 'historical' if cost['stamp_tax_basis'] == 'fixed_0.1%' \
+            else cost['stamp_tax_basis']
+        if basis == 'fixed_0.0%':
             # 零成本实验：卖出印花税固定 0（spec 校验已强制 experimental=true）
             params['stamp_tax_rate'] = 0.0
         super().__init__(params)
-        self.stamp_tax_basis = cost['stamp_tax_basis']
+        self.stamp_tax_basis = basis
 
     def slippage_rate(self, ts_code: str = '', adv20: float | None = None,
                       total_mv_yi: float | None = None,
@@ -101,9 +104,14 @@ class MonthlyTargetWeightStrategy(BaseStrategy):
 # 成分构造
 # ---------------------------------------------------------------------------
 
-def build_path(ctx: compute.Context, spec: Dict[str, Any]
+def build_path(ctx: compute.Context, spec: Dict[str, Any],  # noqa: C901 - 待拆分，见审查报告 7.4
+               tradability: Any = None
                ) -> Tuple[Dict[date, List[str]], Dict[str, int]]:
-    """按规格顺序执行剔除链与因子分位，返回「调仓日 → 成分」及跳过计数。"""
+    """按规格顺序执行剔除链 → 因子分位 → 可交易性过滤，返回成分与跳过计数。
+
+    可交易性过滤位于「评分（因子分位）之后、建仓名单（path）确定之前」，
+    关闭时 ``tradability`` 为 None，行为与未接入时逐值一致。
+    """
     resolved = spec['_resolved']
     exclusions = resolved['exclusions']
     factor = resolved['factor']
@@ -145,6 +153,24 @@ def build_path(ctx: compute.Context, spec: Dict[str, Any]
                 keep = picked & keep
             else:
                 keep -= picked
+
+        if tradability is not None and keep:
+            amounts = None
+            if tradability.config.min_amount is not None:
+                arrays = ctx.amount_arrays()
+                window = tradability.config.amount_window
+                amounts = {}
+                for code in keep:
+                    pair = arrays.get(code)
+                    if pair is None:
+                        continue
+                    value = latest_mean_amount(pair[0], pair[1], day, window)
+                    if value is not None:
+                        amounts[code] = value
+            result = tradability.filter_day(day, keep, amount=amounts)
+            for item, count in result.summary().items():
+                skip[f'tradability:{item}'] += count
+            keep -= set(result.codes)
 
         if not keep:
             skip['empty_members'] += 1
@@ -233,16 +259,8 @@ def run_engine(data: Dict[str, pl.DataFrame],
 # ---------------------------------------------------------------------------
 
 def to_date(value: Any) -> date | None:
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    if isinstance(value, str):
-        try:
-            return date.fromisoformat(value[:10])
-        except ValueError:
-            return None
-    return None
+    """委托统一真源 ``src.utils.dates.as_date``（额外覆盖 np.datetime64 / NaT / 非补零日期）。"""
+    return as_date(value)
 
 
 def performance_metrics(result: Dict[str, Any], spec: Dict[str, Any],
@@ -340,7 +358,15 @@ def execute(spec: Dict[str, Any], reporter: Any = None) -> Dict[str, Any]:
         allowed = set(resolved['universe']['codes'])
     ctx = compute.Context(data=data, days=days, quoted=quoted,
                           st_status=st_status or {}, allowed=allowed)
-    path, skipped = build_path(ctx, spec)
+    tradability = None
+    trad_cfg = resolved.get('tradability') or {}
+    if trad_cfg.get('enabled'):
+        from src.risk.tradability import TradabilityConfig, TradabilityFilter
+
+        tradability = TradabilityFilter(
+            TradabilityConfig(**trad_cfg),
+            store_root=compute.ROOT / 'data' / 'local_store')
+    path, skipped = build_path(ctx, spec, tradability)
     if not path:
         raise RuntimeError(f'成分路径为空；跳过统计：{skipped}')
 

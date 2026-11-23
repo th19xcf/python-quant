@@ -21,7 +21,7 @@ class BaostockSessionMixin:
     # （'utf-8' codec can't decode ... unexpected end of data）。
     BAOSTOCK_READ_TIMEOUT_SECONDS = 120.0
 
-    def _login_baostock(self):
+    def _login_baostock(self) -> None:
         """
         登录Baostock
         """
@@ -66,7 +66,7 @@ class BaostockSessionMixin:
             logger.debug(f"设置 Baostock socket 读超时失败: {e}")
 
     @handle_exception_with_retry(max_retries=3, retry_delay=2)
-    def _login_with_retry(self):
+    def _login_with_retry(self) -> None:
         """登录Baostock（带统一重试装饰器），登录失败抛出可重试异常"""
         self._login_baostock()
         if not self.bs_login:
@@ -97,7 +97,7 @@ class BaostockSessionMixin:
             logger.warning(f"Baostock登录失败，已达到最大重试次数: {e}")
             return False
 
-    def _logout_baostock(self):
+    def _logout_baostock(self) -> None:
         """
         登出Baostock
         """

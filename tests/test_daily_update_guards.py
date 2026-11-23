@@ -176,8 +176,10 @@ def test_factor_step_skips_when_aligned(tmp_path):
 
 def test_step_plan_keeps_hard_order_and_new_steps():
     keys = [key for key, _, _ in du.STEP_PLAN]
-    assert len(keys) == 22
-    assert keys[-2:] == ['backup', 'gate']
+    # 2026-11-22：新增 futures / dividend_monthly / breadth_ma / state_vector / macro /
+    # st_daily / limit_daily 与收尾只读闸门 dataset_health，共 30 步
+    assert len(keys) == 30
+    assert keys[-3:] == ['backup', 'gate', 'dataset_health']
     assert keys.index('build') < keys.index('fund_quote') < keys.index('factor')
     assert keys.index('dividend') < keys.index('sw_index') < keys.index('clean_set')
     assert keys.index('factor_panel') < keys.index('b_topn_picks') < keys.index('manifest')

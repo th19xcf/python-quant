@@ -39,6 +39,7 @@ from pathlib import Path
 
 import polars as pl
 
+from src.data.dataset_contracts import contract_for_path, write_dataset
 from src.data.atomic_write import write_parquet_atomic
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -80,12 +81,14 @@ def load_contracts() -> pl.DataFrame:
     if not frames:
         raise SystemExit('没有 contracts_*.csv，先跑 tools/fetch_futures_daily.py')
     df = pl.concat(frames, how='vertical_relaxed').unique(subset=['ts_code'], keep='first')
-    return df.with_columns([
+    df = df.with_columns([
         pl.col('list_date').cast(pl.Utf8).str.strptime(pl.Date, '%Y%m%d', strict=False),
         pl.col('delist_date').cast(pl.Utf8).str.strptime(pl.Date, '%Y%m%d', strict=False),
         pl.col('last_ddate').cast(pl.Utf8),
         pl.col('multiplier').cast(pl.Float64, strict=False),
     ])
+    # 固定行序：unique 的返回顺序不稳定，不排序会让「内容相同」也每次写出不同字节
+    return df.sort('ts_code')
 
 
 def load_daily() -> tuple[pl.DataFrame, dict[str, int]]:
@@ -292,22 +295,50 @@ def main(argv: list[str] | None = None) -> int:
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     hashes: dict[str, str] = {}
-    # 1) 分合约日线
+    # 1) 分合约日线（内容一致即不重写，保证无新交易日时零改动）
     written = 0
+    copied = 0
     for ex in ('cffex', 'shfe', 'ine'):
         target_dir = QUOTES_DIR / ex
         target_dir.mkdir(parents=True, exist_ok=True)
         for f in sorted((DAILY / ex).glob('*.parquet')):
             dst = target_dir / f.name
-            dst.write_bytes(f.read_bytes())
+            payload = f.read_bytes()
+            copied += 1
+            if dst.is_file() and dst.read_bytes() == payload:
+                continue
+            dst.write_bytes(payload)
             written += 1
-    # 2) 元数据表
-    write_parquet_atomic(contracts, OUT_DIR / 'futures_contracts.parquet')
-    write_parquet_atomic(cont, OUT_DIR / 'futures_continuous.parquet')
-    write_parquet_atomic(rolls, OUT_DIR / 'futures_roll_events.parquet')
-    for name in ('futures_contracts.parquet', 'futures_continuous.parquet',
-                 'futures_roll_events.parquet'):
-        hashes[name] = _sha256(OUT_DIR / name)
+    # 2) 元数据表（内容一致即不重写）
+    tables = (
+        ('futures_contracts.parquet', contracts),
+        ('futures_continuous.parquet', cont),
+        ('futures_roll_events.parquet', rolls),
+    )
+    table_changes = 0
+    for name, frame in tables:
+        target = OUT_DIR / name
+        if target.is_file():
+            try:
+                if pl.read_parquet(target).equals(frame):
+                    hashes[name] = _sha256(target)
+                    continue
+            except Exception:  # noqa: BLE001
+                pass
+        # TODO(write_dataset): futures_continuous/contracts/roll 三表未登记契约
+        _root = Path(__file__).resolve().parents[1] / 'data' / 'local_store'
+        _contract = contract_for_path(target, _root)
+        if _contract is None:
+            write_parquet_atomic(frame, target)
+        else:
+            write_dataset(_contract.key, frame,
+                          rel_path=Path(target).resolve().relative_to(_root.resolve()).as_posix(),
+                          root=_root, writer='tools/build_futures_continuous.py')
+        table_changes += 1
+        hashes[name] = _sha256(target)
+    if written == 0 and table_changes == 0:
+        print('无新数据：合约文件与三张元数据表均无变化，跳过落盘（manifest 保持原 built_at）')
+        return 0
 
     manifest = {
         'dataset': 'futures_cffex_shfe_ine',
@@ -317,7 +348,8 @@ def main(argv: list[str] | None = None) -> int:
         'built_at': datetime.now().isoformat(timespec='seconds'),
         'staging': str(STAGING.relative_to(ROOT)),
         'contract_files': file_counts,
-        'written_contract_files': written,
+        'written_contract_files': copied,
+        'rewritten_contract_files': written,
         'rows': {
             'contracts': contracts.height,
             'daily_total': daily.height,
@@ -353,7 +385,7 @@ def main(argv: list[str] | None = None) -> int:
     apply_semantics(manifest, 'meta/multi_asset/futures_manifest.json')
     (OUT_DIR / 'futures_manifest.json').write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
-    print(f'落盘完成：{written} 个合约文件 + 3 张元数据表')
+    print(f'落盘完成：改写 {written} 个合约文件，重写 {table_changes} 张元数据表')
     print(json.dumps(hashes, ensure_ascii=False, indent=2))
     return 0
 

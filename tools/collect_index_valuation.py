@@ -40,6 +40,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.data.atomic_write import write_parquet_atomic  # noqa: E402
+from src.data.dataset_contracts import write_dataset_at
 
 STORE = ROOT / 'data/local_store'
 OUT_DIR = STORE / 'meta/index_valuation'
@@ -127,6 +128,7 @@ def fetch_weights(pro: Any, code: str, start_year: int, end_year: int) -> pl.Dat
                               pl.col('trade_date').alias('trade_date'),
                               pl.col('weight').cast(pl.Float64)]))
             path.parent.mkdir(parents=True, exist_ok=True)
+            # TODO(write_dataset): 指数估值未登记契约
             write_parquet_atomic(frame, path)
         frames.append(frame)
     if not frames:
@@ -158,6 +160,7 @@ def fetch_daily(pro: Any, days: List[date]) -> pl.DataFrame:
                  .with_columns(pl.col('trade_date').str.strptime(pl.Date, '%Y%m%d'))
                  .select(['ts_code', 'trade_date', 'pe', 'pe_ttm', 'pb', 'dv_ratio']))
         path.parent.mkdir(parents=True, exist_ok=True)
+        # TODO(write_dataset): 指数估值未登记契约
         write_parquet_atomic(frame, path)
         frames.append(frame)
         if i % 20 == 0:
@@ -268,7 +271,8 @@ def write_table(frame: pl.DataFrame) -> None:
     from src.data.atomic_write import write_parquet_atomic  # noqa: PLC0415
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    write_parquet_atomic(frame, TABLE)
+    # TODO(write_dataset): 指数估值未登记契约
+    write_dataset_at(frame, TABLE, root=STORE, writer='tools/collect_index_valuation.py')
     stats = {}
     for code, group in frame.group_by('index_code'):
         stats[code[0] if isinstance(code, tuple) else code] = {

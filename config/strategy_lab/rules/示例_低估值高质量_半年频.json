@@ -20,10 +20,10 @@
   ],
   "cost": {
     "commission_rate": 0.00025,
-    "impact_coef": 0.015,
+    "impact_coef": 0.0,
     "min_commission": 5.0,
     "slippage_bps": 10.0,
-    "stamp_tax_basis": "fixed_0.1%"
+    "stamp_tax_basis": "historical"
   },
   "data_policy": "研究用/口径注意：研究侧年化 10.56% 为周频面板 fwd_5 口径、已证实高估；本规则默认成本含 impact 冲击项，正式口径年化 4.5%（扁平成本假设 6.7~6.8%），Calmar 仅在扁平成本口径下略优于 v3。保留为可选规则，不进推荐位。",
   "description": "申万一级行业内价值与质量分位均达到前 30%，按 0.5×价值+0.5×质量降序取前 40，半年频（6/12 月）等权",

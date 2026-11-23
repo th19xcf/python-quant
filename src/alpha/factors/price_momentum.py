@@ -53,7 +53,7 @@ class PriceMomentumFactors(PartitionAware):
 
         return self.data
 
-    def _calculate_momentum(self):
+    def _calculate_momentum(self) -> None:
         """
         计算动量因子
         """
@@ -77,7 +77,7 @@ class PriceMomentumFactors(PartitionAware):
             self._fill(self._p(momentum_12m)).cast(cdt, strict=False).alias('momentum_12m')
         ])
 
-    def _calculate_rsi_momentum(self):
+    def _calculate_rsi_momentum(self) -> None:
         """
         计算RSI动量因子
         """
@@ -90,7 +90,7 @@ class PriceMomentumFactors(PartitionAware):
             self._fill(self._p(shared_rsi_expr('close', 21))).cast(cdt, strict=False).alias('rsi_21')
         ])
 
-    def _calculate_macd_momentum(self):
+    def _calculate_macd_momentum(self) -> None:
         """
         计算MACD动量因子
         """
@@ -104,7 +104,7 @@ class PriceMomentumFactors(PartitionAware):
             self._fill(self._p(exprs['hist'])).cast(cdt, strict=False).alias('macd_hist'),
         ])
 
-    def _calculate_stochastic_momentum(self):
+    def _calculate_stochastic_momentum(self) -> None:
         """
         计算随机动量因子（通达信 KDJ 口径，与图表同源）
         """

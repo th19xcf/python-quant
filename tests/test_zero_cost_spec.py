@@ -44,5 +44,7 @@ def test_fixed_stamp_tax_not_experimental():
             .replace('最低佣金 0 元', '最低佣金 5 元')
             .replace('冲击 0', '冲击 0.015'))
     spec = parse_recipe(text)
-    assert spec['cost']['stamp_tax_basis'] == 'fixed_0.1%'
+    # 2026-11-23：固定千 1 已废弃（2023-08-28 起卖出印花税 0.05%），
+    # 旧配方文本仍可解析，但统一落到按成交日取值的 historical。
+    assert spec['cost']['stamp_tax_basis'] == 'historical'
     assert spec['experimental'] is False

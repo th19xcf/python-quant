@@ -71,16 +71,15 @@ def _call(model: CostModel, name: str, **extra) -> float:
 
 
 def test_impact_coef_default_is_explicit_decision():
-    """默认 ``impact_coef`` = 0.015：显式口径决定，改它需要重新实测 + 用户批准。
+    """默认 ``impact_coef`` = 0（2026-11-23 起），改它需要重新核对 + 用户批准。
 
-    依据（2026-11-12 冲击成本系数扫描，36 次运行）：策略收益翻负点 1 亿档
-    coef≈0.099、1,000 万档≈0.298；0.015 仅为翻负点的 1/6.6~1/20。旧默认 0
-    的偏乐观幅度实测 100 万~1,000 万档 0.2~2.0 pp、1 亿档 1.8~6.0 pp。
-    改这个值的条件：① 有新一版翻负点实测；② 用户显式批准；③ 同步更新
-    report / golden 基线并留证。在此之前本断言失败即说明有人顺手改了口径。
+    2026-11-23 成本口径核对结论：规格层 slippage 5.75bp/边 是「16.5bp 往返扣
+    佣金后的全部余额」，本身已含冲击；再叠加 0.015×sqrt(参与率) 属重复计入
+    （p=1% 时单边多收 15bp）。因此默认归零，2026-11-12 的 0.015 决定作废；
+    需要冲击时显式传 ``cost={"impact_coef": ...}``。
     """
-    assert COST_DEFAULTS['impact_coef'] == 0.015
-    assert CostModel().params['impact_coef'] == 0.015
+    assert COST_DEFAULTS['impact_coef'] == 0.0
+    assert CostModel().params['impact_coef'] == 0.0
 
 
 @pytest.mark.parametrize('name', sorted(CASES))
@@ -210,10 +209,11 @@ def test_engine_reports_adv20_available_for_impact():
 
 
 def test_engine_default_coef_applies_impact():
-    """默认 0.015 在引擎里真实生效：逐笔成本多出 成交额×0.015×sqrt(参与率)。"""
-    coef = COST_DEFAULTS['impact_coef']
+    """冲击系数仍可用，但改为显式传参（2026-11-23 起默认 0，避免与滑点重复计入）。"""
+    assert COST_DEFAULTS['impact_coef'] == 0.0
+    coef = 0.015
     base = _run_engine(coef=0.0)
-    with_default = _run_engine()
+    with_default = _run_engine(coef=coef)
 
     assert base['trades'] and with_default['trades']
     for trade in with_default['trades']:

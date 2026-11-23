@@ -72,7 +72,7 @@ class RiskFactors(PartitionAware):
         return pl.when(anchor.is_null()).then(
             pl.lit(None, dtype=pl.Float64)).otherwise(expr)
 
-    def _calculate_beta(self):
+    def _calculate_beta(self) -> None:
         """
         计算Beta系数
         """
@@ -97,7 +97,7 @@ class RiskFactors(PartitionAware):
             self._p(beta).cast(cdt, strict=False).alias('beta')
         )
 
-    def _calculate_max_drawdown(self):
+    def _calculate_max_drawdown(self) -> None:
         """
         计算最大回撤
         """
@@ -119,7 +119,7 @@ class RiskFactors(PartitionAware):
             self._p(max_drawdown).cast(cdt, strict=False).alias('max_drawdown_20')
         )
 
-    def _calculate_sharpe_ratio(self):
+    def _calculate_sharpe_ratio(self) -> None:
         """
         计算夏普比率
         """
@@ -141,7 +141,7 @@ class RiskFactors(PartitionAware):
             self._p(sharpe_ratio).cast(cdt, strict=False).alias('sharpe_ratio_20')
         )
 
-    def _calculate_downside_risk(self):
+    def _calculate_downside_risk(self) -> None:
         """
         计算下行风险
         """

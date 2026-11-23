@@ -66,9 +66,12 @@ class LimitTableRules(ExecutionRules):
         self._load_month(day[:7].replace('-', ''))
         return self._rows.get((day, ts_code))
 
-    def block_reason(self, side: str, *, prev_close=None, open_price=None,
-                     high=None, low=None, close=None, volume=None,
-                     ts_code: str = '', is_st=None, trade_date=None):
+    def block_reason(self, side: str, *, prev_close: float | None = None,
+                     open_price: float | None = None, high: float | None = None,
+                     low: float | None = None, close: float | None = None,
+                     volume: float | None = None, ts_code: str = '',
+                     is_st: bool | None = None,
+                     trade_date: date | None = None) -> str | None:
         self.STATS['calls'] += 1
         row = self._lookup(trade_date, ts_code)
         if row is None:
@@ -86,5 +89,5 @@ class LimitTableRules(ExecutionRules):
             return None
         return 'limit_up' if side == 'buy' else 'limit_down'
 
-    def is_tradable(self, side: str, **kwargs) -> bool:
+    def is_tradable(self, side: str, **kwargs: Any) -> bool:
         return self.block_reason(side, **kwargs) is None

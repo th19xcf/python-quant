@@ -4,6 +4,7 @@
 主窗口菜单与工具栏 Mixin：菜单栏、菜单动作与工具栏创建。
 """
 
+from typing import Any
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
@@ -23,10 +24,18 @@ class MainWindowMenuMixin:
     并写入「未实现」提示，避免界面看起来可点、点击后只静默打日志。
     """
 
+    # 由宿主 MainWindow（QMainWindow + 其余 mixin）提供；仅供类型检查，不在此创建
+    action_manager: Any
+    addToolBar: Any
+    data_view_manager: Any
+    menuBar: Any
+    statusBar: Any
+    tab_widget: Any
+
     #: 未实现入口的统一提示文案
     UNIMPLEMENTED_TOOLTIP = "未实现：该功能尚未接入，当前版本不可用"
 
-    def create_menu_bar(self):
+    def create_menu_bar(self) -> None:
         """
         创建菜单栏
         """
@@ -184,7 +193,7 @@ class MainWindowMenuMixin:
                 action.triggered.connect(callback)
             menu.addAction(action)
 
-    def open_quant_workbench(self):
+    def open_quant_workbench(self) -> None:
         """打开「回测工作台」标签页（新建回测 / 运行队列 / 结果看板 / 运行清单）。
 
         标签页内嵌本地回环页面，与浏览器通道共用同一份视图与队列；
@@ -203,7 +212,7 @@ class MainWindowMenuMixin:
         self.tab_widget.setCurrentWidget(tab)
         self.statusBar().showMessage('回测工作台：新建回测 / 运行队列 / 结果看板 / 运行清单', 3000)
 
-    def open_strategy_lab(self):
+    def open_strategy_lab(self) -> None:
         """打开「策略试算」标签页：结构化条件 → 复用既有引擎 → 净值与指标。
 
         页面为原生 Qt 控件（非内嵌网页），字段与运算符只能从白名单下拉中选择；
@@ -219,7 +228,7 @@ class MainWindowMenuMixin:
         self.tab_widget.setCurrentWidget(tab)
         self.statusBar().showMessage('策略试算：条件选股 + 月频回测 + 基准对比', 3000)
 
-    def create_tool_bar(self):
+    def create_tool_bar(self) -> None:
         """
         创建工具栏
         """

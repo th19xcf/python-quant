@@ -57,6 +57,11 @@ DEFAULT_STORE_ROOT = PROJECT_ROOT / 'data' / 'local_store'
 PARTS_TASK = 'financials_parts'
 STATEMENTS = ('income', 'balance', 'cashflow')
 
+# 财务数据版本指纹（G-072，2026-11-22 登记）：三表为 2026-11 单次快照，
+# 源端无法回放历史版本，故 PIT 延迟"不可证"。因子输出据此打标，不改数值。
+FIN_SNAPSHOT = '2026-11'
+PIT_LAG_UNKNOWN = True
+
 _COMMON_SCHEMA: dict[str, Any] = {
     'ts_code': pl.Utf8,
     'end_date': pl.Date,
@@ -139,6 +144,14 @@ ANN_DATE_MAP_SCHEMA: dict[str, Any] = {
 }
 
 ANN_DATE_MAP_KEY: tuple[str, ...] = ('period', 'symbol')
+
+#: 财务表 → 数据契约键（``merge_parts`` 落盘后补登 ledger 用）
+_CONTRACT_KEYS: dict[str, str] = {
+    'valuation': 'valuation_daily',
+    'income': 'financials_income',
+    'balance': 'financials_balance',
+    'cashflow': 'financials_cashflow',
+}
 
 
 def financials_dir(store_root: Path | str | None = None) -> Path:
@@ -505,6 +518,16 @@ def merge_parts(table: str, store_root: Path | str | None = None,
         _atomic_write(merged, dest)
         rows = merged.height
     logger.info(f'[financials] {table} 合并 {len(files)} 个分片 → {rows:,} 行')
+    # 财务线统一走本函数裸写 parquet，不经 write_dataset，故在此补登记 ledger
+    try:
+        from src.data.dataset_contracts import register_dataset  # noqa: PLC0415
+
+        register_dataset(_CONTRACT_KEYS[table], root=store_root,
+                         writer='src/data/financials/store.py',
+                         write_mode='merge_parts', evidence='merge_parts')
+    # 兜底理由：登记失败不应让合并结果作废（数据已落盘），只告警
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f'[financials] {table} 合并后 ledger 补登失败：{exc}')
     return rows
 
 

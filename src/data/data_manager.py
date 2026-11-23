@@ -57,7 +57,7 @@ class DataManager(DataService):
         """兼容旧调用方：DataManager 自身就是 DataService。"""
         return self
 
-    def _init_async_manager(self):
+    def _init_async_manager(self) -> None:
         """
         初始化异步数据管理器
         """

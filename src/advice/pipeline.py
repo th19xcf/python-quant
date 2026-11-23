@@ -28,10 +28,9 @@ from src.advice.daily_store import (
 )
 from src.advice.data import LocalPanelLoader, panel_trading_dates
 from src.advice.eligibility import EligibilityResult, check_eligibility
+from src.advice.exclusion_layer import ExclusionLayer
 from src.advice.factor_panel import compute_factor_panel
 from src.advice.ic_monitor import ic_gate_decision, monitor_note, run_ic_monitor
-from src.advice.exclusion_layer import ExclusionLayer
-from src.advice.tradability import TradabilityLayer
 from src.advice.models import (
     DIRECTION_AVOID,
     DIRECTION_BUY,
@@ -50,6 +49,7 @@ from src.advice.scoring import (
     explain_factors,
     factor_stats,
 )
+from src.advice.tradability import TradabilityLayer
 from src.advice.turnover import (
     HoldingDecision,
     TradeIntent,
@@ -269,7 +269,8 @@ class AdviceEngine:
                        if self.config.tradability.switch_enabled() else None)
         for tier in selected:
             scored = attach_score(
-                factors, tier, min_history_rows=self.config.min_history_rows)
+                factors, tier, min_history_rows=self.config.min_history_rows,
+                min_coverage=self.config.min_factor_coverage)
             if soft_enabled:
                 from src.advice.soft_filters import apply_soft_filter
 

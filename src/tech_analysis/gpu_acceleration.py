@@ -113,7 +113,7 @@ class GPUAccelerator:
     GPU加速器类，提供GPU加速计算功能
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """
         初始化GPU加速器
         """
@@ -126,7 +126,7 @@ class GPUAccelerator:
         if self.opencl_available:
             self._init_opencl()
 
-    def _init_opencl(self):
+    def _init_opencl(self) -> None:
         """
         初始化OpenCL环境
         """

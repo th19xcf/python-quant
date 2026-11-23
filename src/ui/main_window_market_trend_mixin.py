@@ -15,6 +15,11 @@ from PySide6.QtWidgets import QFrame, QScrollArea, QVBoxLayout, QWidget
 class MainWindowMarketTrendMixin:
     """中央标签页的「市场趋势」「行业热度」「风格轮动」入口。"""
 
+    # 由宿主 MainWindow（QMainWindow + 其余 mixin）提供；仅供类型检查，不在此创建
+    action_list_tab: Any
+    attribution_tab: Any
+    portfolio_risk_tab: Any
+
     #: 由 MainWindow 提供的中央标签容器
     tab_widget: Any
     market_trend_tab: QWidget
@@ -26,7 +31,7 @@ class MainWindowMarketTrendMixin:
     etf_timing_tab: QWidget
     etf_timing_page: Any
 
-    def create_market_trend_tab(self):
+    def create_market_trend_tab(self) -> None:
         """创建市场趋势标签页（由 create_center_area 在每日推荐之后追加）。"""
         layout = QVBoxLayout(self.market_trend_tab)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -37,11 +42,11 @@ class MainWindowMarketTrendMixin:
         # 指标表较长，套竖向滚动容器，避免把主窗口最小高度撑大。
         self.market_trend_scroll_area = QScrollArea()
         self.market_trend_scroll_area.setWidgetResizable(True)
-        self.market_trend_scroll_area.setFrameShape(QFrame.NoFrame)
+        self.market_trend_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         self.market_trend_scroll_area.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarAsNeeded)
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.market_trend_scroll_area.setVerticalScrollBarPolicy(
-            Qt.ScrollBarAsNeeded)
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.market_trend_scroll_area.setWidget(self.market_trend_page)
         layout.addWidget(self.market_trend_scroll_area)
 
@@ -61,7 +66,7 @@ class MainWindowMarketTrendMixin:
         self._market_trend_loaded = True
         self.market_trend_page.load_async()
 
-    def create_industry_heat_tab(self):
+    def create_industry_heat_tab(self) -> None:
         """创建行业热度标签页（由 create_center_area 在风格轮动之后追加）。"""
         layout = QVBoxLayout(self.industry_heat_tab)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -71,11 +76,11 @@ class MainWindowMarketTrendMixin:
 
         self.industry_heat_scroll_area = QScrollArea()
         self.industry_heat_scroll_area.setWidgetResizable(True)
-        self.industry_heat_scroll_area.setFrameShape(QFrame.NoFrame)
+        self.industry_heat_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         self.industry_heat_scroll_area.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarAsNeeded)
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.industry_heat_scroll_area.setVerticalScrollBarPolicy(
-            Qt.ScrollBarAsNeeded)
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.industry_heat_scroll_area.setWidget(self.industry_heat_page)
         layout.addWidget(self.industry_heat_scroll_area)
 
@@ -95,7 +100,7 @@ class MainWindowMarketTrendMixin:
         self._industry_heat_loaded = True
         self.industry_heat_page.load_async()
 
-    def create_style_rotation_tab(self):
+    def create_style_rotation_tab(self) -> None:
         """创建风格轮动标签页（由 create_center_area 在市场趋势之后追加）。"""
         layout = QVBoxLayout(self.style_rotation_tab)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -105,11 +110,11 @@ class MainWindowMarketTrendMixin:
 
         self.style_rotation_scroll_area = QScrollArea()
         self.style_rotation_scroll_area.setWidgetResizable(True)
-        self.style_rotation_scroll_area.setFrameShape(QFrame.NoFrame)
+        self.style_rotation_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         self.style_rotation_scroll_area.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarAsNeeded)
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.style_rotation_scroll_area.setVerticalScrollBarPolicy(
-            Qt.ScrollBarAsNeeded)
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.style_rotation_scroll_area.setWidget(self.style_rotation_page)
         layout.addWidget(self.style_rotation_scroll_area)
 
@@ -129,7 +134,7 @@ class MainWindowMarketTrendMixin:
         self._style_rotation_loaded = True
         self.style_rotation_page.load_async()
 
-    def create_portfolio_risk_tab(self):
+    def create_portfolio_risk_tab(self) -> None:
         """创建仓位与风控标签页（由 create_center_area 在行业热度之后追加）。"""
         layout = QVBoxLayout(self.portfolio_risk_tab)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -139,11 +144,11 @@ class MainWindowMarketTrendMixin:
 
         self.portfolio_risk_scroll_area = QScrollArea()
         self.portfolio_risk_scroll_area.setWidgetResizable(True)
-        self.portfolio_risk_scroll_area.setFrameShape(QFrame.NoFrame)
+        self.portfolio_risk_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         self.portfolio_risk_scroll_area.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarAsNeeded)
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.portfolio_risk_scroll_area.setVerticalScrollBarPolicy(
-            Qt.ScrollBarAsNeeded)
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.portfolio_risk_scroll_area.setWidget(self.portfolio_risk_page)
         layout.addWidget(self.portfolio_risk_scroll_area)
 
@@ -163,7 +168,7 @@ class MainWindowMarketTrendMixin:
         self._portfolio_risk_loaded = True
         self.portfolio_risk_page.load_async()
 
-    def create_attribution_tab(self):
+    def create_attribution_tab(self) -> None:
         """创建收益归因标签页（由 create_center_area 在仓位与风控之后追加）。"""
         layout = QVBoxLayout(self.attribution_tab)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -173,11 +178,11 @@ class MainWindowMarketTrendMixin:
 
         self.attribution_scroll_area = QScrollArea()
         self.attribution_scroll_area.setWidgetResizable(True)
-        self.attribution_scroll_area.setFrameShape(QFrame.NoFrame)
+        self.attribution_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         self.attribution_scroll_area.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarAsNeeded)
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.attribution_scroll_area.setVerticalScrollBarPolicy(
-            Qt.ScrollBarAsNeeded)
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.attribution_scroll_area.setWidget(self.attribution_page)
         layout.addWidget(self.attribution_scroll_area)
 
@@ -197,7 +202,7 @@ class MainWindowMarketTrendMixin:
         self._attribution_loaded = True
         self.attribution_page.load_async()
 
-    def create_action_list_tab(self):
+    def create_action_list_tab(self) -> None:
         """创建模型操作清单标签页（由 create_center_area 在收益归因之后追加）。"""
         layout = QVBoxLayout(self.action_list_tab)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -207,11 +212,11 @@ class MainWindowMarketTrendMixin:
 
         self.action_list_scroll_area = QScrollArea()
         self.action_list_scroll_area.setWidgetResizable(True)
-        self.action_list_scroll_area.setFrameShape(QFrame.NoFrame)
+        self.action_list_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         self.action_list_scroll_area.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarAsNeeded)
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.action_list_scroll_area.setVerticalScrollBarPolicy(
-            Qt.ScrollBarAsNeeded)
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.action_list_scroll_area.setWidget(self.action_list_page)
         layout.addWidget(self.action_list_scroll_area)
 
@@ -231,7 +236,7 @@ class MainWindowMarketTrendMixin:
         self._action_list_loaded = True
         self.action_list_page.load_async()
 
-    def create_etf_timing_tab(self):
+    def create_etf_timing_tab(self) -> None:
         """创建 ETF 仓位择时标签页（由 create_center_area 在模型操作清单之后追加）。"""
         layout = QVBoxLayout(self.etf_timing_tab)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -241,11 +246,11 @@ class MainWindowMarketTrendMixin:
 
         self.etf_timing_scroll_area = QScrollArea()
         self.etf_timing_scroll_area.setWidgetResizable(True)
-        self.etf_timing_scroll_area.setFrameShape(QFrame.NoFrame)
+        self.etf_timing_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         self.etf_timing_scroll_area.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarAsNeeded)
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.etf_timing_scroll_area.setVerticalScrollBarPolicy(
-            Qt.ScrollBarAsNeeded)
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.etf_timing_scroll_area.setWidget(self.etf_timing_page)
         layout.addWidget(self.etf_timing_scroll_area)
 

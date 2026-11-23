@@ -264,20 +264,28 @@ def test_walk_forward_disabled_warns_and_is_recorded():
     """单次 OOS 且未开启 walk-forward 时必须显式告警并写入 leakage_guard。"""
     from src.backtest.engine.backtest_engine import WalkForwardDisabledWarning
 
+    # 默认已开启滚动验证（DEFAULT_WALK_FORWARD_WINDOWS=3）；显式关掉才告警
     with pytest.warns(WalkForwardDisabledWarning, match='walk-forward'):
-        _, result = _optimize(_osc_frame())
+        _, result = _optimize(_osc_frame(), walk_forward_windows=0)
     guard = result['leakage_guard']
     assert guard['walk_forward_enabled'] is False
     assert guard['walk_forward_disabled_warning'] is True
     assert guard['multiple_testing_correction'] == 'not_implemented'
 
-    # 显式开启滚动验证后不得再发该告警（默认值保持不变，不改变历史输出）
+    # 默认参数（3 折）与显式开启都不得再发该告警
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
         _, enabled = _optimize(_osc_frame(), walk_forward_windows=2)
     assert not [w for w in caught
                 if issubclass(w.category, WalkForwardDisabledWarning)]
     assert enabled['leakage_guard']['walk_forward_disabled_warning'] is False
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        _, default = _optimize(_osc_frame())
+    assert not [w for w in caught
+                if issubclass(w.category, WalkForwardDisabledWarning)]
+    assert default['leakage_guard']['walk_forward_windows'] == 3
 
 
 def test_bare_engine_auto_assembles_adv_gate():

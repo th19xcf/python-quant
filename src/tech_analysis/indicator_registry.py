@@ -47,7 +47,7 @@ class IndicatorRegistry:
     实现指标的注册、查询、依赖管理和批量计算
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """
         初始化指标注册中心
         """

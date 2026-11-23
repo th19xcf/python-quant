@@ -297,7 +297,7 @@ class AsyncDataManager:
 
         return stock_data
 
-    def close(self):
+    def close(self) -> None:
         """
         关闭线程池
         """

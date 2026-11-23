@@ -42,6 +42,7 @@ from src.data.atomic_write import (  # noqa: E402
     write_text_atomic,
 )
 from src.data.staging import STAGING_ROOT  # noqa: E402
+from src.data.dataset_contracts import write_dataset
 
 DEFAULT_OUT = PROJECT_ROOT / 'data/local_store/factors/stock_dividend.parquet'
 #: 分页采集断点缓存。无运行期消费者，按 DG-32 落仓库根 ``_staging/``（2026-11-12 迁出正式层）。
@@ -807,7 +808,13 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
         return 0
 
-    write_parquet_atomic(final, args.out, compression='zstd', statistics=True)
+    try:
+        _rel = Path(args.out).resolve().relative_to((Path(__file__).resolve().parents[1] / 'data' / 'local_store').resolve()).as_posix()
+    except ValueError:
+        write_parquet_atomic(final, args.out, compression='zstd', statistics=True)
+    else:
+        write_dataset('stock_dividend', final, rel_path=_rel,
+                      root=Path(__file__).resolve().parents[1] / 'data' / 'local_store', writer='tools/collect_stock_dividend.py')
     update_meta(args.out, final.height, final.columns)
     print(f'已写入 {args.out}：{final.height:,} 行（原 {existing.height:,} 行，'
           f'新增 {merge_stats["appended_same_day"] + merge_stats["appended_plan"]:,} 行）')

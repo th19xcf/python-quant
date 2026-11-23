@@ -82,6 +82,7 @@ from src.backtest.engine.input_contract import (
     describe_contracts,
     validate_universe,
 )
+from src.backtest.engine.limit_table_rules import LimitTableRules
 from src.backtest.performance.performance_analyzer import PerformanceAnalyzer
 from src.risk import (
     DEFAULT_RISK_LIMITS,
@@ -92,7 +93,6 @@ from src.risk import (
 from src.risk import Order as RiskOrder
 from src.risk import Portfolio as RiskPortfolio
 from src.risk.execution_rules import ExecutionRules, finite_float
-from src.backtest.engine.limit_table_rules import LimitTableRules
 from src.risk.rules import DrawdownTracker
 
 
@@ -264,7 +264,8 @@ class PooledCash(MutableMapping[str, float]):
     def __len__(self) -> int:
         return 0
 
-    def get(self, key: str, default: float | None = None) -> float | None:
+    def get(self, key: str, default: Any = None) -> Any:  # type: ignore[override]
+        """与 ``Mapping.get`` 的重载签名不同：池模式下任何键都返回池余额，不走 default。"""
         return self._balance
 
 
@@ -1000,6 +1001,7 @@ class EventBacktestRunner:
         """创建撮合规则、账户账本与风控闸门。"""
         # 生产 pipeline 打开 limit_table 后默认读 meta/limit/daily；表缺失行
         # 由 LimitTableRules 回退 A 侧自算。裸引擎保持 A 侧，避免单测读盘。
+        rules: ExecutionRules
         if getattr(self, 'limit_table', False):
             rules = LimitTableRules(lot_size=lot_size)
         else:
@@ -2260,6 +2262,7 @@ class EventBacktestRunner:
         最高，避免把除权日跳空误判成涨跌停；缺失/非正时回退上一根 bar 收盘。
         """
         check_open = open_raw if open_raw is not None else open_price
+        check_prev: float | None
         if pre_close is not None and pre_close > 0:
             check_prev = pre_close
         else:

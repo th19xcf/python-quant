@@ -47,7 +47,7 @@ class TechnicalFactors(PartitionAware):
 
         return self.data
 
-    def _calculate_bollinger_bands(self):
+    def _calculate_bollinger_bands(self) -> None:
         """
         计算布林带因子。
 
@@ -89,7 +89,7 @@ class TechnicalFactors(PartitionAware):
             self._fill(self._p(bollinger_position)).cast(cdt, strict=False).alias('bollinger_position')
         ])
 
-    def _calculate_moving_average_crossovers(self):
+    def _calculate_moving_average_crossovers(self) -> None:
         """
         计算移动平均线交叉因子
         """
@@ -135,7 +135,7 @@ class TechnicalFactors(PartitionAware):
             self._p(ma_crossover_10_60).cast(cdt, strict=False).alias('ma_crossover_10_60')
         ])
 
-    def _calculate_relative_strength(self):
+    def _calculate_relative_strength(self) -> None:
         """
         计算相对强弱因子
         """
@@ -153,7 +153,7 @@ class TechnicalFactors(PartitionAware):
             self._p(rsi_momentum).cast(cdt, strict=False).alias('rsi_momentum')
         ])
 
-    def _calculate_stochastic_oscillator(self):
+    def _calculate_stochastic_oscillator(self) -> None:
         """
         计算随机振荡器因子（通达信 KDJ 口径，与图表同源）
         """

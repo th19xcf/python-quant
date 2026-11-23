@@ -237,7 +237,7 @@ class CandleStickItem(GraphicsObject):
         self.prepareGeometryChange()
         self.update()
 
-    def clear_cache(self):
+    def clear_cache(self) -> None:
         """
         清除缓存
         """
@@ -265,7 +265,7 @@ class CandleStickItem(GraphicsObject):
             return value
         return super().itemChange(change, value)
 
-    def _updateView(self):
+    def _updateView(self) -> None:
         """
         重写_updateView方法，避免连接不存在的sigRangeChanged信号
         """

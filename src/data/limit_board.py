@@ -77,13 +77,14 @@ import hashlib
 import json
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, cast
 
 import polars as pl
 from loguru import logger
 
 from src.core.market_rules import ExecutionRules
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic
+from src.data.dataset_contracts import write_dataset
 
 SCHEMA_VERSION = 'limit_board/v1'
 DEFAULT_START = date(2005, 1, 1)
@@ -308,24 +309,32 @@ def _apply_marks(frame: pl.DataFrame, counters: dict[str, Any]) -> pl.DataFrame:
     frame = frame.join(pct_map, on=['ts_code', 'era', 'st_rank'], how='left')
     frame = frame.with_columns(pl.col('pct').fill_null(10).cast(pl.Int64))
 
-    # 前收盘：原始 pre_close 优先，缺失时用最近收盘补，并留来源
+    # 前收盘：原始 pre_close 优先，缺失时用最近收盘补；首日仍缺且非北交所时
+    # 用当日开盘价代前收（单禁口径），最后才留空。来源逐行留痕。
+    frame = frame.with_columns(_board_expr())
     raw_pre = (pl.when((pl.col('pre_close') > 0) & pl.col('pre_close').is_finite())
                .then(pl.col('pre_close')))
     derived = pl.col('close').shift(1).over('ts_code')
+    first_day_open = ((pl.col('listing_days') == 1)
+                      & (pl.col('board') != '北交所')
+                      & (pl.col('open') > 0) & pl.col('open').is_finite())
     frame = frame.with_columns([
         raw_pre.alias('_raw_pre'),
         derived.alias('_derived_pre'),
     ]).with_columns([
-        pl.col('_raw_pre').fill_null(pl.col('_derived_pre')).alias('prev_close'),
+        pl.col('_raw_pre').fill_null(pl.col('_derived_pre')).fill_null(
+            pl.when(first_day_open).then(pl.col('open'))).alias('prev_close'),
         pl.when(pl.col('_raw_pre').is_not_null()).then(pl.lit('quote'))
         .when(pl.col('_derived_pre').is_not_null()).then(pl.lit('derived_prev_close'))
+        .when(first_day_open).then(pl.lit('first_day_open'))
         .otherwise(pl.lit('none')).alias('prev_close_source'),
     ])
     counters['prev_close_derived'] = int(
         (frame['prev_close_source'] == 'derived_prev_close').sum())
+    counters['prev_close_first_day_open'] = int(
+        (frame['prev_close_source'] == 'first_day_open').sum())
     counters['prev_close_missing'] = int((frame['prev_close_source'] == 'none').sum())
 
-    frame = frame.with_columns(_board_expr())
     exempt = (
         ((pl.col('board') == '科创板')
          & (pl.col('list_date') >= _date_lit(STAR_UNLIMITED_SINCE))
@@ -334,7 +343,6 @@ def _apply_marks(frame: pl.DataFrame, counters: dict[str, Any]) -> pl.DataFrame:
            & (pl.col('list_date') >= _date_lit(ExecutionRules.CHINEXT_REG_DATE))
            & (pl.col('listing_days') <= 5))
         | ((pl.col('board') == '北交所')
-           & (pl.col('list_date') >= _date_lit(BSE_UNLIMITED_SINCE))
            & (pl.col('listing_days') <= 1))
         | (pl.col('board').is_in(list(MAIN_BOARDS))
            & (pl.col('list_date') >= _date_lit(MAIN_UNLIMITED_SINCE))
@@ -432,8 +440,9 @@ def _apply_marks(frame: pl.DataFrame, counters: dict[str, Any]) -> pl.DataFrame:
     counters['suspended_rows'] = int(frame['suspended'].sum())
 
     def _mask(expression: pl.Expr) -> pl.Expr:
-        # 普通日 + 改革前已定价首日都有价格边界；exempt/无前收日不出标记。
-        return pl.when(valid | pl.col('_legacy_priced')).then(expression).otherwise(None)
+        # 普通日 + 改革前已定价首日 + 首日开盘代前收 都有价格边界；exempt/无前收日不出标记。
+        return pl.when(valid | pl.col('_legacy_priced') | pl.col('_open_prev')).then(
+            expression).otherwise(None)
 
     touch_up = _mask(pl.col('_high_c') >= pl.col('_up_c'))
     touch_down = _mask(pl.col('_low_c') <= pl.col('_down_c'))
@@ -458,12 +467,20 @@ def _apply_marks(frame: pl.DataFrame, counters: dict[str, Any]) -> pl.DataFrame:
     # 144%/64% 申报区间；缺发行价（price=0 / issue_date 缺失）的仍 fail-closed。
     legacy_no_limit = (pl.col('listing_phase') == 'legacy') & (
         pl.col('date') < _date_lit(LEGACY_UNPRICED_SINCE))
+    # 前收缺失、但已用首日开盘代前收的非北交所行：给常规幅度，降为单禁。
+    first_day_open_row = ((pl.col('listing_phase') == 'legacy')
+                          & (pl.col('date') >= _date_lit(LEGACY_UNPRICED_SINCE))
+                          & ~pl.col('_legacy_priced')
+                          & (pl.col('prev_close_source') == 'first_day_open'))
+    frame = frame.with_columns(first_day_open_row.alias('_open_prev'))
     legacy_unpriced = ((pl.col('listing_phase') == 'legacy')
                        & (pl.col('date') >= _date_lit(LEGACY_UNPRICED_SINCE))
-                       & ~pl.col('_legacy_priced'))
+                       & ~pl.col('_legacy_priced') & ~pl.col('_open_prev'))
     can_buy = (pl.when(pl.col('listing_phase') == 'exempt').then(~pl.col('suspended'))
                .when(legacy_no_limit).then(~pl.col('suspended'))
                .when(pl.col('_legacy_priced')).then(
+                   ~pl.col('suspended') & ~blocked_up.fill_null(True))
+               .when(pl.col('_open_prev')).then(
                    ~pl.col('suspended') & ~blocked_up.fill_null(True))
                .when(legacy_unpriced).then(pl.lit(False))
                .when(~normal | ~prices_ok).then(pl.lit(False))
@@ -472,6 +489,8 @@ def _apply_marks(frame: pl.DataFrame, counters: dict[str, Any]) -> pl.DataFrame:
                 .when(legacy_no_limit).then(~pl.col('suspended'))
                 .when(pl.col('_legacy_priced')).then(
                     ~pl.col('suspended') & ~blocked_down.fill_null(True))
+                .when(pl.col('_open_prev')).then(
+                    ~pl.col('suspended') & ~blocked_down.fill_null(True))
                 .when(legacy_unpriced).then(pl.lit(False))
                 .when(~normal | ~prices_ok).then(pl.lit(False))
                 .otherwise(~pl.col('suspended') & ~blocked_down.fill_null(True)))
@@ -479,6 +498,7 @@ def _apply_marks(frame: pl.DataFrame, counters: dict[str, Any]) -> pl.DataFrame:
         pl.when(pl.col('listing_phase') == 'exempt').then(pl.lit('new_stock_exempt'))
         .when(legacy_no_limit).then(pl.lit('new_stock_legacy_no_limit'))
         .when(pl.col('_legacy_priced')).then(pl.lit('new_stock_legacy_44_36'))
+        .when(pl.col('_open_prev')).then(pl.lit('new_stock_legacy_first_day_open'))
         .when(legacy_unpriced).then(pl.lit('new_stock_legacy_unpriced'))
         .when(pl.col('st_rank') == 2).then(pl.lit('st_unknown'))
         .when((pl.col('st_rank') == 1) & (pl.col('pct') < 10)).then(pl.lit('st'))
@@ -491,9 +511,9 @@ def _apply_marks(frame: pl.DataFrame, counters: dict[str, Any]) -> pl.DataFrame:
         one_up.alias('one_word_up'), one_down.alias('one_word_down'),
         can_buy.alias('can_buy'), can_sell.alias('can_sell'),
         limit_basis.alias('limit_basis'),
-        pl.when(valid | pl.col('_legacy_priced')).then(pl.col('_up_c') / 100.0)
+        pl.when(valid | pl.col('_legacy_priced') | pl.col('_open_prev')).then(pl.col('_up_c') / 100.0)
         .otherwise(None).alias('limit_up_price'),
-        pl.when(valid | pl.col('_legacy_priced')).then(pl.col('_down_c') / 100.0)
+        pl.when(valid | pl.col('_legacy_priced') | pl.col('_open_prev')).then(pl.col('_down_c') / 100.0)
         .otherwise(None).alias('limit_down_price'),
     ])
     _verify_price_rounding(frame)
@@ -718,8 +738,8 @@ def _compare(marks: pl.DataFrame, root: Path,
             ((daily['b_diff_up'].abs() > 0)
              | (daily['b_diff_down'].abs() > 0)).sum()),
         'b_recompute_max_abs_diff': int(max(
-            daily['b_diff_up'].abs().max() or 0,
-            daily['b_diff_down'].abs().max() or 0)),
+            cast(float, daily['b_diff_up'].abs().max() or 0),
+            cast(float, daily['b_diff_down'].abs().max() or 0))),
         'b_recompute_note': '用 breadth 口径（st_intervals + 首日剔除 + 同一 pct_map）'
                             '复算，与 breadth 存量比对：2025-2026 完全一致；'
                             '2005-2024 少数日期差 1~8 只，来自 breadth 快照历史行'
@@ -785,7 +805,9 @@ def build(store_root: Path | str, *, since: str | date = DEFAULT_START,
         if part.height == 0:
             continue
         path = out_dir / f'limit_daily_{tag}.parquet'
-        write_parquet_atomic(part, path)
+        write_dataset('limit_daily', part,
+                      rel_path=f'meta/limit/daily/{path.name}', root=root,
+                      writer='src/data/limit_board.py')
         produced.add(path.name)
         files.append({
             'path': path.name, 'rows': part.height,
@@ -811,6 +833,7 @@ def build(store_root: Path | str, *, since: str | date = DEFAULT_START,
     else:
         comparison, daily = _compare(marks, root, counters)
     if daily is not None and daily.height:
+        # TODO(write_dataset): 对拍日表未登记契约
         write_parquet_atomic(daily, reconcile_path(root))
 
     built_at = datetime.now().isoformat(timespec='seconds')

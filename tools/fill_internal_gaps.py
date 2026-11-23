@@ -43,6 +43,7 @@ from src.data.local_store.session_guard import (  # noqa: E402
 from src.data.local_store.store import LocalFactorStore, LocalQuoteStore  # noqa: E402
 from src.data.staging import staging_dir_for_store  # noqa: E402
 from src.data.tdx_day_parser import parse_day_file  # noqa: E402
+from src.data.dataset_contracts import write_dataset
 
 STORE = ROOT / 'data' / 'local_store'
 TDX = Path(r'd:\zxzq\vipdoc')
@@ -676,7 +677,9 @@ def refresh_exclusions() -> dict[str, Any]:
     sources = dict(summary['sources'])
     new_summary = tu._summarize(frame, di, snapshot, sources,
                                 summary['price_jumps'])
-    tu._write_atomic(EXCLUSIONS, lambda p: frame.write_parquet(p))
+    write_dataset('universe_exclusions', frame,
+                  rel_path=Path(EXCLUSIONS).resolve().relative_to(STORE.resolve()).as_posix(),
+                  root=STORE, writer='tools/fill_internal_gaps.py')
     tu._write_atomic(summary_path, lambda p: p.write_text(
         json.dumps(new_summary, ensure_ascii=False, indent=2, sort_keys=True),
         encoding='utf-8'))

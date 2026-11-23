@@ -56,6 +56,7 @@ from src.data.local_store.fund_factors import (  # noqa: E402
     SHARE_CHANGE_COLUMNS,
     prepare_events_for_code,
 )
+from src.data.dataset_contracts import write_dataset_at
 
 STORE = PROJECT_ROOT / 'data' / 'local_store'
 QUOTES = STORE / 'quotes' / 'fund'
@@ -280,8 +281,8 @@ def _append_missing_events() -> dict[str, Any]:
             [c for c in SHARE_CHANGE_COLUMNS if c in addition.columns])
         merged = pl.concat([frame, addition], how='vertical_relaxed').sort(
             ['ts_code', 'ex_date'])
-        write_parquet_atomic(merged, SHARE_PATH, compression='zstd',
-                             statistics=True)
+        write_dataset_at(merged, SHARE_PATH, root=STORE,
+                         writer='tools/fund_split_repair.py')
     return {'added_events': len(new_rows),
             'events': [{k: str(v) for k, v in row.items()} for row in new_rows]}
 
@@ -355,9 +356,8 @@ def apply_repair() -> dict[str, Any]:
     kept = old_factors.filter(~pl.col('ts_code').is_in(REPAIR_CODES))
     merged_all = pl.concat([kept, *new_parts], how='vertical_relaxed').sort(
         ['ts_code', 'trade_date'])
-    write_parquet_atomic(
-        merged_all, FACTOR_PATH, compression='zstd', compression_level=3,
-        statistics=True, row_group_size=100_000)
+    write_dataset_at(merged_all, FACTOR_PATH, root=STORE,
+                     writer='tools/fund_split_repair.py')
     # 写盘收尾：修复后行数 / SHA256 已变，目录级 manifest 必须按磁盘重算。
     write_factors_manifest(STORE)
 

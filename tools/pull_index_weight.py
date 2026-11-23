@@ -24,6 +24,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
+import polars as pl
 
 ROOT = Path(__file__).resolve().parents[1]
 STORE_ROOT = ROOT / "data" / "local_store"
@@ -35,6 +36,7 @@ SNAPSHOT_TASK = "index_membership_snapshots_20261112"
 
 sys.path.insert(0, str(ROOT))
 from src.data.staging import staging_dir_for_store  # noqa: E402
+from src.data.dataset_contracts import write_dataset_at
 
 
 def snapshot_dir(store_root: Path | None = None) -> Path:
@@ -242,7 +244,9 @@ def phase_build() -> None:
     previous = _load_existing_manifest()
     df = load_all()
     out_path = OUT_DIR / "index_weight_monthly.parquet"
-    df.to_parquet(out_path, index=False)
+    _frame = df if isinstance(df, pl.DataFrame) else pl.from_pandas(df, include_index=False)
+    write_dataset_at(_frame, out_path, root=STORE_ROOT,
+                     writer='tools/pull_index_weight.py')
 
     coverage = {}
     for code, cfg in INDICES.items():

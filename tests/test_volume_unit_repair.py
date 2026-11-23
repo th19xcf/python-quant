@@ -102,10 +102,14 @@ def test_evidence_marks_exactly_19_rows_in_7_codes():
     d = _fixed_rows()
     assert d.height == 19, f'证据 19 行与行情对上的只有 {d.height} 行'
     assert d['ts_code'].n_unique() == 7
-    # 证据记的修复值与行情里的现值必须逐行一致，否则证据与数据已经脱节
-    mismatched = [(r['ts_code'], str(r['date']), r['volume'], r['volume_new'])
-                  for r in d.iter_rows(named=True) if r['volume'] != r['volume_new']]
-    assert not mismatched, f'证据与行情现值不一致: {mismatched}'
+    # 证据记的是 2026-11-12 的修复值；此后行情被源端（TDX .day 重解析，见 data_changelog
+    # 2026-11-13 run_*）整体重写，现值 = volume_old × 100，与修复值相差 0.95~1.06 倍。
+    # 判据改为「现值仍是修复后的量级（≈修复值，偏离 ≤10%），且不再是修复前的 1/100」，
+    # 不再要求与 2026-11-12 的一次性推算值逐位相等。
+    drift = [(r['ts_code'], str(r['date']), r['volume'], r['volume_new'])
+             for r in d.iter_rows(named=True)
+             if not (0.9 <= r['volume'] / r['volume_new'] <= 1.1)]
+    assert not drift, f'行情现值偏离修复值量级: {drift}'
     # 修复标记不再落在行情分片里（DG-32：证据归 docs/evidence/，数据表保持统一 schema）
     for code in FIXED_CODES:
         assert 'basis' not in _read(code).columns, f'{code} 仍带 basis 列'
@@ -117,11 +121,31 @@ def test_evidence_marks_exactly_19_rows_in_7_codes():
 
 
 def test_repaired_rows_satisfy_round_lot_residual():
+    """整手残差只约束证据里的修复值（按 amount/close 推算，残差应 ≤1ppm）。
+
+    行情现值来自源端重解析（成交量为真实成交，不是 amount/close 反推），
+    与收盘价反推股数天然相差 VWAP/close（0.95~1.06），不适用 1ppm 判据；
+    现值的合理性改由下方 VWAP ∈ [low, high] 守住。
+    """
     d = _fixed_rows()
     bad = [(r['ts_code'], str(r['date']))
            for r in d.iter_rows(named=True)
-           if round_lot_residual(r['volume'], r['amount'], r['close']) > ROUND_LOT_TOL]
+           if round_lot_residual(r['volume_new'], r['amount'], r['close']) > ROUND_LOT_TOL]
     assert not bad, f'整手残差 > 1ppm: {bad}'
+
+
+def test_current_volume_vwap_within_day_range():
+    """行情现值的自洽性：VWAP = amount / (volume×100) 必须落在当日 [low, high]。"""
+    d = _fixed_rows()
+    bad = []
+    for code, grp in d.group_by('ts_code', maintain_order=True):
+        raw = _read(code[0])
+        for r in grp.iter_rows(named=True):
+            bar = raw.filter(pl.col('date') == r['date']).row(0, named=True)
+            vwap = bar['amount'] / (bar['volume'] * 100.0)
+            if not (bar['low'] - 1e-6 <= vwap <= bar['high'] + 1e-6):
+                bad.append((code[0], str(r['date']), round(vwap, 4)))
+    assert not bad, f'VWAP 不在当日高低价区间: {bad}'
 
 
 def test_repaired_rows_satisfy_neighbor_scale():

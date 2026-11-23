@@ -162,7 +162,9 @@ def main(argv: list[str] | None = None) -> int:
         'fund_basic_tradability_' + datetime.now().strftime('%Y%m%d_%H%M%S'))
     backup_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(basic_path, backup_dir / basic_path.name)
-    write_parquet_atomic(frame, basic_path)
+    from src.data.dataset_contracts import write_dataset_at  # noqa: PLC0415
+    write_dataset_at(frame, basic_path, root=ROOT / 'data' / 'local_store',
+                     writer='tools/mark_fund_tradability.py')
     logger.info(f'[fund_tradability] 已写入 {frame.height} 行: {basic_path}')
     logger.info(f'[fund_tradability] 原文件备份: {backup_dir}')
     return 0

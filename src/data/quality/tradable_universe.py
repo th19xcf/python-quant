@@ -38,11 +38,10 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 import threading
 from collections.abc import Iterable, Mapping
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +51,7 @@ from loguru import logger
 
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic
 from src.utils.code_converter import to_ts_code
+from src.utils.dates import as_date
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_ROOT = PROJECT_ROOT / 'data' / 'local_store'
@@ -200,17 +200,8 @@ def _exclusions_path(root: Path | str) -> Path:
 
 
 def _as_date(value: Any) -> date | None:
-    if value is None or value == '':
-        return None
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    text = str(value)
-    for fmt in ('%Y-%m-%d', '%Y%m%d'):
-        with contextlib.suppress(ValueError):
-            return datetime.strptime(text[:10] if '-' in text else text[:8], fmt).date()
-    return None
+    """委托统一真源 ``src.utils.dates.as_date``（含整数 YYYYMMDD / 斜杠 / NaT 归一）。"""
+    return as_date(value)
 
 
 def _quote_path(store_root: Path, asset_class: str, ts_code: str) -> Path:

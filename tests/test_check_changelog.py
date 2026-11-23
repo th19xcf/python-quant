@@ -128,7 +128,8 @@ def test_historical_value_defects_are_reported_but_not_fatal(tmp_path):
 def test_main_exit_codes(tmp_path):
     ledger = tmp_path / 'data_changelog.csv'
     _write(ledger, [HEADER, _row(1)])
-    assert main(['--file', str(ledger), '--no-baseline']) == 0
+    # --no-failures：不读仓库真实 logs/data_changelog_failures.csv，保证用例与本机状态隔离
+    assert main(['--file', str(ledger), '--no-baseline', '--no-failures']) == 0
 
     _write(ledger, [HEADER, _row(1)], trailing_newline=False)
-    assert main(['--file', str(ledger), '--no-baseline']) == 1
+    assert main(['--file', str(ledger), '--no-baseline', '--no-failures']) == 1

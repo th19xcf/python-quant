@@ -34,7 +34,7 @@ import threading
 import urllib.error
 import urllib.request
 from datetime import date, datetime
-from typing import Any
+from typing import Any, cast
 
 import polars as pl
 from loguru import logger
@@ -284,7 +284,7 @@ class TencentClient(DataSourceBase):
         if frame.is_empty():
             return frame
 
-        earliest = frame['date'].min()
+        earliest = cast('date | None', frame['date'].min())
         if start_dt is not None and earliest is not None and earliest > start_dt:
             logger.warning(
                 f'[tencent] {ts_code} 最多返回最近 {_MAX_DAILY_BARS} 根，'

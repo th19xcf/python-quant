@@ -523,7 +523,8 @@ def check_fund_basic_local(
     stamped = datetime.now().strftime('%Y%m%d_%H%M%S')
 
     appended: list[dict[str, Any]] = []
-    next_id = (int(local['id'].max()) if local.height else 0) + 1
+    max_id = local['id'].max() if local.height else 0
+    next_id = int(max_id or 0) + 1  # type: ignore[arg-type]  # polars max 返回宽联合类型
     for ts_code, name, market, list_date, delist_date, status in stock.iter_rows():
         if not ts_code or ts_code in existing:
             continue

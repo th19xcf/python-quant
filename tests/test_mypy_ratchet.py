@@ -25,7 +25,8 @@ SRC_ROOT = Path(__file__).resolve().parents[1] / 'src'
 #: 棘轮基线：只允许下降。收口后请同步下调该值。
 #: 本轮为 data/services 与 utils 两个目录补齐注解（含删除 macro/news 死代码）
 #: 后的实测值（903 -> 845 -> 766 -> 708）。
-UNTYPED_BASELINE = 708
+#: 2026-11-23：为 177 个无参、无返回值的 self/cls 方法补 ``-> None`` 后 750 → 572，按棘轮同步下调
+UNTYPED_BASELINE = 572
 
 #: 已由 pyproject 强制注解的目录（一级或子目录相对路径），必须恒为 0
 STRICT_DIRS = ('backtest', 'risk', 'api', 'data/services', 'utils')

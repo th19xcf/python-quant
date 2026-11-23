@@ -48,12 +48,12 @@ from src.data.quote_schema import QUOTE_COLUMNS, QUOTE_DTYPES
 LEDGER_REL_PATH = 'meta/registry/auto_register.json'
 
 #: 调度令牌 / 独立写入（放行阀）约定。
-RUN_TOKEN_ENV = 'QUANT_RUN_TOKEN'
-RUN_TOKEN_FILE_ENV = 'QUANT_RUN_TOKEN_FILE'
+RUN_TOKEN_ENV = 'QUANT_RUN_TOKEN'  # noqa: S105 - 环境变量名，不是凭据
+RUN_TOKEN_FILE_ENV = 'QUANT_RUN_TOKEN_FILE'  # noqa: S105 - 环境变量名
 STANDALONE_ENV = 'QUANT_ALLOW_STANDALONE'
 STANDALONE_REASON_ENV = 'QUANT_STANDALONE_REASON'
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_TOKEN_REL = '_locks/daily_update.lock'
+DEFAULT_TOKEN_REL = '_locks/daily_update.lock'  # noqa: S105 - 锁文件相对路径
 STANDALONE_LEDGER_REL = 'meta/registry/standalone_writes.jsonl'
 
 #: 步骤 → 该步允许写入的数据集键（步骤键与 tools/daily_update.py 的 STEP_PLAN 一致）。
@@ -241,10 +241,17 @@ def check_write_context(dataset: str, base: Path | str | None = None) -> dict[st
         '或显式加 --allow-standalone --standalone-reason <理由> 放行（会记入 ledger）')
 
 
+#: tools/ 下的只读工具/库：源码里出现写函数名但不落盘数据（AST 分析、报表渲染等）。
+READ_ONLY_TOOLS: dict[str, str] = {
+    'lineage_writers.py': 'AST 血缘分析库：写函数名只出现在常量与判定表，自身不落盘',
+}
+
+
 def unregistered_writers() -> list[str]:
     """tools/ 下写数据但未登记进步骤清单的脚本（体检异常项）。"""
     registered = {name for names in STEP_SCRIPTS.values() for name in names}
     registered |= set(WRITER_REGISTRY)
+    registered |= set(READ_ONLY_TOOLS)
     registered |= {'daily_update.py', 'dataset_health_check.py'}
     found: list[str] = []
     for path in sorted((PROJECT_ROOT / 'tools').glob('*.py')):

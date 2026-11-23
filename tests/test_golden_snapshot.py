@@ -13,6 +13,17 @@
     ./.venv/Scripts/python.exe tests/test_golden_snapshot.py save
 
 基线变更记录（每次重生成必须在此登记，避免后人把有意变更当成漂移）：
+- **2026-11-23 重建（成本口径修正，四类改动）**：旧基线留档于
+  ``tests/golden/_backup/baseline_20261113_63053193.json``（2026-11-13 提交
+  575517e，期望 ``input_contract`` 63053193…）。本次一并登记：
+  ① 99daf55（11-20）FACTOR_CONTRACT 追加 supertrend/st_lower/st_upper/st_dir；
+  ② ce96aff（11-20）FACTOR_CONTRACT 追加 cfp_ttm；
+  ③ f4529c9（11-22）BAR_CONTRACT 新增 pre_close；
+  ④ 本次 ``COST_DEFAULTS.impact_coef`` 0.015→0（规格层 slippage 已含冲击，
+  避免重复计入），``DEFAULT_COST`` 冲击归零、印花税改按成交日取。
+  影响面：``input_contract`` 五场景同值 63053193…→6f2d15b4…，来自 ①②③；
+  PnL（trades/positions/equity_curve/final_equity/performance）仅
+  ``tiered_4x120`` / ``tiered_partial_4x120`` 变化，来自 ④，其余三场景不变。
 - **2026-11-12 重新基线（impact_coef 默认值 0.0 → 0.015）**：依据同日冲击成本
   系数扫描（36 次运行）与用户的显式口径决定（V-35 决策材料：1 亿档翻负点
   coef≈0.099、1,000 万档≈0.298，0.015 取 1/6.6~1/20）。影响面已逐字段核对：

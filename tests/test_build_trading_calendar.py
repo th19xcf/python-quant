@@ -69,7 +69,8 @@ def test_build_frame_flags_official_gap_against_weekday_window() -> None:
 
 def test_write_outputs_is_idempotent(tmp_path: Path) -> None:
     store = tmp_path / 'store'
-    out = tmp_path / 'out'
+    # 输出须落在契约登记路径 meta/trading_calendar/ 下，否则写入层直接拒绝
+    out = store / 'meta' / 'trading_calendar'
     frame, coverage = build_frame(
         [date(2026, 11, 9), date(2026, 11, 10)], date(2026, 11, 6)
     )
@@ -91,7 +92,7 @@ def test_main_offline_snapshot_and_check(tmp_path: Path) -> None:
     snapshot.write_text(
         'trade_date\n2026-11-06\n2026-11-09\n2026-11-10\n', encoding='utf-8'
     )
-    out = tmp_path / 'out'
+    out = store / 'meta' / 'trading_calendar'
     common = [
         '--store-root', str(store),
         '--input', str(snapshot),

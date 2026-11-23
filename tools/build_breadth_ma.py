@@ -581,7 +581,8 @@ def apply(daily: pl.DataFrame, store: Path, stage: Path, *, chunk_size: int, cod
             failed_rows = list(csv.DictReader(handle))
 
     target = target_path(store)
-    write_parquet_atomic(daily, target)
+    from src.data.dataset_contracts import write_dataset_at  # noqa: PLC0415
+    write_dataset_at(daily, target, root=store, writer='tools/build_breadth_ma.py')
     written = pl.read_parquet(target)
     assert written.height == daily.height, '落盘行数与候选不一致'
     assert written.equals(daily), '落盘内容与候选不一致'

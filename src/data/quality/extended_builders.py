@@ -15,7 +15,7 @@ r"""外部依赖数据契约的本地构建器（停复牌 / 行业 PIT / 指数
   口径：``交易日历 − 该标的实际有 bar 的交易日``。通达信 ``.day`` 不为停牌日
   生成记录，缺口即停牌；但与源端漏数不可区分，故给出 ``confidence``。
   区间取每只标的自身的 ``[首个 bar, 末个 bar]``，可声明 ``complete=true``。
-- **行业近期快照视图** ``meta/industry_pit/industry_pit.parquet``（非正式 PIT）
+- **行业近期快照视图** ``meta/industry_pit/industry_snapshot_recent.parquet``（非正式 PIT）
   口径：对 ``meta/industry/industry_YYYYMMDD.parquet`` 日快照做变更点抽取，
   只写生效日与失效日。本地快照只有最近几天，故 ``complete=false``，契约
   如实保持 ``partial``。**该表只是「近期快照视图」：`end_date` 全空、
@@ -47,7 +47,7 @@ import sys
 import time
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Sequence, cast
 
 import numpy as np
 import polars as pl
@@ -280,6 +280,29 @@ def _industry_snapshots(root: Path) -> list[tuple[date, pl.DataFrame]]:
     return [(day, frame.filter(pl.col('as_of') == day)) for day in days]
 
 
+def assert_recent_snapshot_view(path: Path | str, frame: pl.DataFrame | None = None) -> None:
+    """读取侧断言：``industry_snapshot_recent.parquet`` 只能当近期快照用，不是 PIT 区间表。
+
+    判据与写入侧自述一致——``end_date`` 至多一个取值、``effective_date`` 跨度 < 30 日。
+    任何读取方若打算按 as-of 回溯历史行业归属，必须先过这道断言：它一旦通过，
+    说明拿到的是「当前分类的快照视图」，用它回填历史即前视；历史回溯只认
+    同目录 ``industry_pit_sw.parquet``（申万区间表）。
+    """
+    frame = pl.read_parquet(str(path)) if frame is None else frame
+    missing = [c for c in ('effective_date', 'end_date') if c not in frame.columns]
+    if missing:
+        raise RuntimeError(f'{path} 缺少 {missing}，不能当行业区间表使用')
+    effective = frame['effective_date'].drop_nulls()
+    if effective.is_empty():
+        raise RuntimeError(f'{path} 无 effective_date，不能当行业区间表使用')
+    span_days = (cast(date, effective.max()) - cast(date, effective.min())).days
+    end_values = frame['end_date'].drop_nulls().unique()
+    if len(end_values) > 1 or span_days >= 30:
+        raise RuntimeError(
+            f'{path} 登记为近期快照视图，但实测 end_date 有 {len(end_values)} 个取值、'
+            f'effective_date 跨度 {span_days} 天——形态不符，先复核文件再决定能否当 PIT 用')
+
+
 def build_industry_pit(root: Path | str, *, commit: bool = False) -> dict[str, Any]:
     """把行业日快照抽成「近期快照视图」（只在变更点切段，不做历史外推）。
 
@@ -342,7 +365,7 @@ def build_industry_pit(root: Path | str, *, commit: bool = False) -> dict[str, A
 
     # 契约已改挂申万区间表 `industry_pit_sw.parquet`，产物路径不能再从
     # `_SPEC` 取，否则本构建器会把「近期快照视图」写到申万正式表上。
-    artifact = store / 'meta' / 'industry_pit' / 'industry_pit.parquet'
+    artifact = store / 'meta' / 'industry_pit' / 'industry_snapshot_recent.parquet'
     coverage_path = store / 'meta' / 'industry_pit' / 'coverage.json'
     _write_frame(artifact, frame)
     _write_json(coverage_path, {

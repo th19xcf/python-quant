@@ -545,9 +545,48 @@ def _collect_callers(mod: _Module) -> dict[str, list[dict[str, ast.AST]]]:
     return callers
 
 
+#: 受控写入口（``src/data/dataset_contracts.py``，2026-11-22 起正式层写入统一走这里）。
+#: ``write_dataset(key, ...)`` 的目标由契约 key 决定，不在实参里；``write_dataset_at``
+#: 的第二个实参就是目标路径，按普通写调用解析即可。
+CONTRACT_WRITE_FUNCS = {'write_dataset', 'write_dataset_at'}
+_CONTRACTS_FILE = Path(__file__).resolve().parents[1] / 'src' / 'data' / 'dataset_contracts.py'
+_CONTRACT_PATTERNS: dict[str, str] | None = None
+
+
+def _contract_patterns() -> dict[str, str]:
+    """静态解析契约注册表：``DatasetContract(key=..., pattern=...)`` → key → 正式层路径。"""
+    global _CONTRACT_PATTERNS
+    if _CONTRACT_PATTERNS is None:
+        found: dict[str, str] = {}
+        if _CONTRACTS_FILE.is_file():
+            tree = ast.parse(_CONTRACTS_FILE.read_text(encoding='utf-8'))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call) and _call_name(node) == 'DatasetContract':
+                    kw = {k.arg: k.value for k in node.keywords}
+                    key, pattern = kw.get('key'), kw.get('pattern')
+                    if (isinstance(key, ast.Constant) and isinstance(key.value, str)
+                            and isinstance(pattern, ast.Constant)
+                            and isinstance(pattern.value, str)):
+                        found[key.value] = f'data/local_store/{pattern.value}'
+        _CONTRACT_PATTERNS = found
+    return _CONTRACT_PATTERNS
+
+
+def _contract_targets(node: ast.Call) -> list[str]:
+    """``write_dataset('st_coverage', ...)`` → 契约登记的正式层路径；key 非字面量时为空。"""
+    if _call_name(node) != 'write_dataset':
+        return []
+    key = node.args[0] if node.args else next(
+        (k.value for k in node.keywords if k.arg == 'key'), None)
+    if isinstance(key, ast.Constant) and isinstance(key.value, str):
+        pattern = _contract_patterns().get(key.value)
+        return [pattern] if pattern else []
+    return []
+
+
 def _is_write(node: ast.Call) -> bool:
     name = _call_name(node)
-    if name in WRITE_FUNCS:
+    if name in WRITE_FUNCS or name in CONTRACT_WRITE_FUNCS:
         return True
     return name in RENAME_FUNCS and len(node.args) == 1
 
@@ -572,6 +611,7 @@ def scan_file(path: Path, rel: str, origin: str) -> list[WriteSite]:
             for arg in list(node.args) + [k.value for k in node.keywords if k.arg]:
                 resolved = _resolve(arg, mod, func.env, set(func.params), func.domains)
                 cand += _fill_params(resolved, mod, func, callers)
+            cand += _contract_targets(node)
             targets = _normalize_targets(cand, _call_name(node))
             # 目标解析不出来也照样登记：它是「当前源码里确有写调用」的证据，
             # 用于校验上游快照记录的行号是否已经漂移（见 detect_writers）。
@@ -585,6 +625,7 @@ def scan_file(path: Path, rel: str, origin: str) -> list[WriteSite]:
             cand: list[str] = []
             for arg in list(node.args) + [k.value for k in node.keywords if k.arg]:
                 cand += _resolve(arg, mod, {}, set())
+            cand += _contract_targets(node)
             targets = _normalize_targets(cand, _call_name(node))
             sites.append(WriteSite(file=rel, line=node.lineno, func='<module>',
                                    call=_call_name(node), targets=targets, origin=origin))

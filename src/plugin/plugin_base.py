@@ -21,19 +21,19 @@ class PluginBase(ABC):
     所有插件的基类，定义插件的基本接口
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.name = "Unknown"
         self.version = "0.0.1"
         self.author = "Unknown"
         self.description = ""
         self.enabled = True
-        self.config = {}
+        self.config: dict[str, Any] = {}
         self.plugin_manager = None  # 插件管理器实例，由PluginManager在初始化时设置
         self._config_model = None  # 插件配置模型类
-        self._default_config = {}  # 插件默认配置
+        self._default_config: dict[str, Any] = {}  # 插件默认配置
         self._plugin_config_manager = get_plugin_config_manager()  # 插件配置管理器实例
         # 插件依赖声明，格式: [{'name': 'plugin_name', 'version': '>=1.0.0'}, ...]
-        self.dependencies = []
+        self.dependencies: list[dict[str, Any]] = []
         # 插件加载状态: 'unloaded', 'loaded', 'initialized'
         self._load_status = 'unloaded'
 

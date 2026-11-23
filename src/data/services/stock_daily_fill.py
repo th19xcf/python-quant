@@ -36,6 +36,7 @@ from src.data.tdx_day_parser import read_first_last_trade_date, read_recent_reco
 from src.database.models.stock import StockDaily
 from src.database.upsert import upsert_rows
 from src.utils.code_converter import is_fund_code, is_index_code, to_tdx_file_stem
+from src.utils.dates import as_date
 from src.utils.exceptions import DataSourceException
 
 # 每批处理的股票数与写库行数上限（避免单事务过大）
@@ -111,18 +112,8 @@ def _coverage_ranges(db_manager: Any) -> dict[str, tuple[date, date]]:
 
 
 def _as_date(value: Any) -> date | None:
-    """兼容 MySQL DATE / SQLite 文本的日期归一。"""
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    text = str(value)[:10]
-    try:
-        return date.fromisoformat(text)
-    except ValueError:
-        return None
+    """委托统一真源 ``src.utils.dates.as_date``（含整数 YYYYMMDD / 斜杠 / NaT 归一）。"""
+    return as_date(value)
 
 
 def _default_progress_path(mode: str) -> Path:

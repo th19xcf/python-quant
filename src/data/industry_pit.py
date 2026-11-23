@@ -13,7 +13,7 @@ r"""申万官方行业分类历史 → 个股行业 PIT 区间表。
 - 名称源：巨潮 ``p_public0002`` 的申万 2021 版（indtype=008003）与
   2014 版（indtype=008018）分类树，用于把 6 位行业代码补成 L1/L2/L3 名称。
 
-产物（全部为**新增**文件，不覆盖同目录已有的 ``industry_pit.parquet`` /
+产物（全部为**新增**文件，不覆盖同目录已有的 ``industry_snapshot_recent.parquet`` /
 ``industry_change_pit.parquet`` / ``coverage.json``）：
 
 - ``meta/industry_pit/industry_pit_sw.parquet``  区间表
@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -116,7 +117,7 @@ def _sha256(path: Path) -> str:
 
 #: 同目录其他口径 parquet 的语义与产出方（2026-11-12 补登，避免 manifest 只记 sw 一张）。
 _SIBLING_SPECS: dict[str, tuple[str, str, str]] = {
-    'industry_pit.parquet': (
+    'industry_snapshot_recent.parquet': (
         '通达信 T 代码树行业 PIT 快照，与申万 SW2021 不同源、不同代码体系，禁止与 sw 表混用',
         'src/data/quality/extended_builders.py::build_industry_pit',
         'effective_date',
@@ -144,6 +145,10 @@ def _sibling_inventory(
         path = directory / name
         if not path.is_file() or path.resolve() == target.resolve():
             continue
+        if name == 'industry_snapshot_recent.parquet':
+            # 读取侧断言：近期快照视图严禁被当 PIT 区间表回溯（形态不符先报错复核）
+            from src.data.quality.extended_builders import assert_recent_snapshot_view  # noqa: PLC0415
+            assert_recent_snapshot_view(path)
         lazy = pl.scan_parquet(str(path))
         names = list(lazy.collect_schema().names())
         entry: dict[str, Any] = {
@@ -207,6 +212,27 @@ def _industry_codes(code: str) -> tuple[str, str, str]:
 # --------------------------------------------------------------------------
 
 
+def _sw_tls_verify() -> bool | str:
+    """申万下载的 TLS 校验策略：默认校验；可补 CA；显式开关才允许不校验。
+
+    - ``SW_CA_BUNDLE``：指向含申万中间证书的 PEM 文件（补全不完整证书链），
+      优先级最高；文件不存在时直接报错，避免悄悄退回不校验；
+    - ``SW_ALLOW_INSECURE=1``：临时降级为不校验证书，每次下载都会告警，
+      仅用于证书链问题的应急，不应长期开启；
+    - 其余情况返回 ``True``，使用 certifi / 系统 CA 正常校验。
+    """
+    bundle = os.environ.get('SW_CA_BUNDLE', '').strip()
+    if bundle:
+        if not Path(bundle).is_file():
+            raise FileNotFoundError(f'SW_CA_BUNDLE 指向的证书文件不存在: {bundle}')
+        return bundle
+    if os.environ.get('SW_ALLOW_INSECURE', '').strip().lower() in {'1', 'true', 'yes'}:
+        logger.warning('[industry_pit] SW_ALLOW_INSECURE 已开启：申万下载未校验 TLS 证书，'
+                       '存在被篡改风险，请尽快改用 SW_CA_BUNDLE')
+        return False
+    return True
+
+
 def download_sw_history(raw: Path, *, refresh: bool = False) -> tuple[Path, str | None]:
     """下载申万个股行业分类历史 Excel；已存在且非空则直接复用。"""
     raw.mkdir(parents=True, exist_ok=True)
@@ -218,11 +244,12 @@ def download_sw_history(raw: Path, *, refresh: bool = False) -> tuple[Path, str 
     last_err = ''
     for attempt in range(RETRY + 1):
         try:
-            # 申万站点证书链不完整，且对无 UA/Referer 的请求返回 508；
-            # 改用浏览器头后实测 200，证书校验在此显式关闭并记录告警。
+            # 申万站点对无 UA/Referer 的请求返回 508，故带浏览器头。
+            # 证书校验默认开启（可用 SW_CA_BUNDLE 补中间证书）；只有显式设置
+            # SW_ALLOW_INSECURE=1 才降级为不校验，并逐次告警。
             resp = requests.get(
                 SW_URL, headers=SW_HEADERS, timeout=120,
-                verify=False,  # noqa: S501 —— 站点证书链不完整，来源为申万官方
+                verify=_sw_tls_verify(),
             )
             if resp.status_code == 200 and len(resp.content) > 100_000:
                 path.write_bytes(resp.content)
@@ -497,7 +524,7 @@ def build(store_root: Path | str, *, refresh: bool = False) -> dict[str, Any]:
         ],
         'caveats': [
             '2021-07-30 前后 L1 口径切换（SW2014→SW2021），跨该日不可直接比较 L1 名称',
-            '与本目录 industry_pit.parquet（通达信 T 代码树）不同口径，禁止混用',
+            '与本目录 industry_snapshot_recent.parquet（通达信 T 代码树）不同口径，禁止混用',
             '禁止把 2026 年行业回填到 2016 年；查询早于 start 应返回空',
         ],
         'files': {

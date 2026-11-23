@@ -42,7 +42,7 @@ class FactorAnalysisDialog(QDialog):
 
         self.init_ui()
 
-    def init_ui(self):
+    def init_ui(self) -> None:
         """
         初始化UI
         """
@@ -210,7 +210,7 @@ class FactorAnalysisDialog(QDialog):
 
         main_layout.addLayout(button_layout)
 
-    def run_analysis(self):
+    def run_analysis(self) -> None:
         """
         运行因子分析
         """
@@ -311,7 +311,7 @@ class FactorAnalysisDialog(QDialog):
 
         self.result_text.setText(text)
 
-    def export_report(self):
+    def export_report(self) -> None:
         """
         导出分析报告
         """

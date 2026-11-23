@@ -39,6 +39,20 @@ TRANSFER_FEE_SWITCH = date(2015, 8, 1)
 TRANSFER_FEE_RATE_UNIFIED = 0.00002
 TRANSFER_FEE_RATE_SH_LEGACY = 0.0006
 
+#: 研究口径默认往返成本（ETF 口径，含冲击）：16.5bp。
+#: 2026-11-23 核对后的实际拆法（``SpecCostModel(DEFAULT_COST)``，零参与率）：
+#: ETF = 佣金 2.5bp×2 + 滑点 5.75bp×2 = 16.5bp（免印花税、免过户费）；
+#: A 股 = 上项 + 过户费 0.2bp×2 + 卖出印花税 5bp（2023-08-28 起 0.05%）= 21.9bp。
+#: 冲击已含在 5.75bp/边 的滑点里（``impact_coef`` 默认 0），不再叠加。
+#: 旧注释里的「佣金5 + 冲击6.5 + 印花税5」拆法已作废。
+RESEARCH_ROUND_TRIP_BPS: float = 16.5
+
+
+def research_round_trip_rate() -> float:
+    """研究口径往返费率（小数），供脚本与配置统一引用。"""
+    return RESEARCH_ROUND_TRIP_BPS / 1e4
+
+
 #: 成本单一真源：回测内核、推荐配置（src.advice.config）与因子评估
 #: （src.advice.factor_eval，直接使用 CostModel）都从这里取值。
 #: 语义映射：推荐侧的 ``impact_rate`` 对应回测侧的 ``slippage``（均为双边）。
@@ -49,15 +63,13 @@ COST_DEFAULTS: Dict[str, float] = {
     'transfer_fee_rate': TRANSFER_FEE_RATE_UNIFIED,  # 过户费（双边 0.002%）
     'slippage': 0.0002,              # 滑点（双边，未分档时的兜底值）
     # 冲击成本系数：impact = impact_coef × sqrt(成交额 / ADV 成交额)。
-    # 默认 0.015 是 2026-11-12 的**显式口径决定**，不是随手取的数：
-    # 依据同日的系数扫描（36 次运行）——1 亿档策略收益翻负点 coef≈0.099、
-    # 1,000 万档≈0.298；0.015 仅为翻负点的 1/6.6~1/20，而默认 0（旧口径）
-    # 的偏乐观幅度实测为 100 万~1,000 万档 0.2~2.0 pp、1 亿档 1.8~6.0 pp。
+    # 2026-11-23 起默认 0：核对确认规格层的 slippage（5.75bp/边）本身就是
+    # 「16.5bp 往返扣佣金后的全部余额」，已在其中含冲击；再叠加 coef 属重复
+    # 计入（p=1% 时单边多收 15bp）。2026-11-12 的 0.015 决策作废，但系数
+    # 能力保留：需要冲击时显式传 ``impact_coef>0``（如 cost={"impact_coef":0.015}）。
     # 参与率分母由回测内核传入的 bar.adv20（20 日均成交额，元，lag1）给出；
-    # ADV 缺失的标的冲击项为 0（见 impact_rate）。改这个默认值等于改全部
-    # 历史回测的收益口径：再动之前必须有新一轮翻负点实测与用户显式批准，
-    # 且 trading 侧要给 report/golden 基线同步留证（V-36 决策记录）。
-    'impact_coef': 0.015,
+    # ADV 缺失的标的冲击项为 0（见 impact_rate）。
+    'impact_coef': 0.0,
 }
 
 #: ETF/LOF 滑点分档：按 20 日 ADV（元）从高到低取第一档。

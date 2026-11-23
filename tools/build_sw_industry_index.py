@@ -322,6 +322,7 @@ def update_index_basic(frames: dict[str, pl.DataFrame], stage: Path) -> dict:
 
     stage.mkdir(parents=True, exist_ok=True)
     tmp_parquet = stage / 'index_basic.parquet'
+    # TODO(write_dataset): 申万行业指数未登记契约（暂存写入）
     merged.write_parquet(tmp_parquet, compression='zstd', statistics=True)
     os.replace(tmp_parquet, path)
 
@@ -383,6 +384,7 @@ def main(argv=None) -> int:
     # 候选落盘
     for c, df in frames.items():
         assert_quote_schema('index', df)
+        # TODO(write_dataset): 申万行业指数未登记契约（暂存写入）
         df.write_parquet(stage / f'{c}.SH.parquet', compression='zstd', statistics=True)
 
     cal = local_calendar()

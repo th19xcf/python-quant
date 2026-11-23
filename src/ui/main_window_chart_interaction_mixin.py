@@ -4,12 +4,17 @@
 主窗口图表交互 Mixin：K线鼠标交互、指标/周期切换、缩放与右键菜单。
 """
 
+from typing import Any
 import pyqtgraph as pg
 
 from src.utils.logger import logger
 
 
 class MainWindowChartInteractionMixin:
+
+    # 由宿主 MainWindow（QMainWindow + 其余 mixin）提供；仅供类型检查，不在此创建
+    current_kline_data: Any
+    tech_plot_widget: Any
     def on_indicator_changed(self, window_index, indicator_name):
         """
         Indicator selection changed
@@ -35,7 +40,7 @@ class MainWindowChartInteractionMixin:
             if hasattr(self, 'process_stock_data'):
                 self.process_stock_data(self.current_stock_code, self.current_stock_name)
 
-    def _on_zoom_in(self):
+    def _on_zoom_in(self) -> None:
         """
         放大K线图（增加柱体数）
         对应工具栏的 + 按钮功能
@@ -49,7 +54,7 @@ class MainWindowChartInteractionMixin:
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"放大K线图失败: {e}")
 
-    def _on_zoom_out(self):
+    def _on_zoom_out(self) -> None:
         """
         缩小K线图（减少柱体数）
         对应工具栏的 - 按钮功能
@@ -254,7 +259,7 @@ class MainWindowChartInteractionMixin:
 
         self.ma_values_label.setText(ma_text + overlay_text)
 
-    def show_info_box(self):
+    def show_info_box(self) -> None:
         """
         Show info box on chart with smart positioning
         When crosshair is near the right edge, show info box on the left side

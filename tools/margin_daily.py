@@ -47,6 +47,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic  # noqa: E402
+from src.data.dataset_contracts import write_dataset  # noqa: E402
 from src.data.staging import staging_dir_for_store  # noqa: E402
 
 STORE = ROOT / 'data' / 'local_store'
@@ -499,7 +500,13 @@ def publish(cand: pl.DataFrame, *, yes: bool = False, stamp: str | None = None,
         moved[p.name] = before
     report['dg11_moved_sha256'] = moved
 
-    write_parquet_atomic(final, target)
+    try:
+        rel = target.resolve().relative_to(STORE.resolve()).as_posix()
+    except ValueError:
+        write_parquet_atomic(final, target)
+    else:
+        write_dataset('macro_market_margin', final, rel_path=rel, root=STORE,
+                      writer='tools/margin_daily.py')
     write_text_atomic(final.write_csv(), target_csv)
     report['final_sha256'] = sha256(target)
 

@@ -50,7 +50,7 @@ class MainWindowDividendMixin:
         except (OSError, RuntimeError, ValueError) as e:
             logger.debug(f"显示分红提示框失败: {e}")
 
-    def hide_dividend_tooltip(self):
+    def hide_dividend_tooltip(self) -> None:
         """隐藏分红信息提示框"""
         try:
             if hasattr(self, 'dividend_marker_manager') and self.dividend_marker_manager:

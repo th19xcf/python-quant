@@ -5,9 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QPalette
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QFrame,
     QHBoxLayout,
     QHeaderView,
@@ -23,19 +22,9 @@ from PySide6.QtWidgets import (
 from src.quant.analysis.industry_heat_state import HEAT_LABELS, IndustryHeatState
 from src.ui.advice.tokens import TOKENS, palette_for
 from src.ui.table_sizing import (
-    FIXED_ROW_HEIGHT,
-    FIXED_ROW_HEIGHT_THRESHOLD,
-    HEADER_ROW_HEIGHT,
-    MAX_ROW_HEIGHT,
-    MIN_ROW_HEIGHT,
-    SEQ_COLUMN_TITLE,
     TABLE_FONT_SIZE_PX,
-    TOOLTIP_TEXT_MIN_LEN,
-    WrappedRowDelegate,
-    apply_content_widths,
-    apply_wrapped_row_heights,
-    reorder_table_rows,
-    use_interactive_columns,
+    SizedTableMixin,
+    sort_key,
 )
 from src.ui.theme_manager import is_dark_palette
 
@@ -43,25 +32,11 @@ from src.ui.theme_manager import is_dark_palette
 LABEL_SORT_RANK: dict[str, int] = {
     label: index for index, label in enumerate(HEAT_LABELS)
 }
-#: 空值文本：排序时统一沉底
-_EMPTY_TEXTS = frozenset({'', '—', '-', '--', 'nan', 'none'})
 
 
 def _sort_key(text: str) -> tuple[str, float | str] | None:
-    """显示文本 → 排序键：空值 None、档位按语义、数字按数值、其余按文本。"""
-    value = str(text).strip()
-    if value.lower() in _EMPTY_TEXTS:
-        return None
-    if value in LABEL_SORT_RANK:
-        return ('n', float(LABEL_SORT_RANK[value]))
-    raw = (value.replace('−', '-').replace('＋', '+').replace(',', '')
-           .replace(' ', ''))
-    if raw[:1] in ('×', 'x', 'X'):
-        raw = raw[1:]
-    try:
-        return ('n', float(raw.rstrip('%％倍亿万手股')))
-    except ValueError:
-        return ('s', value)
+    """显示文本 → 排序键（委托 ``table_sizing.sort_key``，带本页档位权重）。"""
+    return sort_key(text, LABEL_SORT_RANK)
 
 
 def _fetch_state(token: int, asof: str | None = None,
@@ -162,8 +137,13 @@ QTableWidget::item {{
 """
 
 
-class IndustryHeatPage(QWidget):
+class IndustryHeatPage(QWidget, SizedTableMixin):
     """行业热度页：结论卡 + 逐行业表。"""
+
+    #: 表高交给外层布局拉伸（原页面实现不钉表高）
+    TABLE_FIXED_HEIGHT = False
+    #: 档位列语义排序权重（模块级定义，供排序键复用）
+    LABEL_SORT_RANK = LABEL_SORT_RANK
 
     def __init__(self, host: Any = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -264,180 +244,9 @@ class IndustryHeatPage(QWidget):
     def _make_table(self, headers: list[str]) -> QTableWidget:
         table = QTableWidget(0, len(headers))
         table.setHorizontalHeaderLabels(headers)
-        vertical = table.verticalHeader()
-        vertical.setVisible(False)
-        vertical.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        vertical.setMinimumSectionSize(MIN_ROW_HEIGHT)
-        vertical.setMaximumSectionSize(MAX_ROW_HEIGHT)
-        table.setAlternatingRowColors(False)
-        table.setShowGrid(True)
-        table.setWordWrap(True)
-        table.setItemDelegate(WrappedRowDelegate(table))
-        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        header = table.horizontalHeader()
-        header.setHighlightSections(False)
-        header.setFixedHeight(HEADER_ROW_HEIGHT)
         table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        use_interactive_columns(table)
-        self._enable_header_sorting(table)
+        self._configure_sized_table(table)
         return table
-
-    def _finalize_table(self, table: QTableWidget,
-                        remember_order: bool = True,
-                        remeasure: bool = True) -> None:
-        """补序号列并统一底色；填充时量列宽行高，排序后只重编序号。"""
-        self._ensure_seq_column(table)
-        if remember_order:
-            self._remember_row_order(table)
-            self._sort_clicks.pop(table, None)
-            table.horizontalHeader().setSortIndicatorShown(False)
-        self._unify_table_surface(table)
-        wrapped = apply_content_widths(table) if remeasure else False
-        self._apply_row_height_mode(table, remeasure=remeasure, wrapped=wrapped)
-        self._renumber_rows(table, remeasure=remeasure)
-
-    def _ensure_seq_column(self, table: QTableWidget) -> None:
-        """最左侧补「序号」列：只在首次收尾时插入，后续排序沿用。"""
-        header_item = table.horizontalHeaderItem(0)
-        if header_item is not None and header_item.text() == SEQ_COLUMN_TITLE:
-            return
-        table.insertColumn(0)
-        table.setHorizontalHeaderItem(0, QTableWidgetItem(SEQ_COLUMN_TITLE))
-
-    def _prepare_table(self, table: QTableWidget) -> None:
-        """填数前移除旧序号列，保证数据列下标仍从 0 开始。"""
-        header_item = table.horizontalHeaderItem(0)
-        if header_item is not None and header_item.text() == SEQ_COLUMN_TITLE:
-            table.removeColumn(0)
-
-    def _apply_row_height_mode(self, table: QTableWidget,
-                               remeasure: bool = True,
-                               wrapped: bool = False) -> None:
-        """未折行用统一行高；折行时按内容测高，大表一次性测完、排序时不重算。"""
-        if not remeasure:
-            return
-        vertical = table.verticalHeader()
-        if not wrapped:
-            vertical.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
-            vertical.setDefaultSectionSize(FIXED_ROW_HEIGHT)
-            for row in range(table.rowCount()):
-                table.setRowHeight(row, FIXED_ROW_HEIGHT)
-            return
-        if table.rowCount() > FIXED_ROW_HEIGHT_THRESHOLD:
-            apply_wrapped_row_heights(table, MIN_ROW_HEIGHT, MAX_ROW_HEIGHT)
-            return
-        vertical.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        table.resizeRowsToContents()
-
-    def _renumber_rows(self, table: QTableWidget,
-                       remeasure: bool = True) -> None:
-        """按当前显示行序重编 1..N；大表首次填充顺带补长文本 tooltip。"""
-        tooltips = remeasure and table.rowCount() > FIXED_ROW_HEIGHT_THRESHOLD
-        for row in range(table.rowCount()):
-            cell = table.item(row, 0)
-            if cell is None:
-                cell = QTableWidgetItem('')
-                cell.setFlags(Qt.ItemFlag.ItemIsEnabled)
-                table.setItem(row, 0, cell)
-            cell.setText(str(row + 1))
-            cell.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            if not tooltips:
-                continue
-            for column in range(1, table.columnCount()):
-                item = table.item(row, column)
-                if item is not None and len(item.text()) >= TOOLTIP_TEXT_MIN_LEN:
-                    item.setToolTip(item.text())
-
-    def _unify_table_surface(self, table: QTableWidget) -> None:
-        """单元格、末列右侧留白与表头空白区同色，避免出现拼接色块。"""
-        color = QColor(self._pal.card)
-        for widget in (table.viewport(), table.horizontalHeader()):
-            palette = widget.palette()
-            for role in (QPalette.ColorRole.Base, QPalette.ColorRole.Window,
-                         QPalette.ColorRole.Button):
-                palette.setColor(role, color)
-            widget.setPalette(palette)
-            widget.setAutoFillBackground(True)
-
-    def _enable_header_sorting(self, table: QTableWidget) -> None:
-        """表头可点击排序；初始不显示箭头，保持各页默认语义顺序。"""
-        header = table.horizontalHeader()
-        header.setSortIndicatorShown(False)
-        header.setSectionsClickable(True)
-        header.sectionClicked.connect(
-            lambda column: self._on_header_clicked(table, column))
-
-    def _on_header_clicked(self, table: QTableWidget, column: int) -> None:
-        """同一列三态循环：升序 → 降序 → 取消排序（还原默认行序）。"""
-        if column == 0:
-            return  # 「序号」列不参与排序，也不计入三态
-        header = table.horizontalHeader()
-        clicks = self._sort_clicks.setdefault(table, {})
-        stage = clicks.get(column, 0) % 3
-        clicks[column] = stage + 1
-        if stage == 2:
-            self._restore_row_order(table)
-            header.setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
-            header.setSortIndicatorShown(False)
-            self._finalize_table(table, remember_order=False, remeasure=False)
-            return
-        self._restore_row_order(table)
-        order = (Qt.SortOrder.AscendingOrder if stage == 0
-                 else Qt.SortOrder.DescendingOrder)
-        self._sort_table_rows(table, column, order)
-        header.setSortIndicator(column, order)
-        header.setSortIndicatorShown(True)
-        self._finalize_table(table, remember_order=False, remeasure=False)
-
-    def _remember_row_order(self, table: QTableWidget) -> None:
-        """缓存默认行序快照，供取消排序时按原样还原。"""
-        self._row_orders[table] = [
-            self._row_signature(table, row) for row in range(table.rowCount())]
-
-    def _row_signature(self, table: QTableWidget, row: int) -> tuple[str, ...]:
-        """一行的文本指纹（跳过序号列），用来在重排后重新定位同一行。"""
-        values: list[str] = []
-        for index in range(1, table.columnCount()):
-            item = table.item(row, index)
-            values.append(item.text() if item is not None else '')
-        return tuple(values)
-
-    def _restore_row_order(self, table: QTableWidget) -> None:
-        """按默认行序快照还原；快照之后才出现的行保持在后。"""
-        snapshot = self._row_orders.get(table)
-        if not snapshot:
-            return
-        current = [self._row_signature(table, row) for row in range(table.rowCount())]
-        order: list[int] = []
-        used: set[int] = set()
-        for signature in snapshot:
-            for index, row_signature in enumerate(current):
-                if index not in used and row_signature == signature:
-                    used.add(index)
-                    order.append(index)
-                    break
-        order.extend(index for index in range(len(current)) if index not in used)
-        if order == list(range(len(order))):
-            return
-        reorder_table_rows(table, order)
-
-    def _sort_table_rows(self, table: QTableWidget, column: int,
-                         order: Qt.SortOrder) -> None:
-        """按解析后的键重排行，空值沉底；文本、对齐、颜色、提示与行高原样保留。"""
-        keyed: list[tuple[tuple[str, float | str], int]] = []
-        empty: list[int] = []
-        for row in range(table.rowCount()):
-            cell = table.item(row, column)
-            key = _sort_key(cell.text()) if cell is not None else None
-            if key is None:
-                empty.append(row)
-            else:
-                keyed.append((key, row))
-        keyed.sort(key=lambda pair: pair[0],
-                   reverse=order == Qt.SortOrder.DescendingOrder)
-        reorder_table_rows(table, [row for _, row in keyed] + empty)
 
     # -------------------------------------------------------------- loading
     def _connect_task_signals(self) -> None:
@@ -550,7 +359,7 @@ class IndustryHeatPage(QWidget):
         return item
 
     def _brush(self, color: str):
-        from PySide6.QtGui import QBrush, QColor
+        from PySide6.QtGui import QBrush
 
         return QBrush(QColor(color))
 

@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import polars as pl
 
+from src.data.financials.store import FIN_SNAPSHOT, PIT_LAG_UNKNOWN
+
 # 覆盖率与 PIT 起点来自 reports/factor_candidates_20261111/coverage_summary.csv
 # （2015-01~2026-10 评估口径；coverage_all 为剔除 ST/停牌/涨跌停后的加权覆盖）
 CANDIDATE_METADATA: dict[str, dict] = {
@@ -434,8 +436,9 @@ def compute_financial_candidates(cross: pl.DataFrame,
         date, ts_code + FINANCIAL_CANDIDATES。
     """
     c = cross.select(['ts_code', 'date']).unique().sort(['ts_code', 'date'])
-    j = c.join_asof(reports, left_on='date', right_on='ann_date', by='ts_code',
-                    strategy='backward')
+    j = c.join_asof(reports.sort(['ts_code', 'ann_date']), left_on='date',
+                    right_on='ann_date', by='ts_code', strategy='backward',
+                    check_sortedness=False)  # 两侧已按 (by, on) 排序；by 分组下 polars 无法自检，显式关闭告警
     if max_staleness_months is not None:
         stale = pl.col('end_date').is_null() | (
             pl.col('date')
@@ -447,7 +450,7 @@ def compute_financial_candidates(cross: pl.DataFrame,
         .sort(['ts_code', 'trade_date'])
     j = j.sort(['ts_code', 'date']).join_asof(
         val, left_on='date', right_on='trade_date', by='ts_code',
-        strategy='backward')
+        strategy='backward', check_sortedness=False)  # 两侧已按 (by, on) 排序；by 分组下 polars 无法自检，显式关闭告警
     j = j.with_columns([
         pl.when(pl.col('total_mv') > 0)
         .then(pl.col('parent_net_profit__ttm') / pl.col('total_mv'))
@@ -459,7 +462,11 @@ def compute_financial_candidates(cross: pl.DataFrame,
         .then(pl.col('revenue__ttm') / pl.col('total_mv'))
         .otherwise(None).alias('v_sp'),
     ])
-    return j.select(['date', 'ts_code', *FINANCIAL_CANDIDATES])
+    return j.select(['date', 'ts_code', *FINANCIAL_CANDIDATES]).with_columns([
+        # G-072：财务三表无版本快照，标记口径与 PIT 不可证（不改数值）
+        pl.lit(FIN_SNAPSHOT).alias('fin_snapshot'),
+        pl.lit(PIT_LAG_UNKNOWN).alias('pit_lag_unknown'),
+    ])
 
 
 def compute_all_candidates(panel: pl.DataFrame,

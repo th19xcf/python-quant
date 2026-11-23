@@ -29,7 +29,7 @@ class IndicatorInteractionManager:
         if bar_count_input is not None:
             bar_count_input.setText(str(count))
 
-    def _sync_bar_count_from_input(self):
+    def _sync_bar_count_from_input(self) -> None:
         """把输入框中的有效值同步到 displayed_bar_count。
 
         周期切换按钮可能在输入框 editingFinished 之前触发，这里兜底同步，
@@ -55,7 +55,7 @@ class IndicatorInteractionManager:
         except TypeError:
             return None
 
-    def update_bar_count_controls(self):
+    def update_bar_count_controls(self) -> None:
         """按当前设定值与可得根数刷新增减按钮可用状态（到边界置灰）。"""
         plus_btn = getattr(self.window, 'plus_btn', None)
         minus_btn = getattr(self.window, 'minus_btn', None)
@@ -68,7 +68,7 @@ class IndicatorInteractionManager:
             # 无数据时无法判断上限，禁用增加；有数据时不得超过可得行数
             plus_btn.setEnabled(available is not None and bar_count < available)
 
-    def on_data_loaded(self):
+    def on_data_loaded(self) -> None:
         """一次取数/绘图完成后调用：收敛加号越界设置并刷新按钮状态。"""
         if self._pending_plus_clamp:
             current_code = getattr(self.window, 'current_stock_code', '')
@@ -81,13 +81,13 @@ class IndicatorInteractionManager:
             self._pending_plus_clamp_code = ''
         self.update_bar_count_controls()
 
-    def on_indicator_usage(self):
+    def on_indicator_usage(self) -> None:
         logger.info("显示指标用法注释")
 
-    def on_indicator_params(self):
+    def on_indicator_params(self) -> None:
         logger.info("调整指标参数")
 
-    def on_indicator_formula(self):
+    def on_indicator_formula(self) -> None:
         logger.info("修改当前指标公式")
 
     def on_window_clicked(self, window_num):
@@ -96,7 +96,7 @@ class IndicatorInteractionManager:
     def on_indicator_clicked(self, indicator, checked):
         return self.window._on_indicator_clicked_impl(indicator, checked)
 
-    def on_plus_btn_clicked(self):
+    def on_plus_btn_clicked(self) -> None:
         window = self.window
         try:
             current = window.displayed_bar_count
@@ -119,7 +119,7 @@ class IndicatorInteractionManager:
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"增加柱体数失败: {e}")
 
-    def on_minus_btn_clicked(self):
+    def on_minus_btn_clicked(self) -> None:
         window = self.window
         try:
             current = window.displayed_bar_count
@@ -135,7 +135,7 @@ class IndicatorInteractionManager:
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"减少柱体数失败: {e}")
 
-    def _redraw_current_data(self):
+    def _redraw_current_data(self) -> None:
         """用已加载数据按新柱体数重绘；数据不足时展示实际可得根数。"""
         window = self.window
         if window.current_stock_data is None:
@@ -149,7 +149,7 @@ class IndicatorInteractionManager:
         )
         window.plot_k_line(window.current_stock_data, window.current_stock_name, window.current_stock_code)
 
-    def _apply_bar_count_change(self):
+    def _apply_bar_count_change(self) -> None:
         """柱体数变更后要么原地重绘，要么按新设定值重新取数。
 
         已加载行数足够时直接重绘（快）；设定值超过已加载行数时重新取数，
@@ -170,7 +170,7 @@ class IndicatorInteractionManager:
 
         self.update_bar_count_controls()
 
-    def on_left_arrow_clicked(self):
+    def on_left_arrow_clicked(self) -> None:
         try:
             scroll_area = self._scroll_area
             if scroll_area:
@@ -181,7 +181,7 @@ class IndicatorInteractionManager:
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"指标选择栏向左滚动失败: {e}")
 
-    def on_right_arrow_clicked(self):
+    def on_right_arrow_clicked(self) -> None:
         try:
             scroll_area = self._scroll_area
             if scroll_area:
@@ -268,7 +268,7 @@ class IndicatorInteractionManager:
 
             logger.info(f"切换到{window_count}个窗口")
 
-    def on_bar_count_changed(self):
+    def on_bar_count_changed(self) -> None:
         window = self.window
         try:
             bar_count_text = window.bar_count_input.text().strip()

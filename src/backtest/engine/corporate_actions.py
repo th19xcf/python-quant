@@ -88,7 +88,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 from typing import Any, Dict
 
 import polars as pl
@@ -99,26 +99,15 @@ from src.data.dividend_effective import (
     drop_non_ex_rights,
 )
 from src.utils.code_converter import is_index_code
+from src.utils.dates import as_date
 
 #: 合法的配股现金不足处置策略
 RIGHTS_POLICIES = ('partial', 'abandon')
 
 
 def _as_date(value: Any) -> date | None:
-    """把 parquet 日期值（date/datetime/字符串）归一为 ``date``。"""
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    text = str(value)
-    for fmt in ('%Y-%m-%d', '%Y%m%d'):
-        try:
-            return datetime.strptime(text[:10] if '-' in text else text, fmt).date()
-        except ValueError:
-            continue
-    return None
+    """委托统一真源 ``src.utils.dates.as_date``（含整数 YYYYMMDD / 斜杠 / NaT 归一）。"""
+    return as_date(value)
 
 
 def _non_negative(value: Any) -> float:

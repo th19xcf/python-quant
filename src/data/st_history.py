@@ -55,6 +55,7 @@ import requests
 from loguru import logger
 
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic
+from src.data.dataset_contracts import write_dataset
 from src.data.staging import staging_dir_for_store
 from src.utils.dataframe_columns import resolve_date_column
 from src.utils.dates import as_date
@@ -912,7 +913,9 @@ def _local_codes(store_root: Path | str) -> list[str]:
 
     try:
         return LocalQuoteStore(Path(store_root)).codes('stock')
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - 保持返回空列表的既有语义，但必须留痕
+        logger.warning(f"读取本地列存股票代码失败，ST 历史将缺少本地代码补充："
+                       f"{store_root} ({type(exc).__name__}: {exc})")
         return []
 
 
@@ -970,7 +973,9 @@ def apply_reviewed_conflicts(frame: pl.DataFrame,
     """
     path = reviewed_conflicts_path(store_root)
     if not path.is_file():
-        return frame
+        # 无裁定输入时也必须补齐落盘列：st_intervals 契约要求 evidence /
+        # raw_fetched_at，原先直接返回会在新环境/重建时被写入层拒绝
+        return _with_output_columns(frame)
     reviewed = pl.read_parquet(path)
     missing = set(_REVIEWED_SCHEMA) - set(reviewed.columns)
     if missing:
@@ -1227,7 +1232,9 @@ def _write_coverage_store(coverage_frame: pl.DataFrame, summary: dict[str, Any],
     停在 14:17、st_coverage.parquet 已被 17:12 改写」这种无痕漂移。
     """
     target = coverage_path(out_root)
-    _write_parquet_atomic(coverage_frame, target)
+    write_dataset('st_coverage', coverage_frame,
+                  rel_path=target.relative_to(out_root).as_posix(),
+                  root=out_root, writer='src/data/st_history.py')
     stamped = {
         **summary,
         'coverage_rows': coverage_frame.height,
@@ -1464,7 +1471,9 @@ def build_store(store_root: Path | str, *, apply_snapshot: bool = True,
     coverage_frame = coverage_frame.with_columns(
         pl.lit(run_at).alias('fetched_at')).sort('ts_code')
 
-    _write_parquet_atomic(frame, intervals_path(out_root))
+    write_dataset('st_intervals', frame,
+                  rel_path=intervals_path(out_root).relative_to(out_root).as_posix(),
+                  root=out_root, writer='src/data/st_history.py')
     pending_rows = _write_reviewed_pending(root, out_root)
     summary = {
         'built_at': datetime.now().isoformat(timespec='seconds'),

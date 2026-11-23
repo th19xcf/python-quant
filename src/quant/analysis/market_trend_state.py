@@ -17,7 +17,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Mapping, Sequence
+from typing import Mapping, Sequence, cast
 
 import numpy as np
 import polars as pl
@@ -428,7 +428,7 @@ def evaluate_market_trend(
         scored = [item for item in indicators if item.score is not None]
         if scored:
             weight_sum = sum(item.weight for item in scored)
-            layer_score = sum(item.weight * item.score for item in scored) / weight_sum
+            layer_score = sum(item.weight * cast(float, item.score) for item in scored) / weight_sum
             available_weight += layer.weight
         else:
             layer_score = None
@@ -447,21 +447,21 @@ def evaluate_market_trend(
 
     total = 0.0
     final_layers: list[LayerResult] = []
-    for layer in layer_results:
-        if layer.score is None:
-            final_layers.append(layer)
+    for result in layer_results:
+        if result.score is None:
+            final_layers.append(result)
             continue
-        scaled_weight = layer.weight / available_weight
-        contribution = scaled_weight * layer.score
+        scaled_weight = result.weight / available_weight
+        contribution = scaled_weight * result.score
         total += contribution
         final_layers.append(LayerResult(
-            key=layer.key,
-            name=layer.name,
+            key=result.key,
+            name=result.name,
             weight=scaled_weight,
-            score=layer.score,
+            score=result.score,
             contribution=contribution,
-            indicators=layer.indicators,
-            description=layer.description,
+            indicators=result.indicators,
+            description=result.description,
         ))
 
     notes = _build_notes(final_layers, target)

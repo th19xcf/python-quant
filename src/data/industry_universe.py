@@ -19,7 +19,7 @@
 会把「没分类」误当成「不属于该行业」，因此本模块直接拒绝（``reason`` 给出明确
 原因），不返回半份名单。
 
-通达信行业表（``meta/industry/`` / ``industry_pit/industry_pit.parquet``）只有
+通达信行业表（``meta/industry/`` / ``industry_pit/industry_snapshot_recent.parquet``）只有
 L1/L2，原始树的三级在快照阶段已被丢弃，不能用于 L3 选池；概念板块成分表本地
 不存在。详见 ``docs/行业选池说明.md``。
 """

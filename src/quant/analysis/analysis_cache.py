@@ -20,6 +20,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from loguru import logger
+
 #: 仓库根目录（本文件位于 ``src/quant/analysis/`` 下三层）
 ROOT = Path(__file__).resolve().parents[3]
 #: 缓存根目录：只落在 ``logs/`` 下，不污染 ``data/``
@@ -108,8 +110,9 @@ def panel_end(root: Path | str | None = None) -> str:
             value = frame['end'].max()
             if value is not None:
                 return str(value)[:10]
-        except Exception:  # noqa: BLE001, S110 - 面板末日只作指纹，读取失败不阻断计算
-            pass
+        except Exception as exc:  # noqa: BLE001 - 面板末日只作指纹，读取失败不阻断计算
+            logger.warning(f'分析缓存指纹：读取 {ledger} 末日失败，改用指数行情兜底 '
+                           f'({type(exc).__name__}: {exc})')
     for code in ('000985.SH', '000300.SH'):
         files = sorted((base / 'quotes' / 'index').glob(f'**/{code}.parquet'))
         if not files:
@@ -121,7 +124,8 @@ def panel_end(root: Path | str | None = None) -> str:
             value = frame['date'].max()
             if value is not None:
                 return str(value)[:10]
-        except Exception:  # noqa: BLE001, S112
+        except Exception as exc:  # noqa: BLE001 - 单个指数文件损坏时换下一个
+            logger.warning(f'分析缓存指纹：读取 {files[0]} 失败 ({type(exc).__name__}: {exc})')
             continue
     return ''
 

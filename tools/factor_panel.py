@@ -340,6 +340,7 @@ def _write_full(panel: pl.DataFrame, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + '.tmp')
     try:
+        # TODO(write_dataset): factor_panel 仅在 EXTENSION_SLOTS，未登记契约
         panel.write_parquet(tmp, compression='zstd')
         os.replace(tmp, path)
     except BaseException:

@@ -63,6 +63,7 @@ from src.data.trading_calendar import (  # noqa: E402
     BENCHMARK_CODES,
     configured_holidays,
 )
+from src.data.dataset_contracts import write_dataset_at
 
 ENDPOINT = 'akshare:tool_trade_date_hist_sina'
 DATASET = 'official_future_trading_calendar'
@@ -229,7 +230,8 @@ def write_outputs(
     if parquet_path.is_file() and not same_parquet:
         logger.info(f'[calendar] 原文件已备份: {_backup(parquet_path)}')
     if not same_parquet:
-        write_parquet_atomic(frame, parquet_path)
+        write_dataset_at(frame, parquet_path, root=store_root,
+                         writer='tools/build_trading_calendar.py')
         logger.info(f'[calendar] 已写入 {len(frame)} 个交易日: {parquet_path}')
     if not same_coverage:
         write_text_atomic(text, coverage_path)

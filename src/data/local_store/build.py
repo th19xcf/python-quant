@@ -392,7 +392,7 @@ def _rebuild_target(
     # 本身的第一行。落进 ``daily_index.source_start``，供下游判定「本地起点早于
     # TDX 起点」的混合来源文件（G-139：000004.SZ 112 行来自一次性外部导入）。
     # 零额外 IO：``build_frame`` 已把整个 ``.day`` 读成帧。
-    source_start = fresh['date'].min() if not fresh.is_empty() else None
+    source_start = cast('date | None', fresh['date'].min()) if not fresh.is_empty() else None
     fresh = filter_intraday_rows(fresh, force=force_intraday)
     if max_date is not None:
         fresh = fresh.filter(pl.col('date') <= max_date)
@@ -570,7 +570,7 @@ def build(
     # 覆盖度元数据写失败不得中断后续收尾：2026-11-11 16:25 的全量重建正是
     # 在 flush_meta 抛错后直接崩掉，导致因子副本对齐被整段跳过，633 只基金
     # 的 qfq/hfq 退化为 1.0。收尾逻辑见 ``_finalize_build``。
-    nontrading = {
+    nontrading: dict[str, Any] = {
         'rows': len(nontrading_blocked),
         'codes': len({code for code, _ in nontrading_blocked}),
         'dates': sorted({day for _, day in nontrading_blocked}),
@@ -620,6 +620,15 @@ def _finalize_build(
         logger.error(
             f'[local-store] flush_meta 失败（{meta_error}），'
             f'继续执行因子副本对齐；事后请跑 rescan-meta 修复覆盖度元数据')
+
+    # quotes/manifest.json 是人工维护的目录级总账，行情落盘后必须按磁盘实测回写，
+    # 否则下游按 manifest 判新鲜度会低估值。失败只告警，不阻断后续收尾。
+    try:
+        refresh_quotes_manifest(quote_store.root)
+    except (OSError, ValueError, RuntimeError, TypeError) as exc:
+        logger.error(
+            f'[local-store] quotes/manifest.json 回写失败'
+            f'（{type(exc).__name__}: {exc}），事后请手工重算总账')
 
     # 增量补数追加的新行可能带着默认因子 1.0（尤其基金：源 .day 没有因子列），
     # 而权威快照只到前一交易日。若不在同一次构建内对齐，行情内嵌副本就会
@@ -1081,6 +1090,119 @@ def refresh_factors(
 # ----------------------------------------------------------------------
 # CLI
 # ----------------------------------------------------------------------
+def refresh_quotes_manifest(root: Path | str) -> dict[str, Any]:  # noqa: C901 - 待拆分，见审查报告 7.4
+    """按磁盘实测重算 ``quotes/manifest.json`` 的统计登记项（原子写、幂等）。
+
+    ``quotes/manifest.json`` 在仓库内没有产者（daily_update 只做只读对账），
+    行情增量写盘后必然滞后，因此在构建收尾统一回写一次。
+    逐文件读 parquet 元数据：行数取行组元数据，日期取 row-group min/max 统计。
+    **日期列名不统一：stock/fund/index 用 ``date``，futures 用 ``trade_date``
+    （YYYYMMDD 字符串）**，这里统一归一成 ISO ``YYYY-MM-DD``。
+    只改统计字段（顶层 ``files``/``rows``/``bytes``/``date_range``/``counting``
+    与 ``universe.<kind>`` 分项），``semantics``/``produced_by``/``upstream``
+    等人工字段原样保留；实测值未变时不写盘（幂等，不刷新 ``generated_at``）。
+    """
+    import json  # noqa: PLC0415
+    import os  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+    from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+    from datetime import date, datetime  # noqa: PLC0415
+
+    import pyarrow.parquet as pq  # noqa: PLC0415
+
+    quotes = Path(root) / 'quotes'
+    manifest_path = quotes / 'manifest.json'
+    if not manifest_path.is_file():
+        return {'changed': False, 'reason': 'manifest 不存在'}
+
+    def _norm(value: Any) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, (date, datetime)):
+            return value.isoformat()[:10]
+        text = str(value)
+        if len(text) == 8 and text.isdigit():
+            return f'{text[:4]}-{text[4:6]}-{text[6:]}'
+        return text[:10]
+
+    def _facts(path: Path) -> tuple[int, str | None, str | None]:
+        meta = pq.ParquetFile(str(path)).metadata
+        names = list(meta.schema.names)
+        column = 'trade_date' if 'trade_date' in names else (
+            'date' if 'date' in names else None)
+        if column is None:
+            return meta.num_rows, None, None
+        index = names.index(column)
+        lows: list[Any] = []
+        highs: list[Any] = []
+        for rg in range(meta.num_row_groups):
+            stats = meta.row_group(rg).column(index).statistics
+            if stats is not None and stats.has_min_max:
+                lows.append(stats.min)
+                highs.append(stats.max)
+        if not lows:
+            return meta.num_rows, None, None
+        return meta.num_rows, _norm(min(lows)), _norm(max(highs))
+
+    files = sorted(quotes.glob('*/*/*.parquet'))
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        computed = list(pool.map(_facts, files))
+
+    agg: dict[str, dict[str, Any]] = {}
+    for path, (rows, low, high) in zip(files, computed, strict=True):
+        kind, market = path.parts[-3], path.parts[-2]
+        size = path.stat().st_size
+        block = agg.setdefault(kind, {
+            'files': 0, 'rows': 0, 'bytes': 0, 'markets': {},
+            'markets_detail': {}, 'dates': []})
+        block['files'] += 1
+        block['rows'] += rows
+        block['bytes'] += size
+        detail = block['markets_detail'].setdefault(
+            market, {'files': 0, 'rows': 0, 'bytes': 0})
+        detail['files'] += 1
+        detail['rows'] += rows
+        detail['bytes'] += size
+        block['markets'][market] = block['markets'].get(market, 0) + 1
+        block['dates'] += [item for item in (low, high) if item]
+
+    for block in agg.values():
+        dates = sorted(block.pop('dates'))
+        block['date_min'] = dates[0] if dates else None
+        block['date_max'] = dates[-1] if dates else None
+
+    original = manifest_path.read_text(encoding='utf-8')
+    payload = json.loads(original)
+    top = {'files': sum(b['files'] for b in agg.values()),
+           'rows': sum(b['rows'] for b in agg.values()),
+           'bytes': sum(b['bytes'] for b in agg.values())}
+    payload.update(top)
+    payload['date_range'] = [
+        min(b['date_min'] for b in agg.values() if b['date_min']),
+        max(b['date_max'] for b in agg.values() if b['date_max'])]
+    counting = payload.setdefault('counting', {})
+    for key, value in top.items():
+        counting[key] = value
+    universe = payload.setdefault('universe', {})
+    for kind, block in agg.items():
+        node = universe.setdefault(kind, {})
+        for key in ('files', 'rows', 'bytes', 'markets', 'markets_detail',
+                    'date_min', 'date_max'):
+            node[key] = block[key]
+
+    text = json.dumps(payload, ensure_ascii=False, indent=2) + '\n'
+    if text == original:
+        return {'changed': False, **top}
+    payload['generated_at'] = datetime.now().isoformat(timespec='seconds')
+    text = json.dumps(payload, ensure_ascii=False, indent=2) + '\n'
+    handle_fd, tmp = tempfile.mkstemp(dir=str(quotes), suffix='.tmp')
+    with os.fdopen(handle_fd, 'w', encoding='utf-8', newline='\n') as handle:
+        handle.write(text)
+    os.replace(tmp, manifest_path)
+    logger.info(f'[local-store] quotes/manifest.json 已按磁盘实测回写：{top}')
+    return {'changed': True, **top}
+
+
 def _freshness_check_step(root: Path, *, dry_run: bool = False) -> None:
     """补数收尾：跑一次全量新鲜度巡检，落报告并对 warn/critical 告警。
 

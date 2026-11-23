@@ -67,6 +67,8 @@ class BTopNStrategy(BaseStrategy):
                  industry_top_k: int | None = None,
                  rebalance_offset: int = 0):
         super().__init__(name="B-TopN")
+        #: 由 attach_industry_map 挂载的 {ts_code: 申万一级行业}
+        self._industry_map: Dict[str, str] = {}
         self.params['top_n'] = top_n
         # 行业分层：ceil(top_n / n_industries) 或显式指定
         self.params['industry_top_k'] = industry_top_k or math.ceil(top_n / max(1, n_industries))
@@ -76,7 +78,9 @@ class BTopNStrategy(BaseStrategy):
         """逐行接口：横截面策略不使用（保留 BaseStrategy 抽象签名）。"""
         return 'hold'
 
-    def generate_signals_vectorized(self, universe: Dict[str, pl.DataFrame]) -> Dict[str, pl.Series]:
+    # 横截面策略：组合引擎一次传入全部标的，签名有意与单标的基类不同
+    def generate_signals_vectorized(  # type: ignore[override]
+            self, universe: Dict[str, pl.DataFrame]) -> Dict[str, pl.Series]:
         """横截面信号生成：每个调仓日按 B 排名选股，其余日期 hold。
 
         Args:

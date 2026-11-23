@@ -122,3 +122,47 @@ def filter_tradable(frame: pl.DataFrame, root: Path | str, ts_code: str,
     for span in spans:
         keep = keep & ~pl.col('date').is_between(span.start, span.end)
     return frame.filter(keep)
+
+
+def registry_consistency(root: Path | str, max_spans_per_code: int = 100) -> list[str]:
+    """校验 ``placeholder_quote_codes.csv`` 与 ``fund_pseudo_registry.json`` 是否同步。
+
+    2026-11-20 事故：CSV 重写为 535 段 / 42,433 行，registry 仍为 475 段，
+    读取侧在加载阶段即抛错。体检把三类不一致作为告警项输出：
+    段数、行数合计、单基金段数上限（防重复区间再次堆积）。
+    """
+    csv_path, registry_path = registry_paths(root)
+    if not csv_path.is_file():
+        return [f'缺 placeholder_quote_codes.csv: {csv_path}']
+    if not registry_path.is_file():
+        return [f'缺 fund_pseudo_registry.json: {registry_path}']
+    try:
+        doc = json.loads(registry_path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError) as exc:
+        return [f'fund_pseudo_registry.json 不可解析: {exc}']
+    kinds = doc.get('kinds') or {}
+    with csv_path.open(encoding='utf-8') as handle:
+        rows = list(csv.DictReader(handle))
+    issues: list[str] = []
+    keys = [f"{r['ts_code']}|{r['start']}|{r['end']}" for r in rows]
+    if len(keys) != len(set(keys)):
+        issues.append(f'CSV 段键重复 {len(keys) - len(set(keys))} 条')
+    missing = [k for k in keys if k not in kinds]
+    if missing:
+        issues.append(f'{len(missing)} 段在 registry 无类别（首条 {missing[0]}）')
+    extra = len(set(kinds) - set(keys))
+    if extra:
+        issues.append(f'registry 多出 {extra} 段')
+    if int(doc.get('csv_rows', -1)) != len(rows):
+        issues.append(f"csv_rows={doc.get('csv_rows')} 与实际 {len(rows)} 不符")
+    total = sum(int(r['rows']) for r in rows)
+    if int(doc.get('registered_rows_after', -1)) != total:
+        issues.append(
+            f"registered_rows_after={doc.get('registered_rows_after')} 与实际 {total} 不符")
+    per_code: dict[str, int] = {}
+    for r in rows:
+        per_code[r['ts_code']] = per_code.get(r['ts_code'], 0) + 1
+    worst = max(per_code.items(), key=lambda kv: kv[1]) if per_code else ('', 0)
+    if worst[1] > max_spans_per_code:
+        issues.append(f'{worst[0]} 有 {worst[1]} 段，超过上限 {max_spans_per_code}')
+    return issues

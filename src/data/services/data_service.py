@@ -10,9 +10,13 @@ DataService 是真正干活的核心，持有 DataFetcher / DataUpdater + global
 
 调用链（统一路径，无行为漂移）：
     get_stock_data → self.data_fetcher.get_stock_data
-        ├─ global_data_cache 命中 → 返回
-        ├─ _get_data_from_database → DB 双复权列 + DataFetcher._apply_adjustment
-        └─ _get_data_from_sources → TDX / BaoStock / AkShare 故障转移
+        ├─ 资产路由：指数 → get_index_data；基金 → get_fund_data
+        ├─ global_data_cache 命中 → 返回（键含 frequency / adjustment_type / as_of）
+        ├─ _get_data_from_local_store → 本地 Parquet 列存（主路径）+ PIT 复权
+        ├─ _get_data_from_sources → TDX 恒注册；仅 allow_remote_sources=True 时
+        │                           追加 BaoStock / AkShare，远程源并行竞速（首个成功即取）
+        └─ _get_data_from_database → 仅 remote_database_enabled 时兜底，
+                                     残缺命中不短路
 """
 
 from typing import Any

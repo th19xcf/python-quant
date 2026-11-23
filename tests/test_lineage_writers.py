@@ -48,6 +48,22 @@ def _scan(tmp_path: Path, files: dict[str, str]) -> list[lw.WriteSite]:
     return lw.scan(tmp_path)
 
 
+def _writer_line(rel: str, func: str, call: str = 'write_parquet_atomic') -> int:
+    """按「函数名 + 写盘调用名」在源码里定位写点行号，避免无关改动（增删 import 等）
+    让钉住的行号失效；定位不到就直接失败，不悄悄放过。"""
+    import ast  # noqa: PLC0415
+
+    tree = ast.parse((ROOT / rel).read_text(encoding='utf-8'))
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == func:
+            for inner in ast.walk(node):
+                if isinstance(inner, ast.Call):
+                    name = getattr(inner.func, 'attr', None) or getattr(inner.func, 'id', None)
+                    if name == call:
+                        return inner.lineno
+    raise AssertionError(f'{rel}::{func} 里找不到 {call} 调用')
+
+
 def _edges(hits: list[dict]) -> set[tuple[str, int]]:
     return {(h['file'], h['line']) for h in hits}
 
@@ -292,19 +308,29 @@ def test_repo_sample_eleven_deviations() -> None:
     inventory = [QUOTES_STOCK, ST_STATUS, INDUSTRY_SNAP, ST_COVERAGE, ST_INTERVALS, ST_RAW,
                  FINANCIALS3, ETF_FEE, ETF_POOL, NAME_HISTORY, FUTURES_MULTI]
     quotes = _edges(lw.detect_writers(QUOTES_STOCK, sites, inventory=inventory))
-    assert ('src/data/local_store/store.py', 527) in quotes, '漏边：quote_path 经 write_daily 落盘'
-    for false_positive in [('src/data/industry.py', 157),
-                           ('src/data/local_store/share_capital.py', 261),
-                           ('src/data/quality/extended_builders.py', 121),
-                           ('src/data/risk_flags.py', 253),
-                           ('src/data/services/breadth_service.py', 118)]:
+    store_write = ('src/data/local_store/store.py',
+                   _writer_line('src/data/local_store/store.py', 'write_daily'))
+    assert store_write in quotes, '漏边：quote_path 经 write_daily 落盘'
+    # 这些写点写的是别的数据集，不得被识别为 quotes 写点（行号按函数定位，随代码移动）
+    for false_positive in [
+            ('src/data/industry.py', _writer_line('src/data/industry.py', '_upsert_history')),
+            ('src/data/local_store/share_capital.py',
+             _writer_line('src/data/local_store/share_capital.py', 'write_shares')),
+            ('src/data/quality/extended_builders.py',
+             _writer_line('src/data/quality/extended_builders.py', '_write_frame')),
+            ('src/data/risk_flags.py', _writer_line('src/data/risk_flags.py', '_upsert_history')),
+            ('src/data/services/breadth_service.py',
+             _writer_line('src/data/services/breadth_service.py', '_write_parquet_atomic'))]:
         assert false_positive not in quotes, f'假阳性仍在：{false_positive}'
 
-    assert ('src/data/risk_flags.py', 253) in _edges(
+    assert ('src/data/risk_flags.py', _writer_line('src/data/risk_flags.py', '_upsert_history')) in _edges(
         lw.detect_writers(ST_STATUS, sites, inventory=inventory)), '漏边：st_status'
-    assert ('src/data/industry.py', 157) in _edges(
+    assert ('src/data/industry.py', _writer_line('src/data/industry.py', '_upsert_history')) in _edges(
         lw.detect_writers(INDUSTRY_SNAP, sites, inventory=inventory)), '漏边：industry_snap'
-    assert ('src/data/st_history.py', 406) in _edges(
+    # 2026-11-22 起覆盖表经受控写入口 write_dataset('st_coverage', ...) 落盘
+    assert ('src/data/st_history.py',
+            _writer_line('src/data/st_history.py', '_write_coverage_store',
+                         call='write_dataset')) in _edges(
         lw.detect_writers(ST_COVERAGE, sites, inventory=inventory)), '漏边：st_coverage'
 
     futures = _edges(lw.detect_writers(FUTURES_MULTI, sites, inventory=inventory))

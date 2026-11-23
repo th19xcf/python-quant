@@ -48,6 +48,7 @@ from typing import Any
 
 import polars as pl
 from loguru import logger
+from src.data.dataset_contracts import write_dataset
 
 ROOT = Path(__file__).resolve().parents[1]
 STORE = ROOT / 'data' / 'local_store'
@@ -546,7 +547,14 @@ def write_staging(frame: pl.DataFrame, gap_detail: list[dict[str, Any]],
 
     STAGING.mkdir(parents=True, exist_ok=True)
     pool_path = STAGING / 'etf_pool.parquet'
-    write_parquet_atomic(frame, pool_path, compression='zstd')
+    # TODO(write_dataset): ETF 候选池未登记契约
+    try:
+        _rel = Path(pool_path).resolve().relative_to((STORE).resolve()).as_posix()
+    except ValueError:
+        write_parquet_atomic(frame, pool_path, compression='zstd')
+    else:
+        write_dataset('etf_pool', frame, rel_path=_rel,
+                      root=STORE, writer='tools/build_multi_asset_etf_pool.py')
     pool_csv = STAGING / 'etf_pool.csv'
     _write_csv(frame.to_dicts(), pool_csv, frame.columns, encoding='utf-8-sig')
     gap_path = STAGING / 'etf_gap_detail.csv'
@@ -573,7 +581,14 @@ def apply_staging(paths: dict[str, Path], summary: dict[str, Any]) -> dict[str, 
 
     TARGET_DIR.mkdir(parents=True, exist_ok=True)
     frame = pl.read_parquet(paths['pool'])
-    write_parquet_atomic(frame, TARGET_DIR / 'etf_pool.parquet')
+    # TODO(write_dataset): ETF 候选池未登记契约
+    try:
+        _rel = Path(TARGET_DIR / 'etf_pool.parquet').resolve().relative_to((STORE).resolve()).as_posix()
+    except ValueError:
+        write_parquet_atomic(frame, TARGET_DIR / 'etf_pool.parquet')
+    else:
+        write_dataset('etf_pool', frame, rel_path=_rel,
+                      root=STORE, writer='tools/build_multi_asset_etf_pool.py')
     write_text_atomic(paths['csv'].read_text(encoding='utf-8-sig'),
                       TARGET_DIR / 'etf_pool.csv', encoding='utf-8-sig')
     for key, name in (('gap', 'etf_gap_detail.csv'), ('event', 'etf_event_gaps.csv')):

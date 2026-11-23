@@ -611,7 +611,9 @@ def apply_staging() -> None:
     for name in names:
         src = STAGING / name
         if name.endswith('.parquet'):
-            write_parquet_atomic(pl.read_parquet(src), TARGET / name)
+            from src.data.dataset_contracts import write_dataset_at  # noqa: PLC0415
+            write_dataset_at(pl.read_parquet(src), TARGET / name, root=STORE,
+                             writer='tools/fetch_etf_fee.py')
         else:
             write_text_atomic(src.read_text(encoding='utf-8'), TARGET / name)
     print(f'已写入 {TARGET} ({len(names)} 文件)')

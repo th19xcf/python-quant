@@ -54,6 +54,21 @@ def _isolate_advice_artifacts(tmp_path_factory, monkeypatch):
 
 
 
+@pytest.fixture(autouse=True)
+def _allow_standalone_dataset_write(request, monkeypatch):
+    """写入层闸门（``dataset_contracts.check_write_context``，2026-11-22 接入）要求
+    调度令牌或显式放行。单测不经 ``tools/daily_update.py`` 调度，统一按「独立写」
+    放行；ledger 落在各测试自己的 store 根（通常是 tmp_path）。
+
+    需要验证闸门本身拒绝行为的用例，加 ``@pytest.mark.write_gate`` 即可跳过放行。
+    """
+    if request.node.get_closest_marker('write_gate'):
+        return
+    monkeypatch.delenv('QUANT_RUN_TOKEN', raising=False)
+    monkeypatch.setenv('QUANT_ALLOW_STANDALONE', '1')
+    monkeypatch.setenv('QUANT_STANDALONE_REASON', 'pytest')
+
+
 @pytest.fixture(scope="session")
 def qapp():
     """会话级 QApplication，供 UI 测试复用。"""

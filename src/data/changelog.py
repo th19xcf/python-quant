@@ -233,7 +233,7 @@ def _lock_fd(fd: int) -> None:
     else:
         import fcntl
 
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        fcntl.flock(fd, fcntl.LOCK_EX)  # type: ignore[attr-defined]  # 仅 POSIX；Windows 走上面的 msvcrt
 
 
 def _unlock_fd(fd: int) -> None:
@@ -247,7 +247,7 @@ def _unlock_fd(fd: int) -> None:
     else:
         import fcntl
 
-        fcntl.flock(fd, fcntl.LOCK_UN)
+        fcntl.flock(fd, fcntl.LOCK_UN)  # type: ignore[attr-defined]  # 仅 POSIX
 
 
 def _append_line(target: Path, line: str) -> None:

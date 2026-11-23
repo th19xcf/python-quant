@@ -200,10 +200,12 @@ def record_version(store_root: Path | str, *, keep: int = HISTORY_KEEP,
     path = root / VERSION_FILE
     payload = _load(path, {'schema': SCHEMA, 'current': None, 'versions': []})
     versions = [item for item in payload.get('versions') or [] if isinstance(item, dict)]
-    previous = payload.get('current') if isinstance(payload.get('current'), dict) else None
+    raw_current = payload.get('current')
+    previous: dict[str, Any] | None = raw_current if isinstance(raw_current, dict) else None
     changed = not previous or previous.get('digest') != snapshot['digest']
     now = _now()
-    if not changed:
+    current: dict[str, Any]
+    if not changed and previous is not None:
         previous['last_seen'] = now
         previous['seen_count'] = int(previous.get('seen_count') or 1) + 1
         if note:
@@ -275,7 +277,8 @@ def audit_derived(store_root: Path | str) -> dict[str, Any]:
     root = Path(store_root)
     current = load_current(root) or compute_version(root)
     payload = _load(root / DERIVED_FILE, {})
-    tables = payload.get('tables') if isinstance(payload.get('tables'), dict) else {}
+    raw_tables = payload.get('tables')
+    tables: dict[str, Any] = raw_tables if isinstance(raw_tables, dict) else {}
     rows: list[dict[str, Any]] = []
     counts = {'ok': 0, 'stale': 0, 'unstamped': 0, 'missing': 0}
     for table, label, producer in DERIVED_TABLES:

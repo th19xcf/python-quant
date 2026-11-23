@@ -4,11 +4,11 @@
     "commission_rate": 0.00015,
     "impact_coef": 0.0,
     "min_commission": 5.0,
-    "slippage_bps": 0.0,
-    "stamp_tax_basis": "fixed_0.1%"
+    "slippage_bps": 1.75,
+    "stamp_tax_basis": "historical"
   },
   "data_policy": "估值口径=000015.SH 月末 PIT 成分权重 × 个股 PB 的权重调和均值，分位窗口=滚动 60 个月、最少 36 期；标的=510880.SH（上证红利ETF），信号在月末收盘生成、下一交易日开盘成交。估值表缺失或该指数历史不足 36 期时直接报错，不外推、不改用其它指数。",
-  "description": "红利择时：每月末看 000015.SH 的 PB 五年分位，分位不高于 50% 满仓 510880.SH，高于 50% 降到半仓；空余现金按年化 1.5% 计息（引擎参数 cash_annual_rate）。成本按研究口径：买入 1.5bp、卖出 11.5bp（含 10bp 印花税），无冲击成本。",
+  "description": "红利择时：每月末看 000015.SH 的 PB 五年分位，分位不高于 50% 满仓 510880.SH，高于 50% 降到半仓；空余现金按年化 1.5% 计息（引擎参数 cash_annual_rate）。成本实算为 6.5bp 往返：510880 是 ETF，免印花税与过户费，仅佣金 1.5bp/边 + 滑点 1.75bp/边（impact_coef=0，冲击已含在滑点内）。此前文档标注的 16.5bp 与 8.662% 复算值不符，8.662% 实际按 6.5bp 跑出。",
   "execution": {
     "delay_days": 1,
     "price": "next_open"

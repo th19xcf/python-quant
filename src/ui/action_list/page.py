@@ -397,8 +397,9 @@ class ActionListPage(QWidget):
 
     def _apply_state(self) -> None:
         rows = list(self._rows)
-        if self._sort_col is not None and self._sort_stage:
-            rows.sort(key=lambda row: _sort_value(row, self._sort_col),
+        sort_col = self._sort_col
+        if sort_col is not None and self._sort_stage:
+            rows.sort(key=lambda row: _sort_value(row, sort_col),
                       reverse=self._sort_stage == 2)
         self._populate(rows)
 

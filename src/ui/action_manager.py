@@ -17,32 +17,32 @@ class ActionManager:
     def __init__(self, window):
         self.window = window
 
-    def on_strategy_backtest(self):
+    def on_strategy_backtest(self) -> None:
         logger.info("点击了策略回测")
         # 导入策略回测对话框
         from src.ui.dialogs.strategy_backtest_dialog import StrategyBacktestDialog
         dialog = StrategyBacktestDialog(self.window)
         dialog.exec_()
 
-    def on_stock_recommendation(self):
+    def on_stock_recommendation(self) -> None:
         logger.info("点击了股票推荐")
         # 导入股票推荐对话框
         from src.ui.dialogs.stock_recommendation_dialog import StockRecommendationDialog
         dialog = StockRecommendationDialog(self.window)
         dialog.exec_()
 
-    def on_factor_analysis(self):
+    def on_factor_analysis(self) -> None:
         logger.info("点击了因子分析")
         # 导入因子分析对话框
         from src.ui.dialogs.factor_analysis_dialog import FactorAnalysisDialog
         dialog = FactorAnalysisDialog(self.window)
         dialog.exec_()
 
-    def on_exit(self):
+    def on_exit(self) -> None:
         logger.info("点击了退出")
         self.window.close()
 
-    def on_technical_analysis(self):
+    def on_technical_analysis(self) -> None:
         logger.info("点击了技术分析按钮")
         self.window.tab_widget.setCurrentIndex(1)
 

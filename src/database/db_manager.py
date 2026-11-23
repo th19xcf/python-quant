@@ -11,8 +11,7 @@ from typing import Any
 from loguru import logger
 from sqlalchemy import URL, create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import scoped_session, sessionmaker
+from sqlalchemy.orm import declarative_base, scoped_session, sessionmaker
 
 # 数据库层可预期异常：驱动/网络错误（OSError、RuntimeError、ValueError）
 # 与 SQLAlchemy 自身的 OperationalError / DBAPIError 等，统一收口处理
@@ -99,7 +98,7 @@ class DatabaseManager:
             )
             raise
 
-    def disconnect(self):
+    def disconnect(self) -> None:
         """
         断开数据库连接
         """
@@ -124,7 +123,7 @@ class DatabaseManager:
         except _DB_ERRORS as e:
             logger.exception(f"数据库断开连接失败: {e}")
 
-    def create_tables(self):
+    def create_tables(self) -> None:
         """
         建表：统一经 Alembic 迁移执行（等价于 `alembic upgrade head`）
 
@@ -156,7 +155,7 @@ class DatabaseManager:
             logger.exception(f"数据库表迁移失败: {e}")
             raise
 
-    def drop_tables(self):
+    def drop_tables(self) -> None:
         """
         删除数据库表
         """
@@ -269,7 +268,7 @@ class DatabaseManager:
             session.rollback()
             raise
 
-    def _cleanup_session(self):
+    def _cleanup_session(self) -> None:
         """
         清理无效的数据库会话
         """
@@ -295,7 +294,7 @@ class DatabaseManager:
             self.session = None
             self.Session = None
 
-    def cleanup(self):
+    def cleanup(self) -> None:
         """
         清理所有数据库资源
         """

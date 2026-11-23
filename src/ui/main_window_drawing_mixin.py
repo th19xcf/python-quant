@@ -5,6 +5,7 @@
 负责处理K线图绘制、指标绘制和图表交互
 """
 
+from typing import Any
 import polars as pl
 
 from src.ui.chart_components import (
@@ -17,6 +18,10 @@ from src.utils.logger import logger
 
 
 class MainWindowDrawingMixin:
+
+    # 由宿主 MainWindow（QMainWindow + 其余 mixin）提供；仅供类型检查，不在此创建
+    tech_plot_widget: Any
+    volume_plot_widget: Any
     def __init__(self, *args, **kwargs):
         """初始化绘图Mixin"""
         # 调用父类初始化（支持多重继承）
@@ -79,12 +84,12 @@ class MainWindowDrawingMixin:
         self._date_format_cache[date_value] = formatted
         return formatted
 
-    def _reset_drawing_state(self):
+    def _reset_drawing_state(self) -> None:
         """重置绘图状态"""
         self.crosshair_enabled = False
         self.current_kline_index = -1
 
-    def _clear_plots(self):
+    def _clear_plots(self) -> None:
         """清空图表"""
         self.tech_plot_widget.clear()
         self.volume_plot_widget.clear()
@@ -175,7 +180,7 @@ class MainWindowDrawingMixin:
         """
         return self._data_preparer.extract_price_data(df)
 
-    def _setup_crosshair(self):
+    def _setup_crosshair(self) -> None:
         """设置十字线"""
         (self.vline, self.hline,
          self.volume_vline, self.volume_hline,

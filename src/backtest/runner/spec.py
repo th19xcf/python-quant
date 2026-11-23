@@ -31,8 +31,8 @@ def validate_spec(raw: Any) -> Dict[str, Any]:
     if not isinstance(raw, dict):
         raise SpecError('规格顶层必须是 JSON 对象')
     _reject_unknown(raw, {'spec_version', 'name', 'description', 'period', 'universe',
-                          'factor', 'exclusions', 'rebalance', 'portfolio', 'cost',
-                          'experimental', 'random_seed'}, '规格')
+                          'factor', 'exclusions', 'tradability', 'rebalance',
+                          'portfolio', 'cost', 'experimental', 'random_seed'}, '规格')
     if raw.get('spec_version') != SPEC_VERSION:
         raise SpecError(f"spec_version 必须是 '{SPEC_VERSION}'，收到 {raw.get('spec_version')!r}")
 
@@ -49,6 +49,7 @@ def validate_spec(raw: Any) -> Dict[str, Any]:
     universe = _universe(raw.get('universe'))
     factor = _factor(raw.get('factor'))
     exclusions = _exclusions(raw.get('exclusions'))
+    tradability = _tradability(raw.get('tradability'))
     rebalance = _rebalance(raw.get('rebalance'), period['warmup_start'])
     portfolio = _portfolio(raw.get('portfolio'))
     experimental = raw.get('experimental', False)
@@ -70,6 +71,7 @@ def validate_spec(raw: Any) -> Dict[str, Any]:
         'universe': universe,
         'factor': factor['raw'] if factor else None,
         'exclusions': [x['raw'] for x in exclusions],
+        'tradability': tradability,
         'rebalance': rebalance,
         'portfolio': portfolio,
         'cost': cost,
@@ -79,6 +81,7 @@ def validate_spec(raw: Any) -> Dict[str, Any]:
     spec['_resolved'] = {
         'factor': factor['resolved'] if factor else None,
         'exclusions': [x['resolved'] for x in exclusions],
+        'tradability': tradability,
         'period': period,
         'rebalance': rebalance,
         'portfolio': portfolio,
@@ -109,6 +112,7 @@ def summary(spec: Dict[str, Any]) -> Dict[str, Any]:
         'exclusion_chain': [
             {'step': i + 1, 'name': x['name'], 'params': x['params']}
             for i, x in enumerate(resolved['exclusions'])],
+        'tradability': resolved['tradability'],
         'rebalance': resolved['rebalance'],
         'portfolio': resolved['portfolio'],
         'cost': resolved['cost'],
@@ -238,6 +242,24 @@ def _exclusions(obj: Any) -> List[Dict[str, Any]]:
     return out
 
 
+def _tradability(obj: Any) -> Dict[str, Any]:
+    """可交易性过滤配置：缺省关闭；显式给对象时按白名单校验并补默认值。"""
+    from src.risk.tradability import TradabilityConfig
+
+    if obj is None:
+        return TradabilityConfig.research_default().__dict__.copy()
+    if not isinstance(obj, dict):
+        raise SpecError('tradability 必须是对象（缺省即关闭）')
+    allowed = set(TradabilityConfig.__dataclass_fields__)
+    _reject_unknown(obj, allowed, 'tradability')
+    conf = TradabilityConfig(**obj)
+    try:
+        conf.validate()
+    except ValueError as exc:
+        raise SpecError(f'tradability 配置非法：{exc}') from exc
+    return dict(conf.__dict__)
+
+
 def _rebalance(obj: Any, warmup_start: str) -> Dict[str, str]:
     if not isinstance(obj, dict):
         raise SpecError('rebalance 必须是对象')
@@ -293,9 +315,15 @@ def _cost(obj: Any) -> Dict[str, Any]:
     basis = obj['stamp_tax_basis']
     if basis not in ('fixed_0.1%', 'fixed_0.0%', 'historical'):
         raise SpecError(
-            "cost.stamp_tax_basis 必须是 'fixed_0.1%'、'fixed_0.0%' 或 "
-            f"'historical'，收到 {basis!r}")
-    impact = obj.get('impact_coef', 0.015)
+            "cost.stamp_tax_basis 必须是 'historical' 或 'fixed_0.0%'，"
+            f"收到 {basis!r}")
+    # 向后兼容：旧的固定千 1 已过时（2023-08-28 起卖出印花税 0.05%），
+    # 统一解析为按成交日取的历史口径，不报错、也不再按 10bp 静态计费。
+    if basis == 'fixed_0.1%':
+        basis = 'historical'
+    # 2026-11-23：默认冲击系数归零——滑点已是"含冲击"的全额余额，
+    # 再叠加 0.015×sqrt(参与率) 属重复计入；需要冲击时显式传 >0。
+    impact = obj.get('impact_coef', 0.0)
     if isinstance(impact, bool) or not isinstance(impact, (int, float)) or impact < 0:
         raise SpecError(f'cost.impact_coef 必须是非负数，收到 {impact!r}')
     commission = obj.get('commission_rate', 0.00025)

@@ -20,14 +20,17 @@ from src.backtest.engine.base_engine import BaseBacktestEngine
 from src.backtest.engine.corporate_actions import CorporateActionSchedule
 from src.backtest.engine.execution_core import EventBacktestRunner, StStatusEntry
 
+#: 参数优化默认滚动验证折数（2026-11-23 由 0 改为 3）：单次样本外切分对切分点
+#: 敏感，不足以排除过拟合；改默认值会改变既有优化输出，历史对账需显式传 0。
+DEFAULT_WALK_FORWARD_WINDOWS = 3
+
 
 class WalkForwardDisabledWarning(UserWarning):
     """启用单次样本外验证但未开启 walk-forward 滚动验证时发出的告警。
 
     单次切分的 OOS 指标对切分点高度敏感，容易被误读为「策略稳健」。
-    默认 ``walk_forward_windows=0`` 是历史行为，直接改默认值会改变既有
-    输出，因此这里保持行为不变、只显式留痕，并在结果的
-    ``leakage_guard`` 中同步标记。
+    2026-11-23 起默认 ``walk_forward_windows=3``（滚动验证）；显式传 0/1
+    回到单次切分时仍发本告警，并在结果的 ``leakage_guard`` 中同步标记。
     """
 
 
@@ -143,7 +146,7 @@ class BacktestEngine(BaseBacktestEngine):
                           initial_capital: float = 1000000.0,
                           objective: str = 'total_return', max_workers: int = 4,
                           validation: str = 'oos', oos_ratio: float = 0.3,
-                          walk_forward_windows: int = 0,
+                          walk_forward_windows: int = DEFAULT_WALK_FORWARD_WINDOWS,
                           oos_horizon: int = 10, oos_embargo: int = 20,
                           max_failed_ratio: float = 0.0) -> Dict[str, Any]:
         """
@@ -157,8 +160,9 @@ class BacktestEngine(BaseBacktestEngine):
             validation: 'oos' 时按时间顺序切出后段作为样本外验证；
                 'none' 时只做全样本网格搜索（旧行为）
             oos_ratio: 样本外占比（0~1），仅 validation='oos' 时生效
-            walk_forward_windows: ≥2 时追加 walk-forward 滚动验证折数；
-                0/1 表示不做滚动验证
+            walk_forward_windows: ≥2 时追加 walk-forward 滚动验证折数（默认 3）；
+                显式传 0/1 表示只做单次样本外切分（会发 WalkForwardDisabledWarning）。
+                数据不足以切出各折（每折 <20 行）时滚动验证自动标记未启用，不报错
             oos_horizon: 标签跨度（交易日），默认 10；训练窗末尾按该跨度 purge
             oos_embargo: 训练窗与测试窗隔离带（交易日），默认 20，须 ≥ horizon
             max_failed_ratio: 允许失败的参数组合占比，默认 0.0（零容忍）。

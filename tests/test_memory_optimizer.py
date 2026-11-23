@@ -24,7 +24,7 @@ from utils.memory_optimizer import (
 )
 
 
-def test_basic_optimization():
+def _run_basic_optimization():
     """测试基本的内存优化功能"""
     logger.info("=== 测试基本内存优化功能 ===")
 
@@ -58,7 +58,12 @@ def test_basic_optimization():
     return df, optimized_df
 
 
-def test_large_dataset():
+def test_basic_optimization() -> None:
+    """pytest 入口；返回值只给 ``__main__`` 手动运行时使用。"""
+    _run_basic_optimization()
+
+
+def _run_large_dataset():
     """测试大数据集处理"""
     logger.info("\n=== 测试大数据集处理 ===")
 
@@ -86,7 +91,12 @@ def test_large_dataset():
     return optimized_large_df
 
 
-def test_optimization_suggestions():
+def test_large_dataset() -> None:
+    """pytest 入口；返回值只给 ``__main__`` 手动运行时使用。"""
+    _run_large_dataset()
+
+
+def _run_optimization_suggestions():
     """测试优化建议功能"""
     logger.info("\n=== 测试优化建议功能 ===")
 
@@ -110,6 +120,11 @@ def test_optimization_suggestions():
     logger.info(f"估计可节省内存: {suggestions['estimated_savings_mb']:.2f}MB")
 
     return suggestions
+
+
+def test_optimization_suggestions() -> None:
+    """pytest 入口；返回值只给 ``__main__`` 手动运行时使用。"""
+    _run_optimization_suggestions()
 
 
 def test_adj_factor_keep_float64():
@@ -222,9 +237,9 @@ if __name__ == "__main__":
     logger.info("=" * 60)
 
     # 运行各个测试
-    df, optimized_df = test_basic_optimization()
-    optimized_large_df = test_large_dataset()
-    suggestions = test_optimization_suggestions()
+    df, optimized_df = _run_basic_optimization()
+    optimized_large_df = _run_large_dataset()
+    suggestions = _run_optimization_suggestions()
     test_adj_factor_keep_float64()
     test_volume_large_value_stays_int64()
     test_int_boundaries_use_signed_limits()

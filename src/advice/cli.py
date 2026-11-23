@@ -21,7 +21,10 @@ from loguru import logger
 from src.advice.config import (
     OBSERVE_ONLY_TIERS,
     AdviceConfig,
+    AtoExcludeConfig,
+    ExclusionLayerConfig,
     MarginFilterConfig,
+    Rev5ExcludeConfig,
     default_config,
     default_output_tiers,
 )
@@ -41,11 +44,25 @@ def _parse_date(value: str | None) -> date | None:
     return date.fromisoformat(value) if value else None
 
 
-def _margin_filter_config(args: argparse.Namespace) -> MarginFilterConfig:
-    return MarginFilterConfig(
-        enabled=bool(getattr(args, 'margin_filter', False)),
-        lookback_days=int(getattr(args, 'margin_lookback_days', 5)),
-        exclude_top_pct=float(getattr(args, 'margin_exclude_top_pct', 0.10)),
+def _exclusion_config(args: argparse.Namespace) -> ExclusionLayerConfig:
+    """把 CLI 参数映射为统一排除层配置（三条规则各自独立开关）。"""
+    min_universe = int(getattr(args, 'exclude_min_universe', 100))
+    return ExclusionLayerConfig(
+        rev5=Rev5ExcludeConfig(
+            enabled=bool(getattr(args, 'exclude_rev5', False)),
+            window=int(getattr(args, 'rev5_window', 5)),
+            exclude_top_pct=float(getattr(args, 'rev5_exclude_top_pct', 0.20)),
+            min_universe=min_universe),
+        ato=AtoExcludeConfig(
+            enabled=bool(getattr(args, 'exclude_ato', False)),
+            lookback_days=int(getattr(args, 'ato_lookback_days', 20)),
+            min_obs=int(getattr(args, 'ato_min_obs', 15)),
+            exclude_top_pct=float(getattr(args, 'ato_exclude_top_pct', 0.20)),
+            min_universe=min_universe),
+        margin=MarginFilterConfig(
+            enabled=bool(getattr(args, 'margin_filter', False)),
+            lookback_days=int(getattr(args, 'margin_lookback_days', 5)),
+            exclude_top_pct=float(getattr(args, 'margin_exclude_top_pct', 0.10))),
     )
 
 
@@ -85,7 +102,7 @@ def _run_generate(args: argparse.Namespace) -> int:
     config: AdviceConfig = default_config(
         factor_set=args.factor_set,
         soft_filter_enabled=not args.no_soft_filter,
-        margin_filter=_margin_filter_config(args))
+        exclusion=_exclusion_config(args))
     engine = AdviceEngine(config=config)
     daily_dir = Path(args.daily_dir) if args.daily_dir else Path(args.out_dir) / 'daily'
     result = engine.generate(as_of=as_of, equity=args.equity,
@@ -119,7 +136,7 @@ def _run_replay(args: argparse.Namespace) -> int:
         config=default_config(
             factor_set=args.factor_set,
             soft_filter_enabled=not args.no_soft_filter,
-            margin_filter=_margin_filter_config(args)),
+            exclusion=_exclusion_config(args)),
         start=_parse_date(args.start),
         end=_parse_date(args.end),
         max_symbols=args.max_symbols,
@@ -215,6 +232,22 @@ def build_parser() -> argparse.ArgumentParser:
                         help='融资余额增速回看交易日数，默认 5')
     parser.add_argument('--margin-exclude-top-pct', type=float, default=0.10,
                         help='剔除横截面最高比例，默认 0.10（最高 10%%）')
+    parser.add_argument('--exclude-rev5', action='store_true',
+                        help='启用 REV5 剔除：近 5 日复权收益最高 20%%（默认关闭）')
+    parser.add_argument('--rev5-window', type=int, default=5,
+                        help='REV5 回看交易日数，默认 5')
+    parser.add_argument('--rev5-exclude-top-pct', type=float, default=0.20,
+                        help='REV5 剔除横截面最高比例，默认 0.20')
+    parser.add_argument('--exclude-ato', action='store_true',
+                        help='启用 ATO 剔除：换手放大最高 20%%（默认关闭）')
+    parser.add_argument('--ato-lookback-days', type=int, default=20,
+                        help='ATO 均换手回看交易日数（不含当日），默认 20')
+    parser.add_argument('--ato-min-obs', type=int, default=15,
+                        help='ATO 分母窗口最少非空观测数，默认 15')
+    parser.add_argument('--ato-exclude-top-pct', type=float, default=0.20,
+                        help='ATO 剔除横截面最高比例，默认 0.20')
+    parser.add_argument('--exclude-min-universe', type=int, default=100,
+                        help='REV5/ATO 当日有效截面低于该只数时整体跳过，默认 100')
     parser.add_argument('--daily-dir', default=None,
                         help='每日归档目录（默认 out-dir/daily）')
     parser.add_argument('--no-daily', action='store_true', help='本次不写每日归档')

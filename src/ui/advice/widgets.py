@@ -103,9 +103,11 @@ class AdviceItemDelegate(QStyledItemDelegate):
                  bold: bool = False) -> QFontMetrics:
         """按 paint 使用的字体缓存度量器，避免逐行重复建字体。"""
         key = (family, size, bold)
-        cache = getattr(self, '_metrics_cache', None)
+        cache: dict[tuple[str, float, bool], QFontMetrics] | None = getattr(
+            self, '_metrics_cache', None)
         if cache is None:
-            cache = self._metrics_cache = {}
+            cache = {}
+            self._metrics_cache = cache
         metrics = cache.get(key)
         if metrics is None:
             font = QFont(family)

@@ -244,7 +244,7 @@ class ReportGenerator:
     _BACKTEST_REQUIRED_FIELDS = ('initial_capital', 'final_equity', 'total_return', 'equity_curve')
     _FACTOR_RESULT_KEYS = ('factor_results', 'correlation_matrix', 'factor_combination')
 
-    def __init__(self):
+    def __init__(self) -> None:
         """
         初始化报告生成器
         """

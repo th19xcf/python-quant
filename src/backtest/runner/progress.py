@@ -14,20 +14,14 @@ import os
 import time
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, TextIO, Tuple
+
+from src.utils.dates import as_date
 
 
 def _to_date(value: Any) -> date | None:
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    if isinstance(value, str):
-        try:
-            return date.fromisoformat(value[:10])
-        except ValueError:
-            return None
-    return None
+    """委托统一真源 ``src.utils.dates.as_date``（额外覆盖 np.datetime64 / NaT / 非补零日期）。"""
+    return as_date(value)
 
 
 def _provisional(points: List[Tuple[date, float]]) -> Dict[str, Any]:
@@ -72,7 +66,7 @@ class ProgressReporter:
         self.started_at = datetime.now()
         self._last_write = 0.0
         self._nav_count = 0
-        self._nav_handle = None
+        self._nav_handle: TextIO | None = None
         self._nav_path = run_dir / 'daily_nav.partial.csv'
         self._progress_path = run_dir / 'progress.json'
 
@@ -83,10 +77,11 @@ class ProgressReporter:
             return
         self.run_dir.mkdir(parents=True, exist_ok=True)
         # 句柄跨多次 flush 存活，由 finish()/close()/fail() 负责关闭，故不用 with。
-        self._nav_handle = open(  # noqa: SIM115
+        handle = open(  # noqa: SIM115
             self._nav_path, 'w', encoding='utf-8', newline='\n')
-        self._nav_handle.write('date,equity\n')
-        self._nav_handle.flush()
+        handle.write('date,equity\n')
+        handle.flush()
+        self._nav_handle = handle
         self._write_progress('running')
         self._last_write = time.monotonic()
 
@@ -227,7 +222,7 @@ def progress_scope(reporter: ProgressReporter) -> Iterator[None]:
 
     original = EventBacktestRunner._run_trading_loop
 
-    def patched(inner_self, *args, **kwargs):
+    def patched(inner_self: Any, *args: Any, **kwargs: Any) -> Any:
         ctx = kwargs.get('ctx')
         total = len(kwargs.get('sorted_dates') or [])
         reporter.start(total)
@@ -235,8 +230,9 @@ def progress_scope(reporter: ProgressReporter) -> Iterator[None]:
             ctx.equity_curve = _ProgressCurve(ctx.equity_curve, reporter.observe)
         return original(inner_self, *args, **kwargs)
 
-    EventBacktestRunner._run_trading_loop = patched
+    # 运行期临时替换实例方法（只读观测），签名由 *args/**kwargs 透传，mypy 无法静态核对
+    EventBacktestRunner._run_trading_loop = patched  # type: ignore[method-assign,assignment]
     try:
         yield
     finally:
-        EventBacktestRunner._run_trading_loop = original
+        EventBacktestRunner._run_trading_loop = original  # type: ignore[method-assign]

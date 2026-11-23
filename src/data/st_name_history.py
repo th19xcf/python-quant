@@ -66,7 +66,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, cast
 
 import polars as pl
 import requests
@@ -74,6 +74,7 @@ from loguru import logger
 
 from src.data import st_history
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic
+from src.data.dataset_contracts import write_dataset
 from src.data.staging import staging_dir_for_store
 
 EM_URL = 'https://datacenter.eastmoney.com/securities/api/data/v1/get'
@@ -656,7 +657,7 @@ def _plan_from_name_history(code: str, frame: pl.DataFrame | None,
     rows = frame.filter(pl.col('ts_code') == code).sort('start_date')
     if rows.height == 0:
         return None
-    first = rows['start_date'].min()
+    first = cast('date | None', rows['start_date'].min())
     if first is None or first > coverage_end:
         return None
     coverage_start = min(coverage_start, first)
@@ -858,8 +859,12 @@ def build_supplement(store_root: Path | str, *,
                unresolved_path(root), manifest_path(root)], 'st_supplement')
     if snapshot_dir is not None:
         logger.info(f'[st-names] 覆盖前已快照旧版 supplement：{snapshot_dir}')
-    _write_atomic(interval_frame, supplement_intervals_path(root))
-    _write_atomic(coverage_frame, supplement_coverage_path(root))
+    write_dataset('st_supplement_intervals', interval_frame,
+                  rel_path=supplement_intervals_path(root).relative_to(root).as_posix(),
+                  root=root, writer='src/data/st_name_history.py')
+    write_dataset('st_supplement_coverage', coverage_frame,
+                  rel_path=supplement_coverage_path(root).relative_to(root).as_posix(),
+                  root=root, writer='src/data/st_name_history.py')
     _write_csv(unresolved, unresolved_path(root))
 
     run_at = max([em_stamp, name_stamp, *notice_stamps.values()])

@@ -63,6 +63,7 @@ from src.data.dividend_effective import (  # noqa: E402
     drop_non_ex_rights,
     effective_value,
 )
+from src.data.dataset_contracts import write_dataset
 
 DEFAULT_DIV = PROJECT_ROOT / 'data/local_store/factors/stock_dividend.parquet'
 DEFAULT_SHARES = PROJECT_ROOT / 'data/local_store/meta/factors/stock_shares.parquet'
@@ -111,6 +112,7 @@ def affected_rows(frame: pl.DataFrame) -> pl.Series:
 
 def _estimate(numbered: pl.DataFrame, shares: pl.DataFrame) -> pl.DataFrame:
     """按行号计算两版派生列（``_row_id`` 为键，避免同日多笔分红 join 后错行）。"""
+    shares = shares.sort(['ts_code', 'effective_date'])  # 调用方未必已排序
     events = numbered.filter(pl.col('ex_date').is_not_null())
     joined = events.sort(['ts_code', 'ex_date']).join_asof(
         shares,
@@ -118,6 +120,7 @@ def _estimate(numbered: pl.DataFrame, shares: pl.DataFrame) -> pl.DataFrame:
         right_on='effective_date',
         by='ts_code',
         strategy='backward',
+        check_sortedness=False,
     )
     estimates = joined.select([
         '_row_id',
@@ -137,6 +140,7 @@ def _estimate(numbered: pl.DataFrame, shares: pl.DataFrame) -> pl.DataFrame:
         right_on='effective_date',
         by='ts_code',
         strategy='backward',
+        check_sortedness=False,
     )
     rec_estimates = joined_rec.select([
         '_row_id',
@@ -488,7 +492,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     backup = backup_file(args.div, args.backup_dir)
-    write_parquet_atomic(out, args.div, compression='zstd', statistics=True)
+    try:
+        _rel = Path(args.div).resolve().relative_to((Path(__file__).resolve().parents[1] / 'data' / 'local_store').resolve()).as_posix()
+    except ValueError:
+        write_parquet_atomic(out, args.div, compression='zstd', statistics=True)
+    else:
+        write_dataset('stock_dividend', out, rel_path=_rel,
+                      root=Path(__file__).resolve().parents[1] / 'data' / 'local_store', writer='tools/derive_total_dividend.py')
     sha_after = file_sha256(args.div)
     report['sha256'].update({'after': sha_after, 'backup': backup.name,
                              'backup_sha256': file_sha256(backup)})

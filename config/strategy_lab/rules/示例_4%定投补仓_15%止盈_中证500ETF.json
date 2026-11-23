@@ -2,10 +2,10 @@
   "benchmark": "000300.SH",
   "cost": {
     "commission_rate": 0.00025,
-    "impact_coef": 0.015,
+    "impact_coef": 0.0,
     "min_commission": 5.0,
     "slippage_bps": 10.0,
-    "stamp_tax_basis": "fixed_0.1%"
+    "stamp_tax_basis": "historical"
   },
   "data_policy": "区间 2013-03-15~2026-11-13（510500.SH 本地行情全区间）。区间内若无本地行情直接报「数据不足」，不补占位值、不用指数替代。ETF 免印花税，固定千 1 口径对 ETF 实际不扣。",
   "description": "中证500ETF(510500.SH) 4% 定投补仓对照规则：与沪深300ETF 同参数（10 份、补仓 4%、止盈 15%、回撤 4% 清仓），用于对照主标的的结论是否依赖具体宽基。",

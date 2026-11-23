@@ -138,7 +138,7 @@ def _load_dividend_counts(table: str) -> dict[str, int]:
         except (OSError, pl.exceptions.PolarsError):
             return {}
         grouped = frame.group_by('ts_code').len()
-        return dict(zip(grouped['ts_code'].to_list(), grouped['len'].to_list()))
+        return dict(zip(grouped['ts_code'].to_list(), grouped['len'].to_list(), strict=True))
 
     return _cached_parquet_fact(f'{table}_dividend_counts', path, _load)
 
@@ -152,7 +152,7 @@ def _load_fund_type_map() -> dict[str, str]:
             frame = pl.read_parquet(path, columns=['ts_code', 'fund_type'])
         except (OSError, pl.exceptions.PolarsError):
             return {}
-        return dict(zip(frame['ts_code'].to_list(), frame['fund_type'].to_list()))
+        return dict(zip(frame['ts_code'].to_list(), frame['fund_type'].to_list(), strict=True))
 
     return _cached_parquet_fact('fund_type_map', path, _load)
 
@@ -180,7 +180,7 @@ def _load_stock_status_map() -> dict[str, str]:
             frame = pl.read_parquet(path, columns=['ts_code', 'status'])
         except (OSError, pl.exceptions.PolarsError):
             return {}
-        return dict(zip(frame['ts_code'].to_list(), frame['status'].to_list()))
+        return dict(zip(frame['ts_code'].to_list(), frame['status'].to_list(), strict=True))
 
     return _cached_parquet_fact('stock_status_map', path, _load)
 
@@ -327,7 +327,7 @@ class _QfqDegradationCollector:
             try:
                 from src.utils.config import get_config
                 log_dir = Path(get_config().log.file_path).parent
-            except Exception:  # 配置不可用时退回工作目录下的 logs/
+            except Exception:  # noqa: BLE001 - 配置不可用时退回工作目录下的 logs/
                 log_dir = Path('logs')
         else:
             log_dir = self.log_dir
@@ -751,6 +751,33 @@ class DataFetcher:
             return self._get_stock_batch_impl(
                 stock_codes, start_date, end_date, frequency, adjustment_type, as_of)
 
+    def _route_batch_prefetch(self, stock_codes: List[str], start_date: str,
+                              end_date: str, frequency: str, adjustment_type: str,
+                              as_of: date | None, cache_params: dict[str, Any],
+                              result: dict[str, pl.DataFrame]) -> List[str]:
+        """批量取数第一段：指数/基金按各自路径取、个股先查缓存。
+
+        命中的直接写进 ``result``；返回仍需走本地列存/逐票路由的个股代码。
+        """
+        pending: List[str] = []
+        for code in stock_codes:
+            if is_index_code(code) or is_fund_code(code):
+                frame = (self.get_index_data(code, start_date, end_date, frequency)
+                         if is_index_code(code) else
+                         self.get_fund_data(code, start_date, end_date, frequency,
+                                            adjustment_type, as_of))
+                if not frame.is_empty():
+                    result[code] = frame
+                continue
+            cached = global_data_cache.get('stock', code, start_date, end_date,
+                                           **cache_params)
+            if cached is not None:
+                route_metrics.record(route_metrics.ROUTE_CACHE, hit=True, elapsed_ms=0.0)
+                result[code] = cached
+            else:
+                pending.append(code)
+        return pending
+
     def _get_stock_batch_impl(self, stock_codes: List[str], start_date: str,
                               end_date: str, frequency: str,
                               adjustment_type: str, as_of: date | None
@@ -767,26 +794,9 @@ class DataFetcher:
                         f"（stock_basic.status != 'L'）：{delisted[:10]}")
             skip = set(delisted)
             stock_codes = [c for c in stock_codes if c not in skip]
-        pending: List[str] = []
-        for code in stock_codes:
-            if is_index_code(code):
-                frame = self.get_index_data(code, start_date, end_date, frequency)
-                if not frame.is_empty():
-                    result[code] = frame
-                continue
-            if is_fund_code(code):
-                frame = self.get_fund_data(code, start_date, end_date, frequency,
-                                           adjustment_type, as_of)
-                if not frame.is_empty():
-                    result[code] = frame
-                continue
-            cached = global_data_cache.get('stock', code, start_date, end_date,
-                                           **cache_params)
-            if cached is not None:
-                route_metrics.record(route_metrics.ROUTE_CACHE, hit=True, elapsed_ms=0.0)
-                result[code] = cached
-            else:
-                pending.append(code)
+        pending = self._route_batch_prefetch(
+            stock_codes, start_date, end_date, frequency, adjustment_type,
+            as_of, cache_params, result)
 
         if pending and frequency in ('1w', '1m'):
             for code in pending:
@@ -1831,7 +1841,7 @@ class DataFetcher:
                 self._process_executor = pool
             return pool
 
-    def _abort_process_pool(self):
+    def _abort_process_pool(self) -> None:
         """终止子进程池并丢弃（超时/挂死场景下唯一的真正中断手段）"""
         with self._process_lock:
             pool = self._process_executor

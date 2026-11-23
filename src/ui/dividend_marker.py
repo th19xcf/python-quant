@@ -357,7 +357,7 @@ class DividendMarkerManager:
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"创建分红标记失败: {e}")
 
-    def clear_markers(self):
+    def clear_markers(self) -> None:
         """
         清除所有标记
         """
@@ -406,14 +406,14 @@ class DividendMarkerManager:
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"显示分红提示框失败: {e}")
 
-    def hide_tooltip(self):
+    def hide_tooltip(self) -> None:
         """
         隐藏分红信息提示框
         """
         if self.tooltip_item is not None:
             self.tooltip_item.hide()
 
-    def update_position(self):
+    def update_position(self) -> None:
         """
         更新标记位置（当图表缩放或滚动时调用）
         由于标记现在动态获取视图范围，此方法只需触发重绘

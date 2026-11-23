@@ -4,6 +4,7 @@
 主窗口 K 线主图 Mixin：蜡烛图、极值标注、坐标轴与标题。
 """
 
+from typing import Any
 import contextlib
 
 import numpy as np
@@ -16,6 +17,9 @@ from src.utils.logger import logger
 
 
 class MainWindowCandlestickMixin:
+
+    # 由宿主 MainWindow（QMainWindow + 其余 mixin）提供；仅供类型检查，不在此创建
+    tech_plot_widget: Any
     def plot_k_line(self, df, stock_name, stock_code):
         """
         绘制K线图（入口方法）
@@ -190,7 +194,7 @@ class MainWindowCandlestickMixin:
         # 设置X轴范围
         self.tech_plot_widget.setXRange(-1, len(dates) - 1)
 
-    def _clear_old_extreme_labels(self):
+    def _clear_old_extreme_labels(self) -> None:
         """清除旧的极值标注"""
         items_to_remove = [
             ('high_text_item', self.tech_plot_widget),

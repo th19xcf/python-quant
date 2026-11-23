@@ -50,7 +50,15 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.advice.config import TradingCosts, default_config  # noqa: E402
+from src.advice.config import (  # noqa: E402
+    AtoExcludeConfig,
+    ExclusionLayerConfig,
+    MarginFilterConfig,
+    Rev5ExcludeConfig,
+    TradingCosts,
+    default_config,
+)
+from src.advice.exclusion_layer import ExclusionLayer  # noqa: E402
 from src.advice.data import LoadReport, LocalPanelLoader, panel_trading_dates  # noqa: E402
 from src.advice.eligibility import check_eligibility  # noqa: E402
 from src.advice.factor_panel import compute_factor_panel  # noqa: E402
@@ -308,6 +316,8 @@ def _new_stats() -> dict[str, Any]:
         'side_trades': 0, 'buy_notional': 0.0, 'sell_notional': 0.0,
         'planned_amount': 0.0,
         'candidate_signals': 0, 'days_with_candidates': 0, 'days_scanned': 0,
+        'excluded_rev5': 0, 'excluded_ato': 0, 'excluded_margin': 0,
+        'excluded_total': 0,
         'valuation_stale_days': 0,
         'exit_price_checks': 0, 'exit_price_dev': 0.0, 'exit_price_dev_max': 0.0,
         'unfilled_records': [],
@@ -324,15 +334,21 @@ def _log(stage: str, started: datetime) -> None:
 # 选股信号
 # ----------------------------------------------------------------------
 def select_candidates(frame: pl.DataFrame, tier: Any, config: Any,
+                      exclusion: ExclusionLayer | None = None,
+                      blocked: dict[str, int] | None = None,
                       ) -> list[tuple[str, float, float | None]]:
     """当日截面 → (代码, 分位, 原始 score) 候选，按分位降序。
 
     门槛顺序与生产链路一致：分位达标 → 软筛 → 硬性可推荐性
     （``check_eligibility``）→ 买入成本门槛（``entry_allowed``）。
-    只用作新开仓，不参与持仓的卖出判定。
+    只用作新开仓，不参与持仓的卖出判定。``exclusion`` 非空时，本可入池
+    的标的若命中排除层则拦截，并按规则累计到 ``blocked``（仅新建仓）。
     """
     if frame is None or frame.height == 0:
         return []
+    day = frame['date'][0] if (exclusion is not None
+                               and 'date' in frame.columns) else None
+    excl = exclusion.status_for(day) if day is not None else None
     out: list[tuple[str, float, float | None]] = []
     for row in frame.iter_rows(named=True):
         percentile = _finite(row.get('score_percentile'))
@@ -345,6 +361,18 @@ def select_candidates(frame: pl.DataFrame, tier: Any, config: Any,
         allowed, _reason = entry_allowed(percentile, tier, config)
         if not allowed:
             continue
+        if excl is not None:
+            code = str(row['ts_code'])
+            hits = [rule for rule, codes in excl.by_rule.items()
+                    if code in codes]
+            if hits:
+                if blocked is not None:
+                    for rule in hits:
+                        key = f'excluded_{rule}'
+                        blocked[key] = blocked.get(key, 0) + 1
+                    blocked['excluded_total'] = (
+                        blocked.get('excluded_total', 0) + 1)
+                continue
         out.append((str(row['ts_code']), percentile, _finite(row.get('score'))))
     out.sort(key=lambda item: item[1], reverse=True)
     return out
@@ -738,7 +766,8 @@ def run_stateful(window_dates: list[date], by_date: dict[date, pl.DataFrame],
                  finalize: bool = True,
                  scan_last_day: bool = False,
                  signal_days: set[date] | None = None,
-                 eval_dump: bool = False) -> dict[str, Any]:
+                 eval_dump: bool = False,
+                 exclusion: ExclusionLayer | None = None) -> dict[str, Any]:
     """逐日推进的状态机回测。
 
     ``state`` 为上一分片的期末状态（现金 / 持仓 / 待买待卖意图）；分片模式下
@@ -815,7 +844,8 @@ def run_stateful(window_dates: list[date], by_date: dict[date, pl.DataFrame],
         if signal_days is not None and day not in signal_days:
             candidates: list[tuple[str, float, float | None]] = []
         else:
-            candidates = select_candidates(frame, tier, config)
+            candidates = select_candidates(frame, tier, config,
+                                           exclusion=exclusion, blocked=stats)
             stats['days_scanned'] += 1
             stats['candidate_signals'] += len(candidates)
             if eval_dump:
@@ -2531,6 +2561,46 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--dump-eval', action='store_true',
                         help='额外落盘决策日全截面门槛判定 signal_eval.csv'
                              '（诊断用，回答某只标的为何没进候选）')
+    parser.add_argument('--exclude-rev5', action='store_true',
+                        help='启用 REV5 剔除：近 5 日复权收益最高 20%%（默认关闭）')
+    parser.add_argument('--rev5-window', type=int, default=5,
+                        help='REV5 回看交易日数，默认 5')
+    parser.add_argument('--rev5-exclude-top-pct', type=float, default=0.20,
+                        help='REV5 剔除横截面最高比例，默认 0.20')
+    parser.add_argument('--exclude-ato', action='store_true',
+                        help='启用 ATO 剔除：换手放大最高 20%%（默认关闭）')
+    parser.add_argument('--ato-lookback-days', type=int, default=20,
+                        help='ATO 均换手回看交易日数（不含当日），默认 20')
+    parser.add_argument('--ato-min-obs', type=int, default=15,
+                        help='ATO 分母窗口最少非空观测数，默认 15')
+    parser.add_argument('--ato-exclude-top-pct', type=float, default=0.20,
+                        help='ATO 剔除横截面最高比例，默认 0.20')
+    parser.add_argument('--exclude-min-universe', type=int, default=100,
+                        help='REV5/ATO 当日有效截面低于该只数时整体跳过，默认 100')
+    parser.add_argument('--margin-filter', action='store_true',
+                        help='启用融资余额增速剔除（默认关闭）')
+    parser.add_argument('--margin-lookback-days', type=int, default=5,
+                        help='融资余额增速回看交易日数，默认 5')
+    parser.add_argument('--margin-exclude-top-pct', type=float, default=0.10,
+                        help='融资余额剔除横截面最高比例，默认 0.10')
+
+    def _exclusion_config(ns: argparse.Namespace) -> ExclusionLayerConfig:
+        min_universe = int(ns.exclude_min_universe)
+        return ExclusionLayerConfig(
+            rev5=Rev5ExcludeConfig(
+                enabled=ns.exclude_rev5, window=ns.rev5_window,
+                exclude_top_pct=ns.rev5_exclude_top_pct,
+                min_universe=min_universe),
+            ato=AtoExcludeConfig(
+                enabled=ns.exclude_ato, lookback_days=ns.ato_lookback_days,
+                min_obs=ns.ato_min_obs,
+                exclude_top_pct=ns.ato_exclude_top_pct,
+                min_universe=min_universe),
+            margin=MarginFilterConfig(
+                enabled=ns.margin_filter,
+                lookback_days=ns.margin_lookback_days,
+                exclude_top_pct=ns.margin_exclude_top_pct))
+
     args = parser.parse_args(argv)
     if args.hold_days < 1:
         raise SystemExit(f'--hold-days 必须 ≥ 1，收到 {args.hold_days}')
@@ -2538,7 +2608,7 @@ def main(argv: list[str] | None = None) -> int:
     started = datetime.now()
     app_config = get_config()
     store_root = resolve_store_root(app_config)
-    config = default_config()
+    config = default_config(exclusion=_exclusion_config(args))
     tier = config.tier(args.tier)
     costs = _documented_costs()
     rules = ExecutionRules()
@@ -2590,9 +2660,18 @@ def _run_single(args: argparse.Namespace, started: datetime, app_config: Any,
     # attach_score / apply_soft_filter 均以 date 为分区做截面计算，
     # 一次性算全量与该日切片逐日重算完全等价（同一 date 的输入相同）。
     scored = attach_score(factors, tier,
-                          min_history_rows=config.min_history_rows)
+                          min_history_rows=config.min_history_rows,
+                          min_coverage=getattr(config, 'min_factor_coverage', 0.0))
     scored = apply_soft_filter(scored, config.soft_filter)
     _log('打分与软筛完成', started)
+    exclusion = (ExclusionLayer(config.exclusion, store_root, history=factors)
+                 if config.exclusion.any_enabled() else None)
+    if exclusion is not None:
+        _log('排除层已启用：' + ', '.join(
+            rule for rule, cfg in (
+                ('rev5', config.exclusion.rev5),
+                ('ato', config.exclusion.ato),
+                ('margin', config.exclusion.margin)) if cfg.enabled), started)
 
     keep = [name for name in SLIM_COLUMNS if name in scored.columns]
     slim = scored.select(keep)
@@ -2623,7 +2702,8 @@ def _run_single(args: argparse.Namespace, started: datetime, app_config: Any,
     baseline_slots = _baseline_slots(window_dates, signal_days, args.hold_days)
     stateful = run_stateful(window_dates, by_date, bars_by_date, all_dates,
                             tier, config, args.equity, costs, rules,
-                            signal_days=signal_days, eval_dump=args.dump_eval)
+                            signal_days=signal_days, eval_dump=args.dump_eval,
+                            exclusion=exclusion)
     _log('状态机回测完成', started)
     allocs = _resolve_allocs(args)
     a_signals = load_a_signals(hold_days=args.hold_days) if 'a' in allocs else None
@@ -3031,6 +3111,16 @@ def _emit_products(*, args: argparse.Namespace, config: Any, tier: Any,
             'stateful': stateful_block,
             'fixed60': baseline_block,
         },
+        'exclusion': {
+            'enabled': bool(config.exclusion.any_enabled()),
+            'rules': {
+                'rev5': config.exclusion.rev5.enabled,
+                'ato': config.exclusion.ato.enabled,
+                'margin': config.exclusion.margin.enabled,
+            },
+            'blocked': {key: int(value) for key, value in stateful_stats.items()
+                        if key.startswith('excluded_')},
+        },
         'baseline_slots': {
             'slots': baseline_slots['slots'],
             'hold_days': hold_days,
@@ -3280,8 +3370,12 @@ def _run_chunked(args: argparse.Namespace, started: datetime, app_config: Any,
             raise SystemExit(f'[{label}] 本地面板为空，无法回测')
         factors = compute_factor_panel(panel, extended=True)
         scored = attach_score(factors, tier,
-                              min_history_rows=config.min_history_rows)
+                              min_history_rows=config.min_history_rows,
+                              min_coverage=getattr(config, 'min_factor_coverage', 0.0))
         scored = apply_soft_filter(scored, config.soft_filter)
+        exclusion = (ExclusionLayer(config.exclusion, store_root,
+                                    history=factors)
+                     if config.exclusion.any_enabled() else None)
         keep = [name for name in SLIM_COLUMNS if name in scored.columns]
         slim = scored.select(keep)
         panel_dates = [day for day in panel_trading_dates(slim)
@@ -3307,7 +3401,7 @@ def _run_chunked(args: argparse.Namespace, started: datetime, app_config: Any,
             chunk_dates, by_date, bars_by_date, global_dates, tier, config,
             args.equity, costs, rules, state=stateful_state,
             finalize=is_final, scan_last_day=True, signal_days=signal_days,
-            eval_dump=args.dump_eval)
+            eval_dump=args.dump_eval, exclusion=exclusion)
         baselines = run_baselines(
             chunk_dates, by_date, bars_by_date, tier, config, args.equity,
             costs, rules, allocs=allocs,

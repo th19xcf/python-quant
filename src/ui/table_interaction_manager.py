@@ -26,7 +26,7 @@ class TableInteractionManager:
         #: 当前渲染的默认行序快照，取消排序时按它还原
         self._default_order: list[tuple[str, ...]] = []
 
-    def capture_default_order(self):
+    def capture_default_order(self) -> None:
         """行情表重绘后记下默认行序，供「取消排序」还原。"""
         try:
             self._default_order = snapshot_row_order(
@@ -34,7 +34,7 @@ class TableInteractionManager:
         except (OSError, RuntimeError) as e:
             logger.exception(f"记录行情默认行序失败: {e}")
 
-    def reset_sort_state(self):
+    def reset_sort_state(self) -> None:
         """重置表格排序状态，避免页面之间继承排序设置"""
         window = self.window
         try:
@@ -48,7 +48,7 @@ class TableInteractionManager:
         except (OSError, RuntimeError) as e:
             logger.exception(f"重置表格排序状态失败: {e}")
 
-    def restore_sort_state(self):
+    def restore_sort_state(self) -> None:
         """按当前页面的排序状态恢复排序；若无有效排序则保持关闭。"""
         window = self.window
         try:

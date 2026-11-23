@@ -6,6 +6,7 @@ import pytest
 
 from src.quant.strategy_lab.fields import FIELDS, field_catalog
 from src.quant.strategy_lab.rules import (
+    DEFAULT_COST,
     RuleError,
     dump_rule,
     load_rule,
@@ -34,7 +35,12 @@ def test_valid_rule_normalized():
     rule = validate_rule(BASE)
     assert rule['universe'] == {'mode': 'all_market'}
     assert rule['conditions'][0]['operand'] == {'type': 'quantile', 'q': 0.5}
-    assert rule['cost']['slippage_bps'] == 10.0
+    # 2026-11-23 成本口径核对（docs/实盘配置_2026-11-22.md）：
+    # 滑点 5.75bp/边 已含冲击（往返 ETF 16.5bp / A 股 21.9bp），impact_coef 归零；
+    # 印花税按成交日取（2023-08-28 起卖出 0.05%），不再固定千 1。
+    assert rule['cost']['slippage_bps'] == DEFAULT_COST['slippage_bps'] == 5.75
+    assert rule['cost']['impact_coef'] == DEFAULT_COST['impact_coef'] == 0.0
+    assert rule['cost']['stamp_tax_basis'] == DEFAULT_COST['stamp_tax_basis'] == 'historical'
     assert rule['portfolio']['initial_capital'] == 1e9
 
 

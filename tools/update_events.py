@@ -44,6 +44,7 @@ from typing import Any
 
 import polars as pl
 from loguru import logger
+from src.data.dataset_contracts import write_dataset
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RESEARCH_DIR = PROJECT_ROOT / 'research' / 'events'
@@ -182,7 +183,13 @@ def _write_shard(path: Path, rows: list[dict[str, Any]]) -> None:
     from src.data.atomic_write import write_parquet_atomic  # noqa: PLC0415
 
     frame = pl.from_dicts(rows, schema=_RAW_SCHEMA)
-    write_parquet_atomic(frame, path, compression='zstd')
+    try:
+        _rel = Path(path).resolve().relative_to((DEFAULT_STORE_ROOT).resolve()).as_posix()
+    except ValueError:
+        write_parquet_atomic(frame, path, compression='zstd')
+    else:
+        write_dataset('events', frame, rel_path=_rel,
+                      root=DEFAULT_STORE_ROOT, writer='tools/update_events.py')
 
 
 def fetch_days(args: argparse.Namespace, days: list[date],
@@ -259,7 +266,13 @@ def _merge(shard_dir: Path, paths: list[Path], days: list[date],
     merged = merged.unique(subset=['art_code', 'stock_code'], keep='first',
                            maintain_order=True)
     target = staging / f'_merged_{days[0]:%Y%m%d}_{days[-1]:%Y%m%d}.parquet'
-    write_parquet_atomic(merged, target)
+    try:
+        _rel = Path(target).resolve().relative_to((DEFAULT_STORE_ROOT).resolve()).as_posix()
+    except ValueError:
+        write_parquet_atomic(merged, target)
+    else:
+        write_dataset('events', merged, rel_path=_rel,
+                      root=DEFAULT_STORE_ROOT, writer='tools/update_events.py')
     logger.info(f'合并 {len(frames)} 个日分片 → {merged.height} 行 → {target.name}')
     return merged, target
 

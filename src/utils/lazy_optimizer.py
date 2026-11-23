@@ -34,9 +34,10 @@ class LazyOptimizer:
         Returns:
             pl.LazyFrame: 优化后的LazyFrame
         """
+        schema = lazy_df.collect_schema()
         numeric_cols = [
-            col for col in lazy_df.columns
-            if lazy_df.schema[col].is_numeric() and col not in cls._PROTECTED_COLS
+            col for col, dtype in schema.items()
+            if dtype.is_numeric() and col not in cls._PROTECTED_COLS
         ]
 
         for col in numeric_cols:

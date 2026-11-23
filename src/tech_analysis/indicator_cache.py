@@ -384,7 +384,7 @@ class IndicatorCache:
             return result
         return result.select([key_col] + derived_cols)
 
-    def _evict_lru(self):
+    def _evict_lru(self) -> None:
         """
         执行LRU淘汰策略，移除最少使用的缓存条目
         """
@@ -401,7 +401,7 @@ class IndicatorCache:
             self._evictions += 1
             logger.debug(f"LRU淘汰缓存: {lru_key}")
 
-    def _adjust_cache_size(self):
+    def _adjust_cache_size(self) -> None:
         """
         动态调整缓存大小
         根据命中率和缓存使用情况自动调整缓存大小
@@ -546,7 +546,7 @@ class IndicatorCache:
                 'last_size_adjustment': self._last_size_adjustment
             }
 
-    def reset_stats(self):
+    def reset_stats(self) -> None:
         """
         重置缓存统计信息
         """

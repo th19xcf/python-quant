@@ -8,7 +8,7 @@
 
 from abc import ABC
 from datetime import datetime, timedelta
-from typing import Dict, List, Union
+from typing import Any, Dict, List, Union
 
 import polars as pl
 from loguru import logger
@@ -42,7 +42,7 @@ class DataSourceBase(ABC):
         self.available = False
         self.initialize()
 
-    def initialize(self):
+    def initialize(self) -> None:
         """
         初始化数据源
 
@@ -386,7 +386,7 @@ class DataSourceBase(ABC):
         raise NotImplementedError(
             f"{self.__class__.__name__} 未实现标准接口 get_index_data()")
 
-    def update_stock_basic(self):
+    def update_stock_basic(self) -> Any:  # 子类返回 DataFrame / None，基类默认不支持
         """
         更新股票基本信息
 
@@ -407,7 +407,7 @@ class DataSourceBase(ABC):
         """
         logger.info(f"{self.name} 不支持更新股票日线数据")
 
-    def update_index_basic(self):
+    def update_index_basic(self) -> Any:  # 子类返回 DataFrame / None，基类默认不支持
         """
         更新指数基本信息
 
@@ -508,7 +508,7 @@ class DataSourceBase(ABC):
         logger.info(f"{self.name} 不支持获取指数基本信息")
         return None
 
-    def update_fund_basic(self):
+    def update_fund_basic(self) -> Any:  # 子类返回 DataFrame / None，基类默认不支持
         """
         更新基金基本信息
 
@@ -561,7 +561,7 @@ class DataSourceBase(ABC):
         logger.info(f"{self.name} 不支持获取基金基本信息")
         return None
 
-    def update_closed_fund_basic(self):
+    def update_closed_fund_basic(self) -> Any:  # 子类返回 DataFrame / None，基类默认不支持
         """
         更新封闭式基金基本信息
 

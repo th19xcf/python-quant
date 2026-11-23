@@ -35,26 +35,26 @@ class IndexDataController:
             ])
         return index_data
 
-    def _on_index_impl(self):
+    def _on_index_impl(self) -> None:
         """
         Click on HS/Joint index, load from TDX and update table
         获取沪深京指数数据（包括沪市和深市指数）
         """
         self.window._load_index_data(market='all', title='沪深京指数')
 
-    def _on_sh_index_impl(self):
+    def _on_sh_index_impl(self) -> None:
         """
         显示沪市指数
         """
         self.window._load_index_data(market='sh', title='沪市指数')
 
-    def _on_sz_index_impl(self):
+    def _on_sz_index_impl(self) -> None:
         """
         显示深市指数
         """
         self.window._load_index_data(market='sz', title='深市指数')
 
-    def _on_bj_index_impl(self):
+    def _on_bj_index_impl(self) -> None:
         """
         显示京市指数（北交所）
         """
@@ -293,7 +293,7 @@ class IndexDataController:
         global_task_manager.task_completed.connect(on_task_completed)
         global_task_manager.task_error.connect(on_task_error)
 
-    def show_latest_5days_data(self):
+    def show_latest_5days_data(self) -> None:
         """
         Show latest 5 days index data
         """

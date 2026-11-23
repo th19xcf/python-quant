@@ -10,6 +10,8 @@ from typing import Any, Dict, List
 
 import numpy as np
 
+from src.utils.dates import as_date
+
 # 不同数据频率对应的年化因子：收益率序列按 bar 计算，波动率/夏普必须
 # 按实际频率折算，统一写死 252 会把周线、月线回测的风险指标系统性高估。
 _ANNUALIZATION_FACTORS = {
@@ -169,16 +171,8 @@ class PerformanceAnalyzer:
 
     @staticmethod
     def _parse_date(value: Any) -> date | None:
-        if isinstance(value, datetime):
-            return value.date()
-        if isinstance(value, date):
-            return value
-        if isinstance(value, str):
-            try:
-                return date.fromisoformat(value[:10])
-            except ValueError:
-                return None
-        return None
+        """委托统一真源 ``src.utils.dates.as_date``（额外覆盖 np.datetime64 / NaT / 非补零日期）。"""
+        return as_date(value)
 
     def _calculate_max_drawdown(self, equities: List[float]) -> float:
         """

@@ -17,11 +17,11 @@ class StockRecommender:
     股票推荐器类，提供股票评分和推荐功能
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """
         初始化股票推荐器
         """
-        self.recommendations = []
+        self.recommendations: list[dict[str, Any]] = []
 
     @staticmethod
     def _default_weights(weights: Dict[str, float] | None) -> Dict[str, float]:

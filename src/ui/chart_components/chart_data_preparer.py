@@ -31,7 +31,7 @@ class ChartDataPreparer:
     负责K线图数据的预处理和计算
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """初始化数据准备器"""
         pass
 

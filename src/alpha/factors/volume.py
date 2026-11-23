@@ -46,7 +46,7 @@ class VolumeFactors(PartitionAware):
 
         return self.data
 
-    def _calculate_volume_change(self):
+    def _calculate_volume_change(self) -> None:
         """
         计算成交量变化因子
         """
@@ -72,7 +72,7 @@ class VolumeFactors(PartitionAware):
             self._fill(self._p(vc.rolling_mean(20).shift(1))).cast(vdt, strict=False).alias('volume_change_20')
         ])
 
-    def _calculate_volume_momentum(self):
+    def _calculate_volume_momentum(self) -> None:
         """
         计算成交量动量因子
         """
@@ -89,7 +89,7 @@ class VolumeFactors(PartitionAware):
             self._fill(self._p(volume_momentum_20)).cast(vdt, strict=False).alias('volume_momentum_20')
         ])
 
-    def _calculate_on_balance_volume(self):
+    def _calculate_on_balance_volume(self) -> None:
         """
         计算能量潮(OBV)因子
         """
@@ -113,7 +113,7 @@ class VolumeFactors(PartitionAware):
             self._fill(self._p(obv.rolling_mean(20).shift(1))).cast(vdt, strict=False).alias('obv_ma20')
         ])
 
-    def _calculate_volume_price_relationship(self):
+    def _calculate_volume_price_relationship(self) -> None:
         """
         计算量价关系因子
         """

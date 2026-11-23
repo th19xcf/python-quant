@@ -84,7 +84,9 @@ def test_build_store_refreshes_manifest_files(tmp_path):
     intervals = entries['meta/st/st_intervals.parquet']
     assert intervals['rows'] == pl.read_parquet(
         st_history.intervals_path(tmp_path)).height
-    assert intervals['columns'] == list(st_history._INTERVAL_SCHEMA)
+    # 落盘列按契约（st_intervals 含 evidence / raw_fetched_at），即内存 schema
+    # 之外补齐的 _INTERVAL_OUTPUT_SCHEMA，与 dataset_contracts 保持同一口径
+    assert intervals['columns'] == list(st_history._INTERVAL_OUTPUT_SCHEMA)
     assert '候选实测' in entries['meta/st/st_coverage.parquet']['date_range_note']
 
 

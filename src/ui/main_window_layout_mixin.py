@@ -4,6 +4,7 @@
 主窗口整体布局 Mixin：UI 初始化编排、左右分割布局、行情页、财务页与状态栏。
 """
 
+from typing import Any, cast
 import contextlib
 
 from PySide6.QtCore import QSize, Qt
@@ -36,6 +37,15 @@ from src.utils.logger import logger
 class MainWindowLayoutMixin:
     """主窗口骨架布局：导航栏、中央标签页、右侧信息栏与状态栏。"""
 
+    # 由宿主 MainWindow（QMainWindow + 其余 mixin）提供；仅供类型检查，不在此创建
+    create_indicator_menu: Any
+    create_menu_bar: Any
+    create_tool_bar: Any
+    indicator_interaction_manager: Any
+    setCentralWidget: Any
+    setStatusBar: Any
+    table_interaction_manager: Any
+
     def init_ui(self):
         """
         初始化UI组件（委托给UI管理器）
@@ -45,7 +55,7 @@ class MainWindowLayoutMixin:
             return self.ui_manager.init_ui()
         return self._init_ui_impl()
 
-    def _init_ui_impl(self):
+    def _init_ui_impl(self) -> None:
         """
         初始化UI组件
         """
@@ -54,15 +64,16 @@ class MainWindowLayoutMixin:
 
         # 初始化窗口菜单
         self.current_window_count = 3
-        self.window_menu = QMenu(self)
+        host = cast(QWidget, self)  # 运行时宿主是 QMainWindow；mixin 自身不是 QObject
+        self.window_menu = QMenu(host)
         self.window_actions = []
 
         # 创建QActionGroup，确保单选效果
-        self.window_action_group = QActionGroup(self)
+        self.window_action_group = QActionGroup(host)
         self.window_action_group.setExclusive(True)
 
         for i in range(1, 10):  # 最大选择9个窗口
-            action = QAction(f'{i}个窗口', self)
+            action = QAction(f'{i}个窗口', host)
             action.setCheckable(True)
             action.setActionGroup(self.window_action_group)
             if i == self.current_window_count:  # 使用当前窗口数量作为默认选择
@@ -95,14 +106,14 @@ class MainWindowLayoutMixin:
         main_layout = QVBoxLayout(central_widget)
 
         # 创建主分割器（左右布局）
-        main_splitter = QSplitter(Qt.Horizontal)
+        main_splitter = QSplitter(Qt.Orientation.Horizontal)
         main_layout.addWidget(main_splitter)
 
         # 创建左侧导航栏
         self.create_left_navigation(main_splitter)
 
         # 创建中间和右侧的分割器
-        center_right_splitter = QSplitter(Qt.Horizontal)
+        center_right_splitter = QSplitter(Qt.Orientation.Horizontal)
         main_splitter.addWidget(center_right_splitter)
 
         # 设置分割器比例
@@ -270,7 +281,7 @@ class MainWindowLayoutMixin:
 
         parent.addWidget(center_widget)
 
-    def create_market_tab(self):
+    def create_market_tab(self) -> None:
         """
         创建行情标签页
         """
@@ -287,7 +298,7 @@ class MainWindowLayoutMixin:
         self.market_progress_bar.setStyleSheet("QProgressBar { height: 8px; background-color: #222; border: 1px solid #444; border-radius: 4px; text-align: left; text-indent: 10px; } QProgressBar::chunk { background-color: #00BFFF; border-radius: 0; margin: 0; }")
         market_layout.addWidget(self.market_progress_bar)
         # 设置进度条的大小策略，确保它在水平方向上拉伸
-        self.market_progress_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.market_progress_bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         # 创建股票列表
         self.stock_table = QTableWidget()
@@ -299,10 +310,10 @@ class MainWindowLayoutMixin:
         # 列宽由 data_market_renderer 按每列最长内容实测（见 table_sizing 统一口径）
 
         # 设置表格为只读模式
-        self.stock_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.stock_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
 
         # 初始化排序状态跟踪
-        self.column_sort_states = {}  # 保存每列的排序状态：0=未排序，1=升序，2=降序
+        self.column_sort_states: dict[int, Any] = {}  # 保存每列的排序状态：0=未排序，1=升序，2=降序
         self.current_sorted_column = -1  # 当前排序的列
 
         self.stock_table.horizontalHeader().sectionClicked.connect(self.table_interaction_manager.on_header_clicked)
@@ -362,7 +373,7 @@ class MainWindowLayoutMixin:
 
         market_layout.addWidget(self.stock_table)
 
-    def create_finance_tab(self):
+    def create_finance_tab(self) -> None:
         """
         创建财务分析标签页：财务指标 + 近期资讯，按需后台取数。
         """
@@ -376,9 +387,9 @@ class MainWindowLayoutMixin:
         # 之后新的窗口最小高度瓶颈，技术分析页仍无法在 1024×600 下完整显示。
         self.finance_scroll_area = QScrollArea()
         self.finance_scroll_area.setWidgetResizable(True)
-        self.finance_scroll_area.setFrameShape(QFrame.NoFrame)
-        self.finance_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.finance_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.finance_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.finance_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.finance_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.finance_scroll_area.setWidget(self.finance_page)
         finance_layout.addWidget(self.finance_scroll_area)
 
@@ -398,7 +409,7 @@ class MainWindowLayoutMixin:
         except RuntimeError as exc:
             logger.error(f"财务分析页刷新失败: {exc}")
 
-    def show_finance_tab(self):
+    def show_finance_tab(self) -> None:
         """统一入口：菜单/导航需要打开财务分析窗口时调用。"""
         page = getattr(self, 'finance_page', None)
         if page is None:
@@ -444,7 +455,7 @@ class MainWindowLayoutMixin:
 
         parent.addWidget(right_widget)
 
-    def create_status_bar(self):
+    def create_status_bar(self) -> None:
         """
         创建状态栏
         """

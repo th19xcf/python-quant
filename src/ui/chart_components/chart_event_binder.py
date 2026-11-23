@@ -113,7 +113,7 @@ class ChartEventBinder:
         except (OSError, RuntimeError) as e:
             logger.exception(f"绑定鼠标点击事件失败: {e}")
 
-    def _disconnect_mouse_events(self):
+    def _disconnect_mouse_events(self) -> None:
         """断开鼠标事件连接"""
         widgets = [
             self.main_window.tech_plot_widget,
@@ -134,7 +134,7 @@ class ChartEventBinder:
             except (OSError, RuntimeError) as exc:
                 logger.debug(f"断开 sigMouseClicked 失败（未连接或控件已销毁）: {type(exc).__name__}: {exc}")
 
-    def _bind_range_sync_events(self):
+    def _bind_range_sync_events(self) -> None:
         """绑定范围同步事件"""
         try:
             # 获取viewBox
@@ -186,7 +186,7 @@ class ChartEventBinder:
         except (OSError, RuntimeError) as e:
             logger.exception(f"绑定范围同步事件失败: {e}")
 
-    def _update_dividend_markers(self):
+    def _update_dividend_markers(self) -> None:
         """更新分红标记位置"""
         try:
             if hasattr(self.main_window, 'dividend_marker_manager') and self.main_window.dividend_marker_manager:
@@ -194,7 +194,7 @@ class ChartEventBinder:
         except (OSError, RuntimeError) as e:
             logger.debug(f"更新分红标记位置失败: {e}")
 
-    def _setup_context_menu(self):
+    def _setup_context_menu(self) -> None:
         """设置右键菜单"""
         try:
             # 禁用默认右键菜单
@@ -203,7 +203,7 @@ class ChartEventBinder:
         except (OSError, RuntimeError) as e:
             logger.exception(f"设置右键菜单失败: {e}")
 
-    def _disable_default_context_menu(self):
+    def _disable_default_context_menu(self) -> None:
         """禁用默认右键菜单"""
         # 禁用viewBox的右键菜单
         if hasattr(self.main_window.tech_plot_widget, 'getViewBox'):
@@ -219,7 +219,7 @@ class ChartEventBinder:
             if hasattr(item, 'setMenuEnabled'):
                 item.setMenuEnabled(False)
 
-    def _setup_info_timer(self):
+    def _setup_info_timer(self) -> None:
         """设置信息框定时器"""
         try:
             # 创建定时器
@@ -274,7 +274,7 @@ class ChartEventBinder:
             logger.exception(f"设置十字线失败: {e}")
             return None, None, None, None, None, None
 
-    def _remove_old_crosshair(self):
+    def _remove_old_crosshair(self) -> None:
         """移除旧的十字线"""
         lines = [
             ('vline', self.main_window.tech_plot_widget),

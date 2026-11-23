@@ -54,6 +54,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic  # noqa: E402
 from src.data.manifest_refresh import refresh_manifest_files  # noqa: E402
+from src.data.dataset_contracts import write_dataset
 
 WINDOW = 250
 BASE_COLUMNS: tuple[str, ...] = (
@@ -307,7 +308,13 @@ def main(argv: list[str] | None = None) -> int:
     sha_before = _sha256(src)
     backup = _snapshot_backup(src, sha_before)
 
-    write_parquet_atomic(out, src)
+    try:
+        _rel = Path(src).resolve().relative_to((Path(__file__).resolve().parents[1] / 'data' / 'local_store').resolve()).as_posix()
+    except ValueError:
+        write_parquet_atomic(out, src)
+    else:
+        write_dataset('stock_shares', out, rel_path=_rel,
+                      root=Path(__file__).resolve().parents[1] / 'data' / 'local_store', writer='tools/derive_free_float_fill.py')
     sha_after = _sha256(src)
     reread = pl.read_parquet(src)
     check(reread, base)

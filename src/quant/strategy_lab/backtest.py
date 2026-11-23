@@ -46,6 +46,7 @@ def _passes(value: float | None, op: str, operand: Dict[str, Any],
     """单条条件判定；缺值一律不通过（无法证伪即不入选）。"""
     if value is None:
         return False
+    target: Any
     if operand['type'] == 'quantile':
         if threshold is None:
             return False
@@ -158,8 +159,9 @@ def select_members(ctx: compute.Context, panels: FieldPanels, rule: Dict[str, An
         if dropped_missing:
             skip['missing_value'] += dropped_missing
 
-        codes = list(keep)
+        codes: list[str] | None = list(keep)
         for i, stage in enumerate(stages):
+            assert codes is not None  # 上一轮为 None 时已 break
             codes = _apply_stage(codes, stage_panels[i].get(day, {}), stage,
                                  i == len(stages) - 1, top_n)
             if codes is None:
@@ -330,13 +332,15 @@ def _excess_metrics(nav: List[Tuple[date, float]], bench: Dict[str, float],
               if day.isoformat() in bench and bench[day.isoformat()] > 0]
     if len(paired) < 2:
         return {'benchmark': bench_code, 'benchmark_annual': None,
-                'excess_annual': None, 'information_ratio': None}
+                'excess_annual': None, 'information_ratio': None,
+                'excess_dsr': None}
     first_day, first_nav, first_bench = paired[0]
     last_day, last_nav, last_bench = paired[-1]
     years = (last_day - first_day).days / 365.25
     if years <= 0:
         return {'benchmark': bench_code, 'benchmark_annual': None,
-                'excess_annual': None, 'information_ratio': None}
+                'excess_annual': None, 'information_ratio': None,
+                'excess_dsr': None}
     bench_annual = (last_bench / first_bench) ** (1.0 / years) - 1.0
     strategy_annual = (last_nav / first_nav) ** (1.0 / years) - 1.0
 
@@ -348,11 +352,15 @@ def _excess_metrics(nav: List[Tuple[date, float]], bench: Dict[str, float],
                      for (_, a), (_, b) in zip(monthly_bench, monthly_bench[1:], strict=False)]
     excess = [s - b for s, b in zip(nav_returns, bench_returns, strict=False)]
     ir = information_ratio(excess, periods_per_year=12)
+    from src.backtest.performance.benchmark_eval import excess_deflated_sharpe
+    dsr = excess_deflated_sharpe(nav_returns, bench_returns, n_trials=1,
+                                 periods_per_year=12)
     return {
         'benchmark': bench_code,
         'benchmark_annual': round(float(bench_annual), 6),
         'excess_annual': round(float(strategy_annual - bench_annual), 6),
         'information_ratio': None if not math.isfinite(ir) else round(float(ir), 4),
+        'excess_dsr': None if not math.isfinite(dsr) else round(float(dsr), 4),
         'excess_months': len(excess),
     }
 

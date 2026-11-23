@@ -1,0 +1,460 @@
+{
+  "version": 1,
+  "note": "裸写豁免白名单：只豁免研究输出 / staging / 缓存 / 血缘 / 一次性脚本；正式数据集裸写不在豁免内。由 src/data/raw_write_scan.py 读取。",
+  "directories": [
+    {
+      "path": "tools/research/",
+      "reason": "研究脚本产物落 research/ 或 artifacts/，不写正式数据集"
+    },
+    {
+      "path": "tools/lineage/",
+      "reason": "血缘扫描器，命中的只是字符串常量，不写盘"
+    },
+    {
+      "path": "tools/_oneshot/",
+      "reason": "一次性脚本，已固化或不再调度，不参与日常写入"
+    }
+  ],
+  "files": [
+    {
+      "path": "tools/alpha_authenticity_check.py",
+      "reason": "研究评估输出（equity/trades）"
+    },
+    {
+      "path": "tools/beta_alpha_combo.py",
+      "reason": "研究回测输出，不写数据集"
+    },
+    {
+      "path": "tools/cross_section_score.py",
+      "reason": "研究评估输出，不写数据集"
+    },
+    {
+      "path": "tools/dividend_official_probe.py",
+      "reason": "官方口径核验缓存，非生产数据集"
+    },
+    {
+      "path": "tools/eval_daily_advice.py",
+      "reason": "研究评估缓存与矩阵"
+    },
+    {
+      "path": "tools/event_buy_points_study.py",
+      "reason": "事件研究输出"
+    },
+    {
+      "path": "tools/macd_combo_event_study.py",
+      "reason": "事件研究输出"
+    },
+    {
+      "path": "tools/oversold_rebound.py",
+      "reason": "研究回测缓存"
+    },
+    {
+      "path": "tools/oversold_rebound_strength.py",
+      "reason": "研究信号明细"
+    },
+    {
+      "path": "tools/st_filter_ab.py",
+      "reason": "研究对照实验输出"
+    },
+    {
+      "path": "tools/tune_advice.py",
+      "reason": "调参缓存"
+    },
+    {
+      "path": "tools/verify_futures_official.py",
+      "reason": "官方口径核验输出"
+    }
+  ],
+  "sites": [
+    {
+      "file": "tools/backfill_delisted_quotes.py",
+      "text": "write_parquet_atomic(rows, shard)",
+      "count": 1,
+      "reason": "staging 分片，正式分片经 write_dataset 落地"
+    },
+    {
+      "file": "tools/backfill_delisted_quotes.py",
+      "text": "write_parquet_atomic(frame, path, compression='zstd', statistics=True)",
+      "count": 1,
+      "reason": "staging 分片"
+    },
+    {
+      "file": "tools/backfill_delisted_quotes.py",
+      "text": "write_parquet_atomic(shard_frame, shard)",
+      "count": 1,
+      "reason": "staging 分片"
+    },
+    {
+      "file": "tools/backfill_events.py",
+      "text": "write_parquet_atomic(frame, target, compression='zstd')",
+      "count": 1,
+      "reason": "契约兜底：目标不在列存根内时"
+    },
+    {
+      "file": "tools/backfill_events.py",
+      "text": "write_parquet_atomic(merged, merged_path)",
+      "count": 1,
+      "reason": "staging 合并件"
+    },
+    {
+      "file": "tools/build_breadth_ma.py",
+      "text": "write_parquet_atomic(result.select(_PART_COLUMNS), part)",
+      "count": 1,
+      "reason": "staging 候选分片"
+    },
+    {
+      "file": "tools/build_breadth_ma.py",
+      "text": "write_parquet_atomic(_empty_part(), part)",
+      "count": 1,
+      "reason": "staging 候选分片"
+    },
+    {
+      "file": "tools/build_breadth_ma.py",
+      "text": "write_parquet_atomic(daily, out)",
+      "count": 1,
+      "reason": "staging 候选"
+    },
+    {
+      "file": "tools/build_cn_bond_tables.py",
+      "text": "write_parquet_atomic(idx, MACRO / 'cn_bond_index.parquet')",
+      "count": 1,
+      "reason": "契约兜底：契约查不到时"
+    },
+    {
+      "file": "tools/build_cn_bond_tables.py",
+      "text": "write_parquet_atomic(yld, MACRO / 'cn_treasury_yield_curve.parquet')",
+      "count": 1,
+      "reason": "契约兜底：契约查不到时"
+    },
+    {
+      "file": "tools/build_credit_yield_curve.py",
+      "text": "raw.to_parquet(target, index=False)",
+      "count": 1,
+      "reason": "原始抓取缓存"
+    },
+    {
+      "file": "tools/build_credit_yield_curve.py",
+      "text": "write_parquet_atomic(credit, out)",
+      "count": 1,
+      "reason": "契约兜底：契约查不到时"
+    },
+    {
+      "file": "tools/build_fund_corporate_actions.py",
+      "text": "write_parquet_atomic(candidate, target)",
+      "count": 1,
+      "reason": "契约兜底：契约查不到时"
+    },
+    {
+      "file": "tools/build_futures_continuous.py",
+      "text": "write_parquet_atomic(frame, target)",
+      "count": 1,
+      "reason": "契约兜底：契约查不到时"
+    },
+    {
+      "file": "tools/build_implied_suspension.py",
+      "text": "write_parquet_atomic(candidate, formal_path)",
+      "count": 1,
+      "reason": "契约兜底：契约查不到时"
+    },
+    {
+      "file": "tools/build_implied_suspension.py",
+      "text": "write_parquet_atomic(frame, out_path)",
+      "count": 1,
+      "reason": "契约兜底：契约查不到时"
+    },
+    {
+      "file": "tools/build_multi_asset_etf_pool.py",
+      "text": "write_parquet_atomic(frame, pool_path, compression='zstd')",
+      "count": 1,
+      "reason": "staging 候选"
+    },
+    {
+      "file": "tools/build_multi_asset_etf_pool.py",
+      "text": "write_parquet_atomic(frame, TARGET_DIR / 'etf_pool.parquet')",
+      "count": 1,
+      "reason": "契约兜底：契约查不到时"
+    },
+    {
+      "file": "tools/build_name_history.py",
+      "text": "write_parquet_atomic(frame, target)",
+      "count": 1,
+      "reason": "契约兜底：契约查不到时"
+    },
+    {
+      "file": "tools/build_new_share.py",
+      "text": "write_parquet_atomic(raw, path)",
+      "count": 1,
+      "reason": "原始采集件"
+    },
+    {
+      "file": "tools/build_new_share.py",
+      "text": "write_parquet_atomic(frame, OUT)",
+      "count": 1,
+      "reason": "契约兜底：契约查不到时"
+    },
+    {
+      "file": "tools/build_session_ledger.py",
+      "text": "write_parquet_atomic(frame, ledger)",
+      "count": 1,
+      "reason": "staging 台账"
+    },
+    {
+      "file": "tools/build_state_vector.py",
+      "text": "write_parquet_atomic(result.select(_PART_COLUMNS), part)",
+      "count": 1,
+      "reason": "staging 候选分片"
+    },
+    {
+      "file": "tools/build_state_vector.py",
+      "text": "write_parquet_atomic(panel, out)",
+      "count": 1,
+      "reason": "staging 候选"
+    },
+    {
+      "file": "tools/build_stock_basic.py",
+      "text": "write_parquet_atomic(candidate, staging / 'stock_basic.parquet')",
+      "count": 1,
+      "reason": "staging 候选"
+    },
+    {
+      "file": "tools/build_sw_industry_index.py",
+      "text": "merged.write_parquet(tmp_parquet, compression='zstd', statistics=True)",
+      "count": 1,
+      "reason": "临时中间件"
+    },
+    {
+      "file": "tools/build_sw_industry_index.py",
+      "text": "df.write_parquet(stage / f'{c}.SH.parquet', compression='zstd', statistics=True)",
+      "count": 1,
+      "reason": "staging 中间件"
+    },
+    {
+      "file": "tools/build_universe_layers.py",
+      "text": "write_parquet_atomic(frame, out)",
+      "count": 1,
+      "reason": "staging 分片，正式提升另经 copy2"
+    },
+    {
+      "file": "tools/collect_index_valuation.py",
+      "text": "write_parquet_atomic(frame, path)",
+      "count": 2,
+      "reason": "日频原始缓存"
+    },
+    {
+      "file": "tools/collect_stock_dividend.py",
+      "text": "write_parquet_atomic(",
+      "count": 1,
+      "reason": "抓取缓存分片"
+    },
+    {
+      "file": "tools/collect_stock_dividend.py",
+      "text": "write_parquet_atomic(out, cache_path, compression='zstd', statistics=True)",
+      "count": 1,
+      "reason": "抓取缓存"
+    },
+    {
+      "file": "tools/collect_stock_dividend.py",
+      "text": "write_parquet_atomic(final, args.out, compression='zstd', statistics=True)",
+      "count": 1,
+      "reason": "契约兜底：契约查不到时"
+    },
+    {
+      "file": "tools/daily_update.py",
+      "text": "}).write_parquet(batch_dir / 'gaps.parquet')",
+      "count": 1,
+      "reason": "staging 批次缺口表"
+    },
+    {
+      "file": "tools/derive_free_float_fill.py",
+      "text": "write_parquet_atomic(out, src)",
+      "count": 1,
+      "reason": "契约兜底：契约查不到时"
+    },
+    {
+      "file": "tools/derive_total_dividend.py",
+      "text": "write_parquet_atomic(out, args.div, compression='zstd', statistics=True)",
+      "count": 1,
+      "reason": "契约兜底：契约查不到时"
+    },
+    {
+      "file": "tools/factor_panel.py",
+      "text": "panel.write_parquet(tmp, compression='zstd')",
+      "count": 1,
+      "reason": "tmp 中间件"
+    },
+    {
+      "file": "tools/fetch_cn_bond_data.py",
+      "text": "df.to_parquet(target, index=False)",
+      "count": 2,
+      "reason": "原始抓取缓存"
+    },
+    {
+      "file": "tools/fetch_etf_fee.py",
+      "text": "write_parquet_atomic(df, pq)",
+      "count": 1,
+      "reason": "staging 候选"
+    },
+    {
+      "file": "tools/fetch_futures_daily.py",
+      "text": "merged.to_parquet(path, index=False)",
+      "count": 1,
+      "reason": "原始抓取缓存"
+    },
+    {
+      "file": "tools/fetch_margin_detail.py",
+      "text": "write_parquet_atomic(frame, path)",
+      "count": 1,
+      "reason": "原始抓取缓存（RAW_DIR）"
+    },
+    {
+      "file": "tools/fill_free_float_shares.py",
+      "text": "write_parquet_atomic(frame, target)",
+      "count": 1,
+      "reason": "契约兜底：契约查不到时"
+    },
+    {
+      "file": "tools/fill_free_float_shares.py",
+      "text": "write_parquet_atomic(assembled, raw)",
+      "count": 1,
+      "reason": "原始采集件"
+    },
+    {
+      "file": "tools/fill_free_float_shares.py",
+      "text": "write_parquet_atomic(derived, src)",
+      "count": 1,
+      "reason": "契约兜底：契约查不到时"
+    },
+    {
+      "file": "tools/margin_daily.py",
+      "text": "write_parquet_atomic(frame, part)",
+      "count": 2,
+      "reason": "契约兜底：契约查不到时"
+    },
+    {
+      "file": "tools/margin_daily.py",
+      "text": "write_parquet_atomic(final, target)",
+      "count": 1,
+      "reason": "契约兜底：契约查不到时"
+    },
+    {
+      "file": "tools/margin_daily.py",
+      "text": "write_parquet_atomic(margin, cand_path)",
+      "count": 1,
+      "reason": "staging 候选"
+    },
+    {
+      "file": "tools/pull_index_weight.py",
+      "text": "df.to_parquet(path, index=False)",
+      "count": 1,
+      "reason": "原始抓取缓存"
+    },
+    {
+      "file": "tools/rebuild_index_constituents.py",
+      "text": "df.to_parquet(OUT_DIR / \"intervals.parquet\", index=False)",
+      "count": 1,
+      "reason": "重建中间产物（可重算，非服务数据集）"
+    },
+    {
+      "file": "tools/refresh_dividend_daily.py",
+      "text": "write_parquet_atomic(candidate, stage_path, compression='zstd', statistics=True)",
+      "count": 1,
+      "reason": "staging 候选"
+    },
+    {
+      "file": "tools/refresh_dividend_monthly.py",
+      "text": "keys.write_parquet(before)",
+      "count": 1,
+      "reason": "staging 比对键"
+    },
+    {
+      "file": "tools/repair_quote_anomalies.py",
+      "text": "write_parquet_atomic(frame, path, compression='zstd', statistics=True)",
+      "count": 1,
+      "reason": "契约兜底：契约查不到时"
+    },
+    {
+      "file": "tools/treasury_yield.py",
+      "text": "frame.write_parquet(part)",
+      "count": 1,
+      "reason": "抓取分片缓存"
+    },
+    {
+      "file": "tools/treasury_yield.py",
+      "text": "frame.write_parquet(parts / 'treasury_eastmoney.parquet')",
+      "count": 1,
+      "reason": "抓取分片缓存"
+    },
+    {
+      "file": "tools/treasury_yield.py",
+      "text": "write_parquet_atomic(final, target)",
+      "count": 1,
+      "reason": "契约兜底：契约查不到时"
+    },
+    {
+      "file": "tools/treasury_yield.py",
+      "text": "treasury.write_parquet(cand_path)",
+      "count": 1,
+      "reason": "staging 候选"
+    },
+    {
+      "file": "tools/update_events.py",
+      "text": "write_parquet_atomic(frame, path, compression='zstd')",
+      "count": 1,
+      "reason": "契约兜底：目标不在列存根内时"
+    },
+    {
+      "file": "tools/update_events.py",
+      "text": "write_parquet_atomic(merged, target)",
+      "count": 1,
+      "reason": "staging 合并件"
+    },
+    {
+      "file": "tools/backfill_share_div.py",
+      "text": "write_parquet_atomic(filled, args.div)",
+      "count": 1,
+      "reason": "契约兜底：契约查不到时"
+    },
+    {
+      "file": "tools/build_st_history_from_tushare.py",
+      "text": "write_parquet_atomic(",
+      "count": 1,
+      "reason": "原始分片（tmp/st_namechange_raw）"
+    },
+    {
+      "file": "tools/build_st_history_from_tushare.py",
+      "text": "write_parquet_atomic(frame, first)",
+      "count": 1,
+      "reason": "临时目录字节一致性校验"
+    },
+    {
+      "file": "tools/build_st_history_from_tushare.py",
+      "text": "write_parquet_atomic(frame, second)",
+      "count": 1,
+      "reason": "临时目录字节一致性校验"
+    },
+    {
+      "file": "tools/refresh_dividend_daily.py",
+      "text": "write_parquet_atomic(final, stage_path, compression='zstd', statistics=True)",
+      "count": 1,
+      "reason": "staging 候选"
+    },
+    {
+      "file": "tools/backfill_valuation_20190917.py",
+      "text": "detail.write_parquet(out_dir / 'sample_factors.parquet')",
+      "count": 1,
+      "reason": "研究对拍产物写入 work/valuation_backfill_20261122/，不写正式数据集"
+    },
+    {
+      "file": "tools/backfill_valuation_20190917.py",
+      "text": "part.write_parquet(part_path)",
+      "count": 1,
+      "reason": "valuation staging 分片，随后由 store.merge_parts 合并并登记 ledger"
+    },
+    {
+      "file": "tools/build_no_dividend_ledger.py",
+      "text": "write_parquet_atomic(frame, OUT_PATH, compression='zstd', statistics=True)",
+      "count": 1,
+      "reason": "写非契约取证台账 meta/dividend_status/（无契约、无下游，定版 §1 已豁免）"
+    }
+  ]
+}

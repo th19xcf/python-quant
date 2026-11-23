@@ -140,6 +140,7 @@ def evaluate_factor(
     config: EvalConfig,
     dates: list,
     rates: tuple[float, float],
+    n_trials: int = 1,
 ) -> dict[str, object]:
     """单因子分层评估。"""
     sign = orientation(spec)
@@ -211,6 +212,10 @@ def evaluate_factor(
     ls_net_returns = [r - round_trip * ls_turnover for r in ls_returns]
     ls_std = float(np.std(ls_net_returns, ddof=1)) if len(ls_net_returns) > 1 else 0.0
     periods_per_year = 252.0 / config.horizon
+    from src.backtest.performance.benchmark_eval import deflated_sharpe_ratio
+    excess_dsr = deflated_sharpe_ratio(
+        ls_net_returns, n_trials=max(int(n_trials), 1),
+        periods_per_year=int(periods_per_year))
 
     return {
         'factor': spec.name,
@@ -233,6 +238,7 @@ def evaluate_factor(
         'ls_net_cum': _compound(ls_net_returns),
         'ls_net_sharpe': float(np.mean(ls_net_returns) / ls_std * np.sqrt(periods_per_year))
         if ls_std > 0 else 0.0,
+        'excess_dsr': excess_dsr,
         'q5_net_cum': group_net_cum[top],
         'q1_cum': group_cum[1],
         'q5_cum': group_cum[top],
@@ -258,7 +264,8 @@ def evaluate_all(
     rows: list[dict[str, object]] = []
     for spec in specs:
         try:
-            rows.append(evaluate_factor(values, fwd, spec, config, dates, rates))
+            rows.append(evaluate_factor(values, fwd, spec, config, dates, rates,
+                                      n_trials=len(specs)))
         except (pl.exceptions.PolarsError, ValueError, TypeError, ArithmeticError) as exc:
             logger.warning(f'因子评估失败 {spec.name}: {exc}')
             rows.append({'factor': spec.name, 'error': f'{type(exc).__name__}: {exc}'})

@@ -42,6 +42,7 @@ from typing import Any
 
 import polars as pl
 from loguru import logger
+from src.data.dataset_contracts import write_dataset
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RESEARCH_DIR = PROJECT_ROOT / 'research' / 'events'
@@ -191,7 +192,13 @@ def _fetch_shards(args: argparse.Namespace, chunks: list[tuple[str, str]],
             )
             if frame.is_empty():
                 frame = _empty_frame()
-            write_parquet_atomic(frame, target, compression='zstd')
+            try:
+                _rel = Path(target).resolve().relative_to((DEFAULT_STORE_ROOT).resolve()).as_posix()
+            except ValueError:
+                write_parquet_atomic(frame, target, compression='zstd')
+            else:
+                write_dataset('events', frame, rel_path=_rel,
+                              root=DEFAULT_STORE_ROOT, writer='tools/backfill_events.py')
         except Exception as exc:
             _append_row(failed_path, {
                 'month': target.stem, 'start': start, 'end': end,
@@ -248,7 +255,13 @@ def _import_shards(args: argparse.Namespace, shard_dir: Path,
     staging = _staging_dir(Path(args.store_root))
     staging.mkdir(parents=True, exist_ok=True)
     merged_path = staging / f'_merged_{shard_dir.name}_for_import.parquet'
-    write_parquet_atomic(merged, merged_path)
+    try:
+        _rel = Path(merged_path).resolve().relative_to((DEFAULT_STORE_ROOT).resolve()).as_posix()
+    except ValueError:
+        write_parquet_atomic(merged, merged_path)
+    else:
+        write_dataset('events', merged, rel_path=_rel,
+                      root=DEFAULT_STORE_ROOT, writer='tools/backfill_events.py')
     logger.info(f'合并 {len(paths)} 个分片 → {merged.height} 行')
 
     # 补历史区间时，覆盖声明必须取「原声明 ∪ 本次补数区间」的并集。

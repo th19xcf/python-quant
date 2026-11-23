@@ -85,7 +85,7 @@ def test_headless_page_renders_degraded_state(qapp):
         assert page.excess_table.rowCount() == 6
         assert page.excess_table.showGrid()
         assert page.industry_table.rowCount() == 2
-        assert page.industry_table.columnCount() == 4
+        assert page.industry_table.columnCount() == 5  # 第 0 列为「序号」列（SizedTableMixin 统一插入），数据 4 列 + 序号 1 列
         assert page.industry_table.showGrid()
         assert page.style_table.rowCount() == 2
         assert page.style_table.showGrid()

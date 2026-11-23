@@ -63,6 +63,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.data.atomic_write import write_parquet_atomic  # noqa: E402
+from src.data.dataset_contracts import write_dataset_at
 
 TARGET = (ROOT / 'data' / 'local_store' / 'meta' / 'st' / 'raw'
           / 'tushare_namechange_intervals.parquet')
@@ -336,7 +337,8 @@ def apply_output(frame: pl.DataFrame, target: Path,
     if frame.height == 0:
         raise RuntimeError('推导结果为空，拒绝写盘')
     backup = backup_existing(target, backup_dir)
-    write_parquet_atomic(frame, target)
+    write_dataset_at(frame, target, root=ROOT / 'data' / 'local_store',
+                     writer='tools/build_st_history_from_tushare.py')
     return {'written': str(target), 'rows': frame.height,
             'backup': str(backup) if backup else None,
             'sha256': _sha256(target)}

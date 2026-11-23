@@ -54,6 +54,7 @@ from pathlib import Path
 from typing import Any
 
 import polars as pl
+from src.data.dataset_contracts import write_dataset
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_STORE_ROOT = PROJECT_ROOT / 'data' / 'local_store'
@@ -218,7 +219,13 @@ def apply_formal(candidate: pl.DataFrame, formal_path: Path,
         before_sha = _sha256(formal_path)
         if _sha256(backup_path) != before_sha:
             raise RuntimeError(f'备份 SHA256 与源文件不一致：{backup_path}')
-    write_parquet_atomic(candidate, formal_path)
+    try:
+        _rel = Path(formal_path).resolve().relative_to((DEFAULT_STORE_ROOT).resolve()).as_posix()
+    except ValueError:
+        write_parquet_atomic(candidate, formal_path)
+    else:
+        write_dataset('implied_suspension', candidate, rel_path=_rel,
+                      root=DEFAULT_STORE_ROOT, writer='tools/build_implied_suspension.py')
     back = pl.read_parquet(formal_path)
     if back.height != candidate.height:
         raise RuntimeError(
@@ -274,7 +281,13 @@ def main(argv: list[str] | None = None) -> int:
 
     from src.data.atomic_write import write_parquet_atomic  # noqa: PLC0415
 
-    write_parquet_atomic(frame, out_path)
+    try:
+        _rel = Path(out_path).resolve().relative_to((DEFAULT_STORE_ROOT).resolve()).as_posix()
+    except ValueError:
+        write_parquet_atomic(frame, out_path)
+    else:
+        write_dataset('suspension_daily', frame, rel_path=_rel,
+                      root=DEFAULT_STORE_ROOT, writer='tools/build_implied_suspension.py')
     print(f'候选已写入 {out_path}：{frame.height:,} 行 / '
           f'{frame["ts_code"].n_unique()} 只 / '
           f'{frame["trade_date"].min()}~{frame["trade_date"].max()}')

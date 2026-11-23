@@ -21,8 +21,9 @@ class PluginIndicatorMixin:
     # 由宿主 TechnicalAnalyzer 注入的属性
     plugin_manager: Any
     calculated_indicators: dict[str, Any]
+    indicator_mapping: dict[str, Any]
 
-    def _init_plugin_indicator_mapping(self):
+    def _init_plugin_indicator_mapping(self) -> None:
         """
         初始化插件指标映射
         """

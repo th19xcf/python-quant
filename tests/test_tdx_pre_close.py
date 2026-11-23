@@ -30,9 +30,12 @@ def _write_day_file(path, records):
             ))
 
 
-def _handler(tmp_path, db_manager=None):
+def _handler(tmp_path, db_manager=None, remote_database_fallback=False):
+    # remote_database_fallback 缺省关闭（与生产默认一致）；专测读库路径的用例
+    # 须显式打开，否则 tdx_handler 会在读库前按「远程已关闭」直接返回
     config = SimpleNamespace(data=SimpleNamespace(
-        tdx_data_path=str(tmp_path), max_workers=1))
+        tdx_data_path=str(tmp_path), max_workers=1,
+        remote_database_fallback=remote_database_fallback))
     return TdxHandler(config, db_manager)
 
 
@@ -207,7 +210,7 @@ def test_load_dividend_records_filters_null_ex_date_and_index(tmp_path):
         def get_session(self):
             return session
 
-    handler = _handler(tmp_path, _DB())
+    handler = _handler(tmp_path, _DB(), remote_database_fallback=True)
     try:
         records = handler._load_dividend_records('600000.SH')
         assert records is not None
@@ -296,7 +299,7 @@ def test_single_parse_shared_between_kline_and_adj_factors(tmp_path, day_file, m
         def get_session(self):
             return session
 
-    handler = _handler(tmp_path, _DB())
+    handler = _handler(tmp_path, _DB(), remote_database_fallback=True)
     calls = []
     original = tdx_module.read_recent_records
 
@@ -351,7 +354,7 @@ def test_remote_adj_factor_all_one_is_skipped_with_warning(tmp_path):
         def get_session(self):
             return session
 
-    handler = _handler(tmp_path, _DB())
+    handler = _handler(tmp_path, _DB(), remote_database_fallback=True)
     messages: list[str] = []
     handler_id = logger.add(lambda m: messages.append(str(m)), level='WARNING')
     try:

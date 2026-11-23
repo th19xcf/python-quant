@@ -20,7 +20,7 @@ class MainWindowAdviceMixin:
     advice_tab: QWidget
     advice_page: Any
 
-    def create_advice_tab(self):
+    def create_advice_tab(self) -> None:
         """创建每日推荐标签页（由 create_center_area 在末尾追加）。"""
         layout = QVBoxLayout(self.advice_tab)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -33,9 +33,9 @@ class MainWindowAdviceMixin:
         # 页面内部布局不变，窗口变矮时由该页自身滚动。
         self.advice_scroll_area = QScrollArea()
         self.advice_scroll_area.setWidgetResizable(True)
-        self.advice_scroll_area.setFrameShape(QFrame.NoFrame)
-        self.advice_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.advice_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.advice_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.advice_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.advice_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.advice_scroll_area.setWidget(self.advice_page)
         layout.addWidget(self.advice_scroll_area)
 

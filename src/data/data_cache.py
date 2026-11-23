@@ -390,7 +390,7 @@ class DataCache:
         logger.info(f"预热缓存: {data_type} {code} {start_date} to {end_date}")
         # 实际的预热逻辑需要根据具体业务场景实现
 
-    def _evict_lru(self):
+    def _evict_lru(self) -> None:
         """
         执行LRU淘汰策略，移除最少使用的缓存条目
         """
@@ -524,7 +524,7 @@ class DataCache:
                 'total_requests': total_requests
             }
 
-    def reset_stats(self):
+    def reset_stats(self) -> None:
         """
         重置缓存统计信息
         """

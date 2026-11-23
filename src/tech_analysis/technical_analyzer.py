@@ -186,7 +186,7 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
 
         if self.is_lazy:
             # 对于LazyFrame，使用列名和数据类型生成哈希
-            schema = df.schema
+            schema = df.collect_schema()
             hash_components: list[Any] = [str(schema)]
             return hash(tuple(hash_components))
         else:

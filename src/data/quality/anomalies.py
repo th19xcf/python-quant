@@ -18,12 +18,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 from threading import RLock
 from typing import Any, Iterable, Iterator
 
 from src.utils.code_converter import to_ts_code
+from src.utils.dates import as_date
 
 #: 原始处置动作（向后兼容）：exclude=排除、flag=标注、ignore=仅记录；
 #: 统一词表：use=可直接用、avoid=不应使用、warn=可用但需标注
@@ -54,20 +55,8 @@ ANOMALY_LIST_DIR = (
 
 
 def _as_date(value: object) -> date | None:
-    """把 str/date/datetime 统一成 date，无法解析返回 None。"""
-    if value is None or value == '':
-        return None
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    text = str(value)
-    for fmt in ('%Y-%m-%d', '%Y%m%d'):
-        try:
-            return datetime.strptime(text[:10] if '-' in text else text, fmt).date()
-        except ValueError:
-            continue
-    return None
+    """委托统一真源 ``src.utils.dates.as_date``（含整数 YYYYMMDD / 斜杠 / NaT 归一）。"""
+    return as_date(value)
 
 
 def _dates(*values: str) -> tuple[date, ...]:

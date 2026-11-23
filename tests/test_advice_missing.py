@@ -113,3 +113,47 @@ def test_ret_20_is_duplicate_of_momentum_1m_and_not_double_weighted() -> None:
 
 if __name__ == '__main__':
     raise SystemExit(pytest.main([__file__]))
+
+
+def _two_factor_tier():
+    base = default_config('legacy').tier('short')
+    return base.with_overrides(factors=(
+        FactorSpec('momentum_1m', '1月动量', 0.75, direction=1.0),
+        FactorSpec('rsi_14', 'RSI(14)', 0.25, direction=1.0),
+    ))
+
+
+def _coverage_frame() -> pl.DataFrame:
+    # A/B 两因子齐全；C 只有 rsi_14（25% 权重）
+    return pl.DataFrame({
+        'date': [START] * 3,
+        'ts_code': ['A.SZ', 'B.SZ', 'C.SZ'],
+        'momentum_1m': [0.10, -0.10, None],
+        'rsi_14': [60.0, 40.0, 90.0],
+        'volume': [1.0, 1.0, 1.0],
+    })
+
+
+def test_min_coverage_default_keeps_single_factor_scores() -> None:
+    scored = attach_score(_coverage_frame(), _two_factor_tier())
+    assert scored.filter(pl.col('ts_code') == 'C.SZ')['score'][0] is not None
+
+
+def test_min_coverage_nulls_low_coverage_rows() -> None:
+    scored = attach_score(_coverage_frame(), _two_factor_tier(), min_coverage=0.5)
+    by_code = dict(zip(scored['ts_code'], scored['score'], strict=True))
+    assert by_code['C.SZ'] is None            # 25% < 50%
+    assert by_code['A.SZ'] is not None and by_code['B.SZ'] is not None
+    # 恰好达到门槛（25% ≥ 25%）时保留，避免浮点边界误判
+    edge = attach_score(_coverage_frame(), _two_factor_tier(), min_coverage=0.25)
+    assert edge.filter(pl.col('ts_code') == 'C.SZ')['score'][0] is not None
+
+
+def test_min_coverage_rejects_out_of_range() -> None:
+    with pytest.raises(ValueError):
+        attach_score(_coverage_frame(), _two_factor_tier(), min_coverage=1.5)
+
+
+def test_advice_config_turns_coverage_gate_on() -> None:
+    assert default_config('legacy').min_factor_coverage == 0.5
+

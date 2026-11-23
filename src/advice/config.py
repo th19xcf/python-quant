@@ -16,8 +16,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 
 from src.backtest.costs.cost_model import COST_DEFAULTS
-from src.core.tradability import TradabilityConfig
 from src.quant.learning.config import MIN_HISTORY_ROWS
+from src.risk.tradability import TradabilityConfig
 
 
 @dataclass(frozen=True)
@@ -419,6 +419,9 @@ class AdviceConfig:
     risk: RiskFilterConfig = field(default_factory=RiskFilterConfig)
     #: 单票最少历史行数（不足则 AVOID）
     min_history_rows: int = MIN_HISTORY_ROWS
+    #: 有效因子权重占档位总权重的最低比例，不足则不打分（2026-11-23 起 0.5）。
+    #: 新股/复牌票只剩少数短窗口因子时，重新归一会把它们放大成 100% 权重。
+    min_factor_coverage: float = 0.5
     #: 单票最低参考价（过滤仙股）
     min_price: float = 1.0
     #: 每个档位最多输出多少条 AVOID 观察项

@@ -55,6 +55,9 @@ HEADER_VARIANTS = (
     LEGACY_FIELDS,
     [field for field in LEGACY_FIELDS if field != 'rounds'],
 )
+#: 迁移说明（2026-11-22）：``budget_calls`` 为本版新增列。历史 8 列 / 9 列账本仍可读，
+#: 旧行该列留空、不追改、不补估值；自本版起所有新写入（``add`` 与收口自动记账）都必须
+#: 带预算，``title`` 疑似 commit 哈希或预算为空即拒绝写入。
 PHASES = ('dispatch', 'done')
 #: 轮次闸门：同一任务累计达到 15 轮即换会话（与 60 次硬停分工不同）。
 TURN_SWITCH_ROUNDS = 15
@@ -66,6 +69,33 @@ GATE_HANDOFF = 'handoff'
 GATE_STOP = 'stop'
 UNKNOWN = 'unknown'
 _COMMIT_RE = re.compile(r'commit\s+([0-9a-fA-F]{7,40})')
+#: 误把 commit 哈希当 title 的判据（大小写十六进制都算哈希）。
+_COMMIT_TITLE_RE = re.compile(r'^[0-9a-f]{7,40}$', re.IGNORECASE)
+
+
+def _validate_write(title: Any, budget_calls: Any) -> str:
+    """写入前硬校验，返回规范化的预算文本；不合格抛 ``ValueError``。
+
+    两条判据：``title`` 不得是 commit 哈希（须逐字等于 ``work/<任务名>_<日期>``
+    的任务名）；``budget_calls`` 必须为正整数。历史行不经过本函数，不追改。
+    """
+    text = str(title or '').strip()
+    if _COMMIT_TITLE_RE.match(text):
+        raise ValueError(
+            f'title 疑似 commit 哈希（{text}）：title 必须逐字等于 work/<任务名>_<日期> '
+            '中的任务名，不得传提交哈希，请改用任务名重试')
+    budget = str('' if budget_calls is None else budget_calls).strip()
+    if not budget:
+        raise ValueError(
+            'budget_calls 为空：派单必须写预算调用数（--budget-calls N），'
+            '收口必须能追溯到同标识派单行的预算，本次拒绝写入')
+    try:
+        value = int(budget)
+    except ValueError:
+        raise ValueError(f'budget_calls 不是整数（{budget!r}），本次拒绝写入') from None
+    if value <= 0:
+        raise ValueError(f'budget_calls 必须为正整数（{value}），本次拒绝写入')
+    return str(value)
 
 
 def session_gate(tool_calls: int) -> str:
@@ -178,6 +208,18 @@ def cmd_add(args: argparse.Namespace) -> int:
     rows = _read_rows(ledger)
     same = [r for r in rows if _same_task(r, args.session_id, args.title)]
 
+    budget_arg = args.budget_calls
+    if budget_arg is None and args.phase == 'done':
+        for prior in reversed(same):
+            if str(prior.get('budget_calls') or '').strip():
+                budget_arg = prior['budget_calls']
+                break
+    try:
+        budget_text = _validate_write(args.title, budget_arg)
+    except ValueError as exc:
+        print(f'拒绝写入：{exc}', file=sys.stderr)
+        return 2
+
     dispatched_at = args.dispatched_at
     if not dispatched_at:
         inherited = _inherit_dispatch_time(rows, args.session_id, args.title)
@@ -208,7 +250,7 @@ def cmd_add(args: argparse.Namespace) -> int:
         'tool_calls': '' if args.tool_calls is None else str(args.tool_calls),
         'duration_min': '' if args.duration_min is None else str(args.duration_min),
         'note': note,
-        'budget_calls': '' if args.budget_calls is None else str(args.budget_calls),
+        'budget_calls': budget_text,
     }
     body = ','.join(row[field] for field in FIELDS)
 
@@ -236,6 +278,7 @@ def append_finalize_row(
     tool_calls: int | None = None,
     duration_min: float | None = None,
     rounds: int | None = None,
+    budget_calls: int | str | None = None,
     when: str | None = None,
 ) -> str:
     """收口自动记账：追加一行 done；同一提交已记过则返回 ``duplicate`` 不重复写。
@@ -245,6 +288,10 @@ def append_finalize_row(
     +1；找不到派单行写 ``unknown`` 并在 stderr 告警、不阻断）、``tool_calls``
     记调用数（未知写 ``unknown``）、``duration_min`` 记耗时（未知留空）、
     ``note`` 记 ``commit <短哈希>`` 供去重、``budget_calls`` 沿用同标识派单行的预算。
+
+    ``title`` 重复 ``session_id``（缺省为提交短哈希）。``budget_calls`` 显式入参优先，
+    否则沿用同标识派单行；两者都取不到、或 ``title`` 是 commit 哈希时拒绝写入，
+    抛 ``RuntimeError``（收口侧按「账本异常不阻断提交」处理）。
     """
     short = commit[:7]
     marker = f'commit {short}'
@@ -264,11 +311,15 @@ def append_finalize_row(
         else:
             rounds_text = UNKNOWN
             print(f'警告：账本里没有任务标识 {ident} 的派单行，轮次写 {UNKNOWN}', file=sys.stderr)
-    budget_text = ''
-    for prior in reversed([row for row in rows if _same_task(row, ident, ident)]):
-        if str(prior.get('budget_calls') or '').strip():
-            budget_text = str(prior['budget_calls'])
-            break
+    if budget_calls is None:
+        for prior in reversed([row for row in rows if _same_task(row, ident, ident)]):
+            if str(prior.get('budget_calls') or '').strip():
+                budget_calls = prior['budget_calls']
+                break
+    try:
+        budget_text = _validate_write(ident, budget_calls)
+    except ValueError as exc:
+        raise RuntimeError(f'拒绝写入：{exc}') from None
     row = {
         'dispatched_at': when or _now(),
         'session_id': ident,

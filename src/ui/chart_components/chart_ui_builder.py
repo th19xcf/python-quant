@@ -73,7 +73,7 @@ class ChartUIBuilder:
 
         return container
 
-    def _cleanup_old_title_widgets(self):
+    def _cleanup_old_title_widgets(self) -> None:
         """清理旧的标题组件"""
         # 移除整个标题容器（包含菜单按钮、标题标签、MA标签）
         if hasattr(self.main_window, 'title_ma_container') and self.main_window.title_ma_container:
@@ -243,7 +243,7 @@ class ChartUIBuilder:
         elif window_index == 3:
             self._cleanup_kdj_labels()
 
-    def _cleanup_volume_labels(self):
+    def _cleanup_volume_labels(self) -> None:
         """清理成交量标签"""
         if hasattr(self.main_window, 'volume_values_label'):
             try:
@@ -259,7 +259,7 @@ class ChartUIBuilder:
             except (ValueError, TypeError) as e:
                 logger.warning(f"移除旧成交量标签栏容器时发生错误: {e}")
 
-    def _cleanup_kdj_labels(self):
+    def _cleanup_kdj_labels(self) -> None:
         """清理KDJ标签"""
         if hasattr(self.main_window, 'kdj_values_label'):
             try:

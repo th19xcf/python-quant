@@ -47,6 +47,8 @@ BAR_COLUMNS = ('close', 'pct_chg', 'volume', 'amount')
 ST_COLUMNS = ('supertrend', 'st_lower', 'st_upper', 'st_dir')
 
 #: 正式日频因子面板（1990-12-19 ~ 2026-11-19）
+#: 名实说明：这是因子宽表面板，不是复权因子快照；不得复用 ``LocalFactorStore``
+#: 的因子口径（那份在 ``factors/*_adj_factor.parquet``）。
 FACTOR_PANEL = ROOT / 'data/local_store/factors/factor_panel.parquet'
 INDUSTRY_PIT = ROOT / 'data/local_store/meta/industry_pit/industry_pit_sw.parquet'
 #: 字段 key → factor_panel 列名

@@ -18,6 +18,7 @@
 """
 from __future__ import annotations
 
+from typing import Any
 import json
 import os
 import shutil
@@ -417,7 +418,7 @@ def say(msg: str) -> None:
     if sys.stdout is None:
         return
     try:
-        print(msg, flush=True)
+        print(msg, flush=True)  # noqa: T201 - 浏览器通道的控制台输出
     except Exception as exc:
         logger.warning(f'工作台控制台输出失败（已忽略）: {type(exc).__name__}: {exc}')
 
@@ -456,11 +457,11 @@ def fmt_dt(value) -> str:
 class AppState:
     """运行队列与当前子进程。所有访问经 self.lock。"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.lock = threading.Lock()
-        self.jobs = []
-        self.queue = deque()
-        self.current = None
+        self.jobs: list[dict[str, Any]] = []
+        self.queue: deque[dict[str, Any]] = deque()
+        self.current: dict[str, Any] | None = None
         self.counter = 0
         self.worker = threading.Thread(target=self._loop, daemon=True)
         self.worker.start()
@@ -488,7 +489,7 @@ class AppState:
         return job
 
     # ---- 工作线程 ----
-    def _loop(self):
+    def _loop(self) -> None:
         while True:
             with self.lock:
                 job = self.queue.popleft() if self.queue else None
@@ -562,7 +563,8 @@ class AppState:
     def _detect_run_dir(self, before):
         try:
             now = {d.name: d for d in RUNS_DIR.iterdir() if d.is_dir()}
-        except Exception:
+        except OSError as exc:
+            logger.warning(f'工作台扫描运行目录失败: {RUNS_DIR} ({type(exc).__name__}: {exc})')
             return None
         new = [d for k, d in now.items() if k not in before]
         if not new:
@@ -590,11 +592,11 @@ class AppState:
             for job in pending:
                 job['status'] = 'stopped'
                 job['message'] = '排队中被取消，未启动'
-            job = self.current
-            if not job or job.get('proc') is None:
+            running = self.current
+            if not running or running.get('proc') is None:
                 return '当前没有进行中的回测'
-            job['stop_requested'] = True
-            proc = job['proc']
+            running['stop_requested'] = True
+            proc = running['proc']
         try:
             proc.terminate()
             proc.wait(timeout=6)
@@ -657,8 +659,8 @@ STATE = AppState()
 
 
 # ---------------------------------------------------------------- 页面生成
-_list_cache = {'key': None, 'html': None}
-_dash_cache = {}
+_list_cache: dict[str, Any] = {'key': None, 'html': None}
+_dash_cache: dict[Any, Any] = {}
 _cache_lock = threading.Lock()
 
 #: 内嵌 iframe 页（配方 / 看板 / 清单）也要同一套滚动条：Chromium 滚动条只认 CSS
@@ -686,7 +688,7 @@ def _with_scrollbar_css(html: bytes) -> bytes:
 def recipe_page_html() -> bytes:
     candidates = sorted((ROOT / 'docs').glob('配方生成_*.html'))
     if not candidates:
-        return '<h1>缺少配方生成页</h1><p>请先运行 tools/recipe_builder_page.py 生成。</p>'.encode('utf-8')
+        return '<h1>缺少配方生成页</h1><p>请先运行 tools/recipe_builder_page.py 生成。</p>'.encode()
     return candidates[-1].read_bytes()
 
 
@@ -699,7 +701,7 @@ def list_page_html() -> bytes:
     args = [PY, str(LIST_TOOL), '--runs', str(INDEX_PATH), '--out', str(out),
             '--dashboard', '/', '--dashboard-pattern', '/run/{run_id}/dashboard']
     subprocess.run(args, cwd=str(ROOT), capture_output=True, timeout=180)
-    html = out.read_bytes() if out.exists() else '<h1>清单生成失败</h1>'.encode('utf-8')
+    html = out.read_bytes() if out.exists() else '<h1>清单生成失败</h1>'.encode()
     with _cache_lock:
         _list_cache.update(key=key, html=html)
     return html
@@ -708,7 +710,7 @@ def list_page_html() -> bytes:
 def dashboard_page_html(run_id: str) -> bytes:
     run_dir = RUNS_DIR / run_id
     if not run_dir.is_dir():
-        return f'<h1>未找到运行</h1><p>{run_id}</p>'.encode('utf-8')
+        return f'<h1>未找到运行</h1><p>{run_id}</p>'.encode()
     if not (run_dir / 'metrics.json').exists():
         progress = read_json(run_dir / 'progress.json') or {}
         status = progress.get('status') or 'incomplete'
@@ -741,7 +743,7 @@ def dashboard_page_html(run_id: str) -> bytes:
             '--equity', f'v1={run_dir / "daily_nav.csv"}',
             '--title', f'回测结果看板：{name}', '--out', str(tmp_html)]
     subprocess.run(args, cwd=str(ROOT), capture_output=True, timeout=180)
-    html = tmp_html.read_bytes() if tmp_html.exists() else '<h1>看板生成失败</h1>'.encode('utf-8')
+    html = tmp_html.read_bytes() if tmp_html.exists() else '<h1>看板生成失败</h1>'.encode()
     with _cache_lock:
         _dash_cache[run_id] = (key, html)
     return html
@@ -766,10 +768,10 @@ class Handler(BaseHTTPRequestHandler):
             logger.warning(f'工作台 HTTP 响应写入失败（客户端可能已断开）: {type(exc).__name__}: {exc}')
 
     def _json(self, payload, code: int = 200):
-        self._send(json.dumps(payload, ensure_ascii=False).encode('utf-8'),
+        self._send(json.dumps(payload, ensure_ascii=False).encode(),
                    'application/json; charset=utf-8', code)
 
-    def do_GET(self):  # noqa: N802
+    def do_GET(self) -> None:  # noqa: N802
         path = unquote(urlparse(self.path).path)
         try:
             if path == '/':
@@ -779,7 +781,7 @@ class Handler(BaseHTTPRequestHandler):
                 if theme in ('dark', 'light'):
                     page = page.replace('<html lang="zh-CN">',
                                         f'<html lang="zh-CN" data-theme="{theme}">')
-                self._send(page.encode('utf-8'))
+                self._send(page.encode())
             elif path == '/recipe':
                 self._send(_with_scrollbar_css(recipe_page_html()))
             elif path == '/list':
@@ -803,7 +805,7 @@ class Handler(BaseHTTPRequestHandler):
                 traceback.print_exc()
             self._send(b'internal error', 'text/plain; charset=utf-8', 500)
 
-    def do_POST(self):  # noqa: N802
+    def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
         length = int(self.headers.get('Content-Length') or 0)
         body = self.rfile.read(length) if length else b'{}'

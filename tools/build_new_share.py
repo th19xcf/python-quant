@@ -56,6 +56,7 @@ if str(ROOT) not in sys.path:
 
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic  # noqa: E402
 from src.data.manifest_refresh import sha256_file  # noqa: E402
+from src.data.dataset_contracts import write_dataset
 
 STORE = ROOT / 'data' / 'local_store'
 OUT = STORE / 'meta' / 'new_share.parquet'
@@ -331,7 +332,13 @@ def main(argv: list[str] | None = None) -> int:
     if OUT.is_file():
         old_sha = sha256_file(OUT)
         sidecar['previous_sha256'] = old_sha
-    write_parquet_atomic(frame, OUT)
+    try:
+        _rel = Path(OUT).resolve().relative_to((STORE).resolve()).as_posix()
+    except ValueError:
+        write_parquet_atomic(frame, OUT)
+    else:
+        write_dataset('new_share', frame, rel_path=_rel,
+                      root=STORE, writer='tools/build_new_share.py')
     sidecar['sha256'] = sha256_file(OUT)
     write_text_atomic(json.dumps(sidecar, ensure_ascii=False, indent=2), SIDECAR)
     _register(OUT, frame)

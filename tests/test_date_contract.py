@@ -33,16 +33,27 @@ CONTRACT_CASES = [
     ("np.datetime64", np.datetime64("2026-01-05")),
     ("str_iso", "2026-01-05"),
     ("str_20260105", "20260105"),
+    ("str_slash", "2026/01/05"),
+    ("int_20260105", 20260105),
+    ("np_int_20260105", np.int64(20260105)),
 ]
 
 INVALID_CASES = [("None", None), ("pd.NaT", pd.NaT),
                  ("np.datetime64_NaT", np.datetime64("NaT", "D")),
-                 ("bad_str", "not-a-date")]
+                 ("bad_str", "not-a-date"),
+                 ("bool", True), ("int_out_of_range", 738000),
+                 ("int_bad_month", 20261301)]
 
 #: 2026-11-06 契约扫描发现的 5 处差异已全部收敛到 src.utils.dates.as_date：
 #: cost_model(np.datetime64)、advice/pipeline 与 advice/regime(datetime/Timestamp)、
 #: fund_factors 与 share_capital('YYYYMMDD')。此后**不允许再出现任何差异**。
-KNOWN_DIVERGENCES: set[tuple[str, str]] = set()
+#: 例外：clean_set 刻意把整数解释为 date.toordinal() 序号（测试已锁定），且不接受斜杠，
+#: 故新增的整数 / 斜杠契约用例在该副本上属于已知差异。
+KNOWN_DIVERGENCES: set[tuple[str, str]] = {
+    ("src.data.quality.clean_set", "str_slash"),
+    ("src.data.quality.clean_set", "int_20260105"),
+    ("src.data.quality.clean_set", "np_int_20260105"),
+}
 
 #: 直接决定 PIT / ST / 存储口径的核心副本，不允许有任何已知差异
 CORE_MODULES = (

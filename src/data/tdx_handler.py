@@ -149,13 +149,13 @@ class TdxHandler(DataSourceBase):
         # 离线模式支持
         self.offline_mode = db_manager is None
 
-    def __del__(self):
+    def __del__(self) -> None:
         """
         析构函数，确保线程池正确关闭
         """
         self.close()
 
-    def close(self):
+    def close(self) -> None:
         """
         关闭处理器，清理资源
         """

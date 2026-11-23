@@ -192,16 +192,16 @@ class StockSearchDialog(QDialog):
             self.search_edit.setText(initial_text)
             self.perform_search()
 
-    def init_ui(self):
+    def init_ui(self) -> None:
         """初始化UI"""
         self.setWindowTitle("标的搜索")
         self.setFixedSize(500, 400)
 
         # 设置窗口标志，使其更像一个下拉框
         self.setWindowFlags(
-            Qt.Dialog |
-            Qt.FramelessWindowHint |
-            Qt.WindowStaysOnTopHint
+            Qt.WindowType.Dialog |
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.WindowStaysOnTopHint
         )
 
         layout = QVBoxLayout(self)
@@ -227,9 +227,9 @@ class StockSearchDialog(QDialog):
         self.result_table.setColumnCount(6)
         self.result_table.setHorizontalHeaderLabels(["代码", "类型", "名称", "拼音首字母", "市场", "分类"])
         use_interactive_columns(self.result_table)
-        self.result_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.result_table.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.result_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.result_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.result_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.result_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.result_table.itemDoubleClicked.connect(self.on_item_double_clicked)
 
         layout.addWidget(self.result_table)
@@ -258,13 +258,13 @@ class StockSearchDialog(QDialog):
         self.search_timer.setSingleShot(True)
         self.search_timer.timeout.connect(self.perform_search)
 
-    def load_all_instruments(self):
+    def load_all_instruments(self) -> None:
         """预加载本地名录（个股 + 指数 + 基金）到内存"""
         try:
             config = getattr(self.data_manager, 'config', None)
             self.all_instruments = load_instrument_records(config)
 
-            counts = {}
+            counts: dict[str, int] = {}
             for record in self.all_instruments:
                 counts[record['type']] = counts.get(record['type'], 0) + 1
             logger.info(f"预加载了 {len(self.all_instruments)} 个标的: {counts}")
@@ -284,7 +284,7 @@ class StockSearchDialog(QDialog):
         else:
             self.clear_results()
 
-    def perform_search(self):
+    def perform_search(self) -> None:
         """执行搜索"""
         search_text = self.search_edit.text().strip()
         if not search_text:
@@ -339,7 +339,7 @@ class StockSearchDialog(QDialog):
             self.tip_label.setStyleSheet("color: red; font-size: 12px;")
             self.ok_btn.setEnabled(False)
 
-    def clear_results(self):
+    def clear_results(self) -> None:
         """清空搜索结果"""
         # 手动释放QTableWidgetItem对象
         for row in range(self.result_table.rowCount()):
@@ -356,13 +356,13 @@ class StockSearchDialog(QDialog):
         """双击选中"""
         self.on_ok_clicked()
 
-    def on_ok_clicked(self):
+    def on_ok_clicked(self) -> None:
         """确定按钮点击"""
         current_row = self.result_table.currentRow()
         if current_row >= 0:
             item = self.result_table.item(current_row, 0)
             if item:
-                self.selected_stock = item.data(Qt.UserRole)
+                self.selected_stock = item.data(Qt.ItemDataRole.UserRole)
                 self.accept()
 
     def keyPressEvent(self, event: QKeyEvent):
@@ -415,7 +415,7 @@ class StockSearchDialog(QDialog):
         from PySide6.QtCore import QTimer
         QTimer.singleShot(10, self._set_cursor_position)
 
-    def _set_cursor_position(self):
+    def _set_cursor_position(self) -> None:
         """设置光标到文本末尾"""
         text = self.search_edit.text()
         if text:

@@ -67,7 +67,7 @@ class StockDataController:
         self.scanner = scanner
         self.renderer = renderer
 
-    def _clear_kline_display(self):
+    def _clear_kline_display(self) -> None:
         """清空K线显示区域，避免旧图表残留。"""
         try:
             if hasattr(self.window, '_clear_plots'):
@@ -338,8 +338,8 @@ class StockDataController:
             logger.exception(f"重新计算技术指标失败: {e}")
             return df
 
-    def _show_hs_aj_stock_data_impl(self):
+    def _show_hs_aj_stock_data_impl(self) -> None:
         self.window._show_stock_data_by_type_impl("全部A股")
 
-    def _refresh_stock_data_impl(self):
+    def _refresh_stock_data_impl(self) -> None:
          logger.info("Refresh requested")

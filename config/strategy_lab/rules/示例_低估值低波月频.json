@@ -20,10 +20,10 @@
   ],
   "cost": {
     "commission_rate": 0.00025,
-    "impact_coef": 0.015,
+    "impact_coef": 0.0,
     "min_commission": 5.0,
     "slippage_bps": 10.0,
-    "stamp_tax_basis": "fixed_0.1%"
+    "stamp_tax_basis": "historical"
   },
   "description": "60日波动率最低50% 且 EP 前30%，按 EP 降序取前 50，月频等权",
   "name": "示例_低估值低波月频",

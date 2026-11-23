@@ -36,8 +36,15 @@ def _pyproject() -> dict:
 
 
 def test_local_global_gate_pinned():
-    """本地全局门槛钉在实测向下取整值（2026-11-21 实测 71.04% → 71）"""
-    assert _pyproject()['tool']['coverage']['report']['fail_under'] == 71
+    """本地全局门槛钉在实测向下取整值。
+
+    2026-11-21 行口径实测 71.04% → 71；2026-11-23 开启 branch = true 后口径变为
+    「(语句 + 分支) 覆盖率」，同一套测试实测 68.05% → 68。这是度量口径切换后的
+    重新定基，不是下调门槛消红；此后仍只允许上调。
+    """
+    report = _pyproject()['tool']['coverage']
+    assert report['run'].get('branch') is True, '门槛 68 只对分支口径成立，branch 不得关闭'
+    assert report['report']['fail_under'] == 68
 
 
 def test_module_gates_registry_is_pinned():

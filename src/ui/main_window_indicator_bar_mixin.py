@@ -4,6 +4,7 @@
 主窗口指标选择栏 Mixin：指标按钮滚动区、指标菜单与指标点击处理。
 """
 
+from typing import Any
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
@@ -47,6 +48,9 @@ _SUB_MENU_EXCLUDED: frozenset[str] = frozenset({
 class MainWindowIndicatorBarMixin:
     """通达信风格指标选择栏与指标按钮交互。"""
 
+    # 由宿主 MainWindow（QMainWindow + 其余 mixin）提供；仅供类型检查，不在此创建
+    indicator_interaction_manager: Any
+
     window_menu: QMenu
 
     def _create_indicator_button(self, indicator_name, style_sheet, checkable=True, fixed_width=None, clicked_handler=None):
@@ -88,7 +92,7 @@ class MainWindowIndicatorBarMixin:
         separator.setStyleSheet("color: #666666; font-size: 12px;")
         return separator
 
-    def create_indicator_selection(self):
+    def create_indicator_selection(self) -> None:
         """
         创建指标选择窗口，类似通达信的指标选择栏
         """
@@ -121,7 +125,7 @@ class MainWindowIndicatorBarMixin:
         """
 
         # 保存指标按钮
-        self.indicator_buttons = {}
+        self.indicator_buttons: dict[str, Any] = {}
 
         # 创建可横向滚动的指标按钮区（含左侧固定按钮）
         self._create_indicator_scroll_area(indicator_layout, indicator_button_style)
@@ -394,7 +398,7 @@ class MainWindowIndicatorBarMixin:
         self.minus_btn.setToolTip(f"柱体数减半，不低于 {MIN_BAR_COUNT} 根")
         indicator_layout.addWidget(self.minus_btn)
 
-    def create_indicator_menu(self):
+    def create_indicator_menu(self) -> None:
         """
         创建指标功能菜单
         """

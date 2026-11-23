@@ -47,6 +47,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic  # noqa: E402
 from src.data.staging import PROJECT_ROOT, staging_dir  # noqa: E402
+from src.data.dataset_contracts import write_dataset_at
 
 TASK_NAME = 'session_ledger_20261113'
 FORMAL_REL = Path('meta') / 'trading_calendar'
@@ -416,7 +417,8 @@ def _manifest(root: Path, frame: pl.DataFrame, summary: dict[str, Any],
 def _promote(ledger: Path, manifest_path: Path, root: Path) -> None:
     target_dir = root / FORMAL_REL
     target_dir.mkdir(parents=True, exist_ok=True)
-    write_parquet_atomic(pl.read_parquet(ledger), target_dir / LEDGER_NAME)
+    write_dataset_at(pl.read_parquet(ledger), target_dir / LEDGER_NAME,
+                     root=root, writer='tools/build_session_ledger.py')
     write_text_atomic(manifest_path.read_text(encoding='utf-8'), target_dir / 'manifest.json')
     if _sha256(target_dir / LEDGER_NAME) != _sha256(ledger):
         raise RuntimeError('台账提升后 SHA256 不一致')

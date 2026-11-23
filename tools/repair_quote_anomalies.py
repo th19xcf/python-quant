@@ -60,6 +60,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data.atomic_write import write_parquet_atomic  # noqa: E402
+from src.data.dataset_contracts import contract_for_path, write_dataset  # noqa: E402
 
 DEFAULT_ROOT = PROJECT_ROOT / 'data' / 'local_store'
 
@@ -300,7 +301,14 @@ def main(argv: list[str] | None = None) -> int:
         if not changed:
             continue
         if args.commit:
-            _write_atomic(path, fixed)
+            contract = contract_for_path(path, root)
+            if contract is None:
+                _write_atomic(path, fixed)
+            else:
+                write_dataset(contract.key, fixed,
+                              rel_path=path.relative_to(root).as_posix(),
+                              root=root,
+                              writer='tools/repair_quote_anomalies.py')
         for key, value in counts.items():
             totals[key] += value
         per_code.append({'ts_code': code, 'rows_before': before,

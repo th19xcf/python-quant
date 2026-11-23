@@ -16,7 +16,7 @@ class MarketTableRenderer:
     def __init__(self, window):
         self.window = window
 
-    def _clear_market_table_display(self):
+    def _clear_market_table_display(self) -> None:
         """清空行情表格，避免旧菜单数据残留。"""
         if not hasattr(self.window, 'stock_table') or self.window.stock_table is None:
             return

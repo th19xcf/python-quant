@@ -197,10 +197,24 @@ def test_optimize_strategy_enforces_oos_by_default():
     )
     assert 'oos_validation' in default_result
     assert default_result['oos_validation']['enabled'] is True
-    # 未指定 walk_forward_windows 时必须显式标记未启用并给出原因
+    # 默认开启 3 折滚动验证；该样本若切不出各折，必须显式标记未启用并给出原因
     walk_forward = default_result['oos_validation']['walk_forward']
-    assert walk_forward['enabled'] is False
-    assert 'walk_forward_windows' in walk_forward['reason']
+    assert default_result['leakage_guard']['walk_forward_windows'] == 3
+    if not walk_forward['enabled']:
+        assert walk_forward.get('reason')
+
+    engine = BacktestEngine(data)
+    engine.set_strategy(MAStrategy(short_window=5, long_window=20))
+    from src.backtest.engine.backtest_engine import WalkForwardDisabledWarning
+
+    with pytest.warns(WalkForwardDisabledWarning):  # 显式关闭必须告警
+        single = engine.optimize_strategy(
+            {'short_window': [3]}, initial_capital=1_000_000.0, max_workers=1,
+            walk_forward_windows=0,
+        )
+    # 显式关闭时必须标记未启用并给出原因（历史行为）
+    assert single['oos_validation']['walk_forward']['enabled'] is False
+    assert 'walk_forward_windows' in single['oos_validation']['walk_forward']['reason']
 
     engine = BacktestEngine(data)
     engine.set_strategy(MAStrategy(short_window=5, long_window=20))

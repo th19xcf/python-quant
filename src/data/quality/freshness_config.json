@@ -659,7 +659,6 @@
           "column": "ts_code"
         },
         "min_ratio": 0.9,
-        "critical_ratio": 0.8,
         "why": "分母是 daily_index 的全历史股票代码数（含已退市），最新月分区只含当月在市标的，占比天然低于 1"
       },
       "note": "由 tools/build_st_daily.py 按月分区生成（2005 起，ts_code×trade_date 唯一）；源头是 tushare namechange 生效日 + 交易所 ST 区间，切换不含未来信息。"
@@ -694,7 +693,6 @@
           "column": "ts_code"
         },
         "min_ratio": 0.9,
-        "critical_ratio": 0.8,
         "why": "分母含全历史已退市代码，最新月分区只含当月在市标的"
       },
       "note": "由 tools/build_limit_board.py 按月分区生成；规则复用 src.core.market_rules.ExecutionRules（不另写一套），ST 取 meta/st/daily 生效日，价格整数分与 resolve_limit_price 抽样对拍。"

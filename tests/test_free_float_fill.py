@@ -131,7 +131,7 @@ def test_check_plan_rejects_broken_fallback() -> None:
 # ----------------------------------------------------------------------
 def _em(rows: list[tuple[str, date, int | None, int | None]]) -> pl.DataFrame:
     """东财口径帧；``_em_matched`` 与 ``load_em()`` 一致，用来区分「未配对」与「配对但该字段为空」。"""
-    return pl.DataFrame(rows, schema={
+    return pl.DataFrame(rows, orient='row', schema={
         'ts_code': pl.Utf8, 'effective_date': pl.Date,
         'em_float': pl.Int64, 'em_free': pl.Int64}).with_columns(
         pl.lit(True).alias('_em_matched'))

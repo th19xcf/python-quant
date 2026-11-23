@@ -56,6 +56,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.data.dataset_contracts import contract_for_path, write_dataset
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic  # noqa: E402
 from src.data.staging import staging_dir_for_store  # noqa: E402
 
@@ -388,7 +389,14 @@ def publish(cand: pl.DataFrame, *, yes: bool = False, stamp: str | None = None,
         moved[p.name] = before
     report['dg11_moved_sha256'] = moved
 
-    write_parquet_atomic(final, target)
+    _root = Path(__file__).resolve().parents[1] / 'data' / 'local_store'
+    _contract = contract_for_path(target, _root)
+    if _contract is None:
+        write_parquet_atomic(final, target)
+    else:
+        write_dataset(_contract.key, final,
+                      rel_path=Path(target).resolve().relative_to(_root.resolve()).as_posix(),
+                      root=_root, writer='tools/treasury_yield.py')
     write_text_atomic(final.write_csv(), target_csv)
     report['final_sha256'] = sha256(target)
 

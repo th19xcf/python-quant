@@ -9,7 +9,7 @@ r"""外部依赖数据契约占位（停复牌 / 行业 PIT / 指数成分历史
 - 「停牌不可买」——没有停复牌日表，撮合引擎只能按有行情即认为可交易；
 - 「行业中性化 / 分组回测」——`meta/industry/` 只有近期日快照；按生效日的
   PIT 区间表另有申万官方来源 `meta/industry_pit/industry_pit_sw.parquet`
-  （`in_date`/`out_date`），契约已改挂该表；同目录的 `industry_pit.parquet`
+  （`in_date`/`out_date`），契约已改挂该表；同目录的 `industry_snapshot_recent.parquet`
   是通达信近期快照视图，不得用于历史回溯；
 - 「指数成分内选股」——没有成分进出区间，用当前成分回测历史会有成分股
   幸存者偏差。
@@ -79,7 +79,7 @@ CONTRACTS: tuple[ContractSpec, ...] = (
         key='industry_pit',
         label='行业分类 PIT 区间表',
         # 唯一可回溯的行业来源：申万官方分类变动表（`in_date`/`out_date` 区间）。
-        # 同目录的 `industry_pit.parquet` 是通达信 T 代码树，由本地 6 份日快照
+        # 同目录的 `industry_snapshot_recent.parquet` 是通达信 T 代码树，由本地 6 份日快照
         # 做变更点抽取而来（2026-11-03 起、`end_date` 全空），实质是近期快照
         # 视图，已降级为非正式 PIT，不得作为本契约的产物。
         # 独立目录：`meta/industry/` 下的 `industry_*.parquet` 是日快照，

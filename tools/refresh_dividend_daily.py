@@ -39,6 +39,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic  # noqa: E402
+from src.data.dataset_contracts import write_dataset  # noqa: E402
 from src.data.local_store.fund_factors import (  # noqa: E402
     DIVIDEND_COLUMNS,
     FUND_DIVIDEND_FILENAME,
@@ -160,6 +161,7 @@ def refresh_fund(target: date, start: date, *, dry_run: bool) -> dict[str, Any]:
     stage = staging_dir('dividend_daily', with_date=True)
     stage.mkdir(parents=True, exist_ok=True)
     stage_path = stage / 'fund_dividend_candidate.parquet'
+    # 候选暂存文件，非数据集
     write_parquet_atomic(candidate, stage_path, compression='zstd', statistics=True)
 
     back = pl.read_parquet(stage_path)
@@ -170,7 +172,9 @@ def refresh_fund(target: date, start: date, *, dry_run: bool) -> dict[str, Any]:
     assert back_old.equals(old.sort(key)), '基金分红既有行被改动'
 
     _snapshot(table, 'fund_dividend', old)
-    write_parquet_atomic(candidate, table, compression='zstd', statistics=True)
+    write_dataset('fund_dividend', candidate,
+                  rel_path=table.relative_to(STORE).as_posix(), root=STORE,
+                  writer='tools/refresh_dividend_daily.py')
     assert pl.read_parquet(table).height == candidate.height, '基金分红替换后行数不一致'
 
     codes = sorted(add['ts_code'].unique().to_list())
@@ -279,11 +283,14 @@ def refresh_stock(target: date, start: date, *, dry_run: bool) -> dict[str, Any]
     stage = staging_dir('dividend_daily', with_date=True)
     stage.mkdir(parents=True, exist_ok=True)
     stage_path = stage / 'stock_dividend_candidate.parquet'
+    # 候选暂存文件，非数据集
     write_parquet_atomic(final, stage_path, compression='zstd', statistics=True)
     assert pl.read_parquet(stage_path).height == final.height, '个股分红候选回读行数不一致'
 
     _snapshot(table, 'stock_dividend', old)
-    write_parquet_atomic(final, table, compression='zstd', statistics=True)
+    write_dataset('stock_dividend', final,
+                  rel_path=table.relative_to(STORE).as_posix(), root=STORE,
+                  writer='tools/refresh_dividend_daily.py')
     assert pl.read_parquet(table).height == final.height, '个股分红替换后行数不一致'
 
     codes = sorted({code for code, _ in set(new_events) - set(old_events)})

@@ -125,15 +125,15 @@ class FundSection:
     # 入口
     # ------------------------------------------------------------------
 
-    def show_etf_funds(self):
+    def show_etf_funds(self) -> None:
         """显示 ETF 基金数据。"""
         self._show_funds('ETF')
 
-    def show_lof_funds(self):
+    def show_lof_funds(self) -> None:
         """显示 LOF 基金数据。"""
         self._show_funds('LOF')
 
-    def show_graded_funds(self):
+    def show_graded_funds(self) -> None:
         """显示分级基金数据。"""
         self._show_funds('分级')
 

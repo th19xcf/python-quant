@@ -229,8 +229,9 @@ def process_chunk(frame: pl.DataFrame, shares: pl.DataFrame) -> pl.DataFrame:
         return _empty_part()
 
     frame = frame.sort(['ts_code', 'date']).join_asof(
-        shares, left_on='date', right_on='effective_date',
-        by='ts_code', strategy='backward')
+        shares.sort(['ts_code', 'effective_date']), left_on='date',
+        right_on='effective_date', by='ts_code', strategy='backward',
+        check_sortedness=False)  # 两侧已按 (by, on) 排序；by 分组下 polars 无法自检，显式关闭告警
 
     frame = frame.with_columns([
         (pl.col('free_float_share_filled').cast(pl.Float64) * pl.col('close'))
@@ -1105,7 +1106,8 @@ def apply(panel: pl.DataFrame, store: Path, stage: Path, *,
             shutil.copy2(manifest_path(store), backup_dir / 'manifest.json')
         logger.info(f'[state_vector] 旧表与旧 manifest 已备份 -> {backup_dir}')
 
-    write_parquet_atomic(panel, target)
+    from src.data.dataset_contracts import write_dataset_at  # noqa: PLC0415
+    write_dataset_at(panel, target, root=store, writer='tools/build_state_vector.py')
     written = pl.read_parquet(target)
     assert written.height == panel.height, '落盘行数与候选不一致'
     assert written.equals(panel), '落盘内容与候选不一致'

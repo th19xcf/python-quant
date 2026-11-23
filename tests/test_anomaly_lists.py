@@ -195,3 +195,44 @@ def test_refresh_keeps_derived_only_when_registry_missing(tmp_path) -> None:
     assert stats['preserved'] == 0
     keys = _span_keys(pl.read_csv(lists / 'placeholder_quote_codes.csv'))
     assert ('160311.SZ', '2007-05-08', '2007-05-11') not in keys
+
+
+def test_refresh_replaces_span_when_end_moves_instead_of_duplicating(tmp_path) -> None:
+    """2026-11-20 事故回归：同一 ``ts_code + start`` 的段 end 前移后重跑，
+    必须用派生段替换旧段，不得新旧并存；类别沿用旧段，registry 同步更新。"""
+    store = tmp_path / 'store'
+    _make_store(store)
+    lists = tmp_path / 'lists'
+    lists.mkdir()
+    # 上一版：159041 尾部占位只到 11-02（本次派生会前移到 11-03）
+    (lists / 'placeholder_quote_codes.csv').write_text(
+        'ts_code,start,end,rows,total,full\n'
+        '159041.SZ,2026-11-02,2026-11-02,1,2,false\n'
+        '160217.SZ,2019-09-05,2019-09-17,2,2,true\n',
+        encoding='utf-8')
+    registry_dir = store / 'meta' / 'anomalies'
+    registry_dir.mkdir(parents=True)
+    registry = registry_dir / 'fund_pseudo_registry.json'
+    registry.write_text(json.dumps({'kinds': {
+        '159041.SZ|2026-11-02|2026-11-02': 'post_delist',
+        '160217.SZ|2019-09-05|2019-09-17': 'placeholder',
+    }}), encoding='utf-8')
+
+    for _ in range(2):  # 连跑两次：第二次必须与第一次逐字节一致（幂等）
+        result = refresh_anomaly_lists(store, list_dir=lists)
+        assert result['status'] == 'ok'
+
+    rows = pl.read_csv(lists / 'placeholder_quote_codes.csv')
+    tail = rows.filter(pl.col('ts_code') == '159041.SZ')
+    assert tail.height == 1, '同一 start 的段不得新旧并存'
+    assert str(tail['end'][0]) == '2026-11-03'
+    assert rows.select(['ts_code', 'start']).is_duplicated().sum() == 0
+
+    doc = json.loads(registry.read_text(encoding='utf-8'))
+    assert set(doc['kinds']) == {f"{r['ts_code']}|{r['start']}|{r['end']}"
+                                 for r in rows.iter_rows(named=True)}
+    # 类别沿用同一 start 的旧登记，不被重置成 placeholder
+    assert doc['kinds']['159041.SZ|2026-11-02|2026-11-03'] == 'post_delist'
+    assert doc['registered_rows_after'] == int(rows['rows'].sum())
+    assert doc['csv_rows'] == rows.height
+

@@ -13,7 +13,7 @@
 （如 WR 正负号、OBV cumsum 方法名、to_float32 精度丢失等）。
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Callable
 
 import polars as pl
 from loguru import logger
@@ -27,8 +27,8 @@ _BASE_COLS = ['date', 'open', 'high', 'low', 'close', 'volume']
 class IncrementalCalculator:
     """增量计算类，提供技术指标的增量计算功能"""
 
-    def __init__(self):
-        self.supported_indicators = {
+    def __init__(self) -> None:
+        self.supported_indicators: Dict[str, Callable[..., pl.DataFrame]] = {
             'ma': self.incremental_calculate_ma,
             'vol_ma': self.incremental_calculate_vol_ma,
             'macd': self.incremental_calculate_macd,

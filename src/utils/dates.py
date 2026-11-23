@@ -28,11 +28,45 @@ def _invalid(value: Any, strict: bool) -> date | None:
     return None
 
 
+def _from_int(value: Any, strict: bool) -> date | None:
+    """整数 ``YYYYMMDD`` → date；位数不对或月日非法按无效处理。"""
+    number = int(value)
+    if not 10_000_101 <= number <= 99_991_231:
+        return _invalid(value, strict)
+    try:
+        return datetime.strptime(str(number), "%Y%m%d").date()
+    except ValueError:
+        return _invalid(value, strict)
+
+
+def _from_str(value: str, strict: bool) -> date | None:
+    """``YYYY-MM-DD`` / ``YYYY/MM/DD`` / ``YYYYMMDD``（容许尾随时间部分）→ date。"""
+    text = value.strip()
+    for fmt, width in (("%Y-%m-%d", 10), ("%Y/%m/%d", 10), ("%Y%m%d", 8)):
+        try:
+            return datetime.strptime(text[:width], fmt).date()
+        except ValueError:
+            continue
+    return _invalid(value, strict)
+
+
+def _from_duck(value: Any, strict: bool) -> date | None:
+    """Polars 等第三方时间戳：鸭子类型兜底（P0-1 原有行为，保留兼容）。"""
+    if hasattr(value, "date") and callable(value.date):
+        try:
+            converted = value.date()
+        except (TypeError, ValueError):
+            return _invalid(value, strict)
+        if isinstance(converted, date) and not isinstance(converted, datetime):
+            return converted
+    return _invalid(value, strict)
+
+
 def as_date(value: Any, *, strict: bool = False) -> date | None:
     """把常见日期/时间戳表示归一为 ``datetime.date``；失败返回 ``None``。
 
     支持：``date``、``datetime``、``pd.Timestamp``、``np.datetime64``、
-    ``'YYYY-MM-DD'``、``'YYYYMMDD'``、带 ``.date()`` 的第三方时间戳对象。
+    ``'YYYY-MM-DD'``、``'YYYY/MM/DD'``、``'YYYYMMDD'``、整数 ``YYYYMMDD``、带 ``.date()`` 的第三方时间戳对象。
     ``strict=True`` 时对无效输入抛 ``ValueError`` 而非返回 ``None``。
     """
     if value is None or value is pd.NaT:
@@ -50,20 +84,9 @@ def as_date(value: Any, *, strict: bool = False) -> date | None:
         return value.date()
     if isinstance(value, date):
         return value
+    # 整数 YYYYMMDD（parquet / 数据库常见存储形式）；bool 是 int 子类，必须排除
+    if isinstance(value, (int, np.integer)) and not isinstance(value, bool):
+        return _from_int(value, strict)
     if isinstance(value, str):
-        text = value.strip()
-        for fmt, width in (("%Y-%m-%d", 10), ("%Y%m%d", 8)):
-            try:
-                return datetime.strptime(text[:width], fmt).date()
-            except ValueError:
-                continue
-        return _invalid(value, strict)
-    # Polars 等第三方时间戳：鸭子类型兜底（P0-1 原有行为，保留兼容）
-    if hasattr(value, "date") and callable(value.date):
-        try:
-            converted = value.date()
-        except (TypeError, ValueError):
-            return _invalid(value, strict)
-        if isinstance(converted, date) and not isinstance(converted, datetime):
-            return converted
-    return _invalid(value, strict)
+        return _from_str(value, strict)
+    return _from_duck(value, strict)

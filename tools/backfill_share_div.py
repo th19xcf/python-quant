@@ -58,6 +58,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data.atomic_write import write_text_atomic  # noqa: E402
+from src.data.dataset_contracts import write_dataset
 
 DEFAULT_DIV = PROJECT_ROOT / 'data/local_store/factors/stock_dividend.parquet'
 DEFAULT_SHARES = PROJECT_ROOT / 'data/local_store/meta/factors/stock_shares.parquet'
@@ -153,7 +154,7 @@ def _asof_snapshot(cand: pl.DataFrame, shares: pl.DataFrame, key: str,
     })
     return cand.sort(['ts_code', key]).join_asof(
         table, left_on=key, right_on=f'effective_date{suffix}', by='ts_code',
-        strategy='backward')
+        strategy='backward', check_sortedness=False)  # 两侧已按 (by, on) 排序；by 分组下 polars 无法自检，显式关闭告警
 
 
 def scan(frame: pl.DataFrame, shares: pl.DataFrame) -> list[dict[str, Any]]:
@@ -421,7 +422,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     backup = backup_file(args.div, args.backup_dir)
-    write_parquet_atomic(filled, args.div)
+    try:
+        _rel = Path(args.div).resolve().relative_to((Path(__file__).resolve().parents[1] / 'data' / 'local_store').resolve()).as_posix()
+    except ValueError:
+        write_parquet_atomic(filled, args.div)
+    else:
+        write_dataset('stock_dividend', filled, rel_path=_rel,
+                      root=Path(__file__).resolve().parents[1] / 'data' / 'local_store', writer='tools/backfill_share_div.py')
     print(f'已写入 {args.div}：{filled.height:,} 行；备份 {backup}')
     return 0
 

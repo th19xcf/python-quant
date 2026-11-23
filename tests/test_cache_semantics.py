@@ -75,6 +75,10 @@ def test_week_frequency_is_aggregated_not_silently_daily(monkeypatch):
         'volume': [10.0, 20.0, 30.0], 'amount': [100.0, 200.0, 300.0],
     })
     monkeypatch.setattr(fetcher, '_get_data_from_database', lambda *a, **k: daily)
+    # 2026-11-11 起读侧默认不回退远程库；本用例专测「库里取到日线后聚合周线」，显式打开
+    from src.data.managers import data_fetcher as fetcher_module
+    monkeypatch.setattr(fetcher_module, 'remote_database_enabled', lambda config: True)
+    monkeypatch.setattr(fetcher, '_db_result_is_partial', lambda *a, **k: False)
 
     from src.data.data_cache import global_data_cache
     global_data_cache.clear()

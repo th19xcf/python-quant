@@ -57,6 +57,7 @@
 
 from __future__ import annotations
 
+from typing import cast
 import argparse
 import json
 import sys
@@ -404,7 +405,7 @@ def _valuation_row(store_root: Path, spec: TableSpec, quotes_end_date: date,
     if data_end == quotes_end_date and quotes_dir.is_dir():
         registered = set(
             pl.scan_parquet(path)
-            .filter(pl.col(spec.date_column) == quotes_end_date)
+            .filter(pl.col(cast(str, spec.date_column)) == quotes_end_date)
             .select('ts_code').collect()['ts_code'].to_list())
         candidates = [item for item in quotes_dir.rglob('*.parquet')
                       if item.stem not in registered]
@@ -469,6 +470,7 @@ def _date_row(spec: TableSpec, path: Path, quotes_end_date: date,
         if refresh is None:
             return FreshnessRow(spec.label, spec.rel_path, spec.kind, data_end,
                                 quotes_end_date, None, 'error', '文件刷新日期不可读')
+        lag: int | None
         if spec.lag_unit == 'calendar':
             lag = max((quotes_end_date - refresh).days, 0)
             verdict = classify_calendar_lag(lag)

@@ -24,7 +24,7 @@ r"""停更 / 退市标的权威状态表。
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +32,7 @@ import polars as pl
 from loguru import logger
 
 from src.data.atomic_write import write_parquet_atomic
+from src.utils.dates import as_date
 
 #: 项目根目录
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -62,17 +63,8 @@ def status_path(store_root: Path | str = DEFAULT_ROOT) -> Path:
 
 
 def _as_date(value: Any) -> date | None:
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    text = str(value).strip()[:10]
-    try:
-        return date.fromisoformat(text)
-    except ValueError:
-        return None
+    """委托统一真源 ``src.utils.dates.as_date``（含整数 YYYYMMDD / 斜杠 / NaT 归一）。"""
+    return as_date(value)
 
 
 def build_stale_status(store_root: Path | str = DEFAULT_ROOT,

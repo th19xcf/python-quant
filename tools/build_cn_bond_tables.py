@@ -33,6 +33,7 @@ from pathlib import Path
 
 import polars as pl
 
+from src.data.dataset_contracts import contract_for_path, write_dataset
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -142,8 +143,22 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     MACRO.mkdir(parents=True, exist_ok=True)
-    write_parquet_atomic(idx, MACRO / 'cn_bond_index.parquet')
-    write_parquet_atomic(yld, MACRO / 'cn_treasury_yield_curve.parquet')
+    _root = Path(__file__).resolve().parents[1] / 'data' / 'local_store'
+    _contract = contract_for_path(MACRO / 'cn_bond_index.parquet', _root)
+    if _contract is None:
+        write_parquet_atomic(idx, MACRO / 'cn_bond_index.parquet')
+    else:
+        write_dataset(_contract.key, idx,
+                      rel_path=Path(MACRO / 'cn_bond_index.parquet').resolve().relative_to(_root.resolve()).as_posix(),
+                      root=_root, writer='tools/build_cn_bond_tables.py')
+    _root = Path(__file__).resolve().parents[1] / 'data' / 'local_store'
+    _contract = contract_for_path(MACRO / 'cn_treasury_yield_curve.parquet', _root)
+    if _contract is None:
+        write_parquet_atomic(yld, MACRO / 'cn_treasury_yield_curve.parquet')
+    else:
+        write_dataset(_contract.key, yld,
+                      rel_path=Path(MACRO / 'cn_treasury_yield_curve.parquet').resolve().relative_to(_root.resolve()).as_posix(),
+                      root=_root, writer='tools/build_cn_bond_tables.py')
 
     now = datetime.now().isoformat(timespec='seconds')
     idx_manifest = {

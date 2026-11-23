@@ -20,14 +20,14 @@ from src.data.quality.freshness import (
 )
 
 #: 生产配置的条目快照（防止误删条目；新增数据集时同步更新本表）
+#: 2026-11-21 起新增 new_share / st_daily / limit_board_daily / stock_margin_detail
 EXPECTED_KEYS = (
     'quotes_stock', 'quotes_index', 'quotes_fund', 'valuation_daily',
-    'financials_income', 'financials_balance', 'financials_cashflow',
-    'events', 'names_json', 'stock_basic', 'stock_turnover',
-    'stock_adj_factor', 'stock_dividend', 'fund_dividend',
-    'fund_share_change', 'stock_shares', 'breadth_daily',
-    'index_valuation',
-    'st_status', 'industry',
+    'financials_income', 'financials_balance', 'financials_cashflow', 'events',
+    'names_json', 'stock_basic', 'new_share', 'stock_turnover',
+    'stock_adj_factor', 'stock_dividend', 'fund_dividend', 'fund_share_change',
+    'stock_shares', 'breadth_daily', 'index_valuation', 'st_status',
+    'st_daily', 'limit_board_daily', 'industry', 'stock_margin_detail',
 )
 
 THRESHOLD_FIELDS = ('min_ratio', 'critical_ratio')

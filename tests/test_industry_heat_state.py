@@ -155,11 +155,11 @@ def test_headless_page_renders_table(qapp):
     try:
         page.render_state(state)
         assert page.heat_table.rowCount() == len(state.industries)
-        assert page.heat_table.columnCount() == 4
+        assert page.heat_table.columnCount() == 5  # 第 0 列为「序号」列（SizedTableMixin 统一插入），数据 4 列 + 序号 1 列
         assert page.heat_table.showGrid()
         assert '最热' in page.hottest_label.text()
         assert '最冷' in page.coldest_label.text()
         assert '判定完成' in page.status_label.text()
-        assert page.heat_table.item(0, 2).text() in HEAT_LABELS
+        assert page.heat_table.item(0, 3).text() in HEAT_LABELS  # 序号列使数据列右移 1
     finally:
         page.deleteLater()

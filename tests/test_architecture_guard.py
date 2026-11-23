@@ -216,6 +216,50 @@ def test_ui_has_no_tdx_binary_parser_copy():
 
 STRATEGY_ROOT = REPO_ROOT / 'src' / 'backtest' / 'strategies'
 
+#: 整段向量化入口：每次回测只调用一次、对整列计算，不是逐 Bar 回调。
+VECTORIZED_ENTRYPOINTS = frozenset({'generate_signals_vectorized', 'build_signal_frame'})
+#: 逐 Bar 回调入口：引擎每根 K 线调用一次，必须只读预计算列。
+PER_BAR_ENTRYPOINTS = frozenset({'generate_signal'})
+
+
+def _call_graph(tree: ast.AST) -> dict[str, set[str]]:
+    """模块内「函数名 → 直接调用的同模块函数名」（self.x() / x() 两种写法）。"""
+    defs = {n.name: n for n in ast.walk(tree)
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    graph: dict[str, set[str]] = {}
+    for name, node in defs.items():
+        called = set()
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Call):
+                target = (inner.func.attr if isinstance(inner.func, ast.Attribute)
+                          else getattr(inner.func, 'id', None))
+                if target in defs and target != name:
+                    called.add(target)
+        graph[name] = called
+    return graph
+
+
+def _reachable(graph: dict[str, set[str]], roots: frozenset[str]) -> set[str]:
+    seen: set[str] = set()
+    stack = [r for r in roots if r in graph]
+    while stack:
+        name = stack.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        stack.extend(graph.get(name, ()))
+    return seen
+
+
+def _vectorized_only_methods(tree: ast.AST) -> set[str]:
+    """只被整段向量化入口（直接或间接）调用、且逐 Bar 入口够不到的方法。
+
+    这些方法的循环 / rolling 是 O(N) 的一次性整列计算，不属于守卫要拦的退化；
+    逐 Bar 入口能走到的方法仍然全部扫描，一个都不放过。
+    """
+    graph = _call_graph(tree)
+    return _reachable(graph, VECTORIZED_ENTRYPOINTS) - _reachable(graph, PER_BAR_ENTRYPOINTS)
+
 
 def find_non_vectorized_signal_patterns(source: str, rel_path: str) -> list:
     """
@@ -228,11 +272,14 @@ def find_non_vectorized_signal_patterns(source: str, rel_path: str) -> list:
         list: (rel_path, 方法名, 违规形态, 行号)
     """
     tree = ast.parse(source)
+    vectorized_only = _vectorized_only_methods(tree)
     violations = []
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         if node.name in ('__init__', 'set_params'):
+            continue
+        if node.name in vectorized_only:
             continue
         for inner in ast.walk(node):
             if isinstance(inner, (ast.For, ast.While)):
@@ -276,6 +323,23 @@ def test_strategy_signals_are_vectorized():
     )
     kinds = {kind for _, _, kind, _ in find_non_vectorized_signal_patterns(bad_source, 'bad.py')}
     assert {'loop', 'slice', 'rolling_mean'} <= kinds
+
+    # 自测：向量化入口专用的辅助方法放行；逐 Bar 入口能走到的辅助方法照样拦截
+    mixed_source = (
+        'class Mixed:\n'
+        '    def generate_signals_vectorized(self, df):\n'
+        '        return self._prep(df)\n'
+        '    def _prep(self, df):\n'
+        '        for x in df:\n'
+        '            pass\n'
+        '    def generate_signal(self, row, index):\n'
+        '        return self._peek(row)\n'
+        '    def _peek(self, row):\n'
+        '        return row["close"][:3]\n'
+    )
+    flagged = {name for _, name, _, _ in
+               find_non_vectorized_signal_patterns(mixed_source, 'mixed.py')}
+    assert flagged == {'_peek'}, flagged
 
 
 if __name__ == '__main__':

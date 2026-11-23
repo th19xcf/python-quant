@@ -78,22 +78,26 @@ FIN = ROOT / 'data/local_store/meta/financials'
 
 
 class RoundTrip13bp(CostModel):
-    """固定 0.13% 往返成本：佣金 1.5bp/边 + 卖出印花税 10bp，其余项归零。"""
+    """往返成本（默认 16.5bp 含冲击）：佣金 1.5bp/边 + 卖出印花税 5bp，
+    余额按双边滑点计（2026-11-23 修正：原实现 slippage_rate 硬返回 0，
+    导致 bps 参数失效、实际恒为 13bp）。"""
 
-    def __init__(self) -> None:
+    def __init__(self, bps: float = 16.5) -> None:
+        self.round_trip_bps = bps
+        self.slippage_side = max(0.0, bps / 1e4 - 2 * 0.00015 - 0.0005) / 2
         super().__init__({
             'commission_rate': 0.00015, 'min_commission': 5.0,
-            'stamp_tax_rate': 0.001, 'transfer_fee_rate': 0.0,
-            'slippage': 0.0, 'impact_coef': 0.0,
+            'stamp_tax_rate': 0.0005, 'transfer_fee_rate': 0.0,
+            'slippage': self.slippage_side, 'impact_coef': 0.0,
         })
 
     def slippage_rate(self, ts_code: str = '', adv20: float | None = None,
                       total_mv_yi: float | None = None,
                       category: str | None = None) -> float:
-        return 0.0
+        return self.slippage_side
 
     def _stamp_tax_rate(self, trade_date: Any, side: str, ts_code: str = '') -> float:
-        return 0.0 if side != 'sell' else 0.001
+        return 0.0 if side != 'sell' else 0.0005
 
     def _transfer_fee_rate(self, trade_date: Any, ts_code: str = '') -> float:
         return 0.0
@@ -263,10 +267,20 @@ def pick(path_scores: Dict[str, Dict[str, float]], dims: List[str],
 
 
 def build_paths(months: List[date], signals: Dict[date, Dict[str, Dict[str, float]]],
-                dims: List[str], top_n: int) -> Dict[date, List[str]]:
+                dims: List[str], top_n: int, screen=None) -> Dict[date, List[str]]:
+    """打分 → （可选）建仓前筛除 → 取前 N。
+
+    ``screen(day, codes) -> set[str]`` 在评分之后、``pick`` 之前调用，
+    返回要剔除的代码；缺省 None 时与未接入筛选逐值一致。
+    """
     path = {}
     for m in months:
-        names = pick(signals[m], dims, top_n) if m in signals else []
+        scores = signals[m] if m in signals else {}
+        if screen is not None and scores:
+            dropped = screen(m, list(scores))
+            if dropped:
+                scores = {c: v for c, v in scores.items() if c not in dropped}
+        names = pick(scores, dims, top_n)
         path[m] = names
     return path
 

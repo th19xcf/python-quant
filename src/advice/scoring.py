@@ -31,7 +31,8 @@ def _winsor_columns(tier: TierConfig) -> list[str]:
 
 
 def attach_score(frame: pl.DataFrame, tier: TierConfig, *,
-                 min_history_rows: int = 0) -> pl.DataFrame:
+                 min_history_rows: int = 0,
+                 min_coverage: float = 0.0) -> pl.DataFrame:
     """给因子面板追加 ``score`` 与 ``score_percentile``。
 
     流程：按交易日去极值（1%/99%）→ 标准化 → 按档位权重/方向加权求和
@@ -40,8 +41,13 @@ def attach_score(frame: pl.DataFrame, tier: TierConfig, *,
     缺失一律走 reweight：
     - 缺失不填 0、不填均值；该票在该因子的权重从分母剔除，用剩余因子归一；
     - 历史不足 ``min_history_rows`` 或停牌（volume<=0）的票，因子先置空；
-    - 全部因子缺失时 score 为 null，不参与候选。
+    - 全部因子缺失时 score 为 null，不参与候选；
+    - ``min_coverage``：有效因子的权重占档位总权重低于该比例时 score 置 null
+      （默认 0 = 只要有一个因子就打分，保持旧行为）。防止新股/复牌票只剩一两个
+      短窗口因子时，被重新归一放大成 100% 权重、靠几根 K 线拿到高分。
     """
+    if not 0.0 <= min_coverage <= 1.0:
+        raise ValueError(f"min_coverage 必须在 [0, 1]，实际 {min_coverage}")
     columns = [spec.column for spec in tier.factors]
     missing = [column for column in columns if column not in frame.columns]
     if missing:
@@ -69,8 +75,12 @@ def attach_score(frame: pl.DataFrame, tier: TierConfig, *,
         available_expr = available_expr + pl.when(z.is_not_null()).then(
             abs(spec.weight)).otherwise(0.0)
 
+    total_weight = sum(abs(spec.weight) for spec in tier.factors)
+    # 1e-12：权重是浮点和，避免 0.5 与 0.49999999 之类的边界误判
+    enough = (available_expr > 0) & (
+        available_expr >= min_coverage * total_weight - 1e-12)
     scored = scored.with_columns(
-        pl.when(available_expr > 0).then(score_expr / available_expr)
+        pl.when(enough).then(score_expr / available_expr)
         .otherwise(None).alias('score'))
     scored = scored.with_columns(
         (pl.col('score').rank('average').over('date')

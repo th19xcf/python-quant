@@ -43,6 +43,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.data.atomic_write import write_parquet_atomic  # noqa: E402
+from src.data.dataset_contracts import write_dataset  # noqa: E402
 from src.data.staging import staging_dir  # noqa: E402
 
 DEFAULT_ROOT = ROOT / 'data' / 'local_store'
@@ -231,8 +232,10 @@ def run(
                 merged = pl.concat([local, rows.select(local.columns)],
                                    how='vertical_relaxed').unique(
                     subset=['date'], keep='last').sort('date')
-                write_parquet_atomic(
-                    merged, path, compression='zstd', statistics=True)
+                write_dataset('quotes_stock', merged,
+                              rel_path=path.relative_to(root).as_posix(),
+                              root=root,
+                              writer='tools/backfill_delisted_quotes.py')
         except Exception as exc:  # noqa: BLE001
             summary['failed_codes'].append(f'{code}: {type(exc).__name__}: {exc}')
         if sleep:
@@ -266,7 +269,9 @@ def commit_from_staging(root: Path, staging: Path) -> dict[str, Any]:
         frame = pl.concat([local, added.select(local.columns)],
                           how='vertical_relaxed').unique(
             subset=['date'], keep='last').sort('date')
-        write_parquet_atomic(frame, path, compression='zstd', statistics=True)
+        write_dataset('quotes_stock', frame,
+                      rel_path=path.relative_to(root).as_posix(), root=root,
+                      writer='tools/backfill_delisted_quotes.py')
         merged_codes.append({
             'code': code, 'rows_before': local.height,
             'rows_after': frame.height, 'added': added.height,

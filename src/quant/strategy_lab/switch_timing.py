@@ -256,7 +256,8 @@ def build_switch_plan(rule: Dict[str, Any]) -> Plan:
         _apply_rebalance(schedules, day, old_weights, new_weights)
         exec_day = _next_day(common, day) or day
         # 换腿方向按目标权重的净变化：卖出旧腿记卖、买入新腿记买，两侧各一条
-        for side in sides_from_weights(old_weights, new_weights) or [None]:
+        sides: list[str | None] = list(sides_from_weights(old_weights, new_weights)) or [None]
+        for side in sides:
             marker = {
                 'signal_date': str(day), 'date': str(exec_day),
                 'state': target, 'from': state, 'position': 1.0,
@@ -358,7 +359,9 @@ def _index_pct_series(rule: Dict[str, Any], days: List[date],
             used.append(None)
             continue
         hist = [v for v in values[max(0, i - window + 1):i + 1] if v is not None]
-        out.append(sum(1 for v in hist if v <= values[i]) / len(hist)
+        current = values[i]
+        assert current is not None  # 上方已对 None 当前值 continue
+        out.append(sum(1 for v in hist if v <= current) / len(hist)
                    if len(hist) >= min_n else None)
         used.append(dates[i])
     return (out, used) if with_dates else out

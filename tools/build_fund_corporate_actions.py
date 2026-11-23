@@ -78,6 +78,7 @@ from src.data.atomic_write import write_parquet_atomic, write_text_atomic  # noq
 from src.data.local_store.paths import resolve_store_root  # noqa: E402
 from src.data.staging import staging_dir  # noqa: E402
 from src.utils.config import get_config  # noqa: E402
+from src.data.dataset_contracts import write_dataset
 
 REL_PATH = Path('meta') / 'fund_corporate_actions_2019plus.parquet'
 MANIFEST_NAME = 'fund_corporate_actions_2019plus.manifest.json'
@@ -263,7 +264,13 @@ def promote(store_root: Path, candidate: pl.DataFrame, stage: Path,
         proof.update({'old_sha256': before, 'backup_sha256': after,
                       'old_rows': pl.read_parquet(backup).height})
 
-    write_parquet_atomic(candidate, target)
+    try:
+        _rel = Path(target).resolve().relative_to((Path(__file__).resolve().parents[1] / 'data' / 'local_store').resolve()).as_posix()
+    except ValueError:
+        write_parquet_atomic(candidate, target)
+    else:
+        write_dataset('fund_corporate_actions', candidate, rel_path=_rel,
+                      root=Path(__file__).resolve().parents[1] / 'data' / 'local_store', writer='tools/build_fund_corporate_actions.py')
     proof['new_sha256'] = sha256_of(target)
     proof['new_rows'] = candidate.height
 

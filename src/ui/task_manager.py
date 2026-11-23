@@ -85,7 +85,7 @@ class TaskRunner(QRunnable):
         self.cancel_event = threading.Event()
         self._future: Any = None
 
-    def run(self):
+    def run(self) -> None:
         """
         运行任务
         """
@@ -155,7 +155,7 @@ class TaskRunner(QRunnable):
             return False
         return 'cancel_event' in params
 
-    def cancel(self):
+    def cancel(self) -> None:
         """
         取消任务：置取消标志并通知任务函数协作退出，同时取消尚未开始执行的 future
         """
@@ -176,7 +176,7 @@ class TaskManager(QObject):
     task_error = Signal(str, str)  # 任务错误信号 (task_id, error_message)
     task_finished = Signal(str)  # 任务结束信号 (task_id)
 
-    def __init__(self):
+    def __init__(self) -> None:
         """
         初始化任务管理器
         """
@@ -280,7 +280,7 @@ class TaskManager(QObject):
             for task_id, runner in self.tasks.items()
         }
 
-    def clear_completed_tasks(self):
+    def clear_completed_tasks(self) -> None:
         """
         清理已完成的任务
         """
@@ -358,7 +358,7 @@ class TaskManager(QObject):
         """
         return self.task_stats
 
-    def reset_task_stats(self):
+    def reset_task_stats(self) -> None:
         """
         重置任务统计信息
         """

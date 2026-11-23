@@ -274,7 +274,7 @@ class DataSourceHealthChecker:
             self._monitor_thread.start()
             logger.info(f"开始数据源健康监控，间隔{interval}秒")
 
-    def stop_monitoring(self):
+    def stop_monitoring(self) -> None:
         """停止健康状态监控"""
         self._monitoring = False
         if self._monitor_thread:
@@ -282,7 +282,7 @@ class DataSourceHealthChecker:
             self._monitor_thread = None
         logger.info("停止数据源健康监控")
 
-    def _monitor_loop(self):
+    def _monitor_loop(self) -> None:
         """监控循环"""
         while self._monitoring:
             try:
@@ -293,7 +293,7 @@ class DataSourceHealthChecker:
 
             time.sleep(self._check_interval)
 
-    def _perform_health_checks(self):
+    def _perform_health_checks(self) -> None:
         """执行健康检查"""
         with self._lock:
             source_names = list(self._check_callbacks.keys())

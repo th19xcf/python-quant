@@ -208,14 +208,16 @@ def write_evaluation(metrics: pl.DataFrame, headline: str | None = None,
              f'- 失败/样本不足因子：{failures.height}', '',
              _md_table(
                  ['因子', '大类', '方向', '均值IC', 'ICIR(期)', 'ICIR(年化)', 't值',
-                  'IC>0占比', 'Q1', 'Q5', 'Q5-Q1', '单调性', '换手', '净多空累计', '夏普'],
+                  'IC>0占比', 'Q1', 'Q5', 'Q5-Q1', '单调性', '换手', '净多空累计', '夏普',
+                  '超额DSR'],
                  [[row['factor'], row['category'], row['direction'],
                    f"{row['mean_ic']:.4f}", f"{row['icir']:.3f}",
                    f"{row['icir_annual']:.2f}", f"{row['t_stat']:.2f}",
                    f"{row['ic_positive_rate']:.0%}", f"{row['q1_mean']:.2%}",
                    f"{row['q5_mean']:.2%}", f"{row['q5_minus_q1']:.2%}",
                    f"{row['monotonicity']:.2f}", f"{row['turnover']:.0%}",
-                   f"{row['ls_net_cum']:.1%}", f"{row['ls_net_sharpe']:.2f}"]
+                   f"{row['ls_net_cum']:.1%}", f"{row['ls_net_sharpe']:.2f}",
+                   f"{row['excess_dsr']:.3f}"]
                   for row in valid.head(60).iter_rows(named=True)],
              ), '']
     if failures.height:

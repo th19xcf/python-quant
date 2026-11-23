@@ -69,7 +69,7 @@ class StockRecommendationDialog(QDialog):
 
         self.init_ui()
 
-    def init_ui(self):
+    def init_ui(self) -> None:
         main_layout = QVBoxLayout(self)
         self._build_basic_section(main_layout)
         self._build_factor_section(main_layout)
@@ -334,7 +334,7 @@ class StockRecommendationDialog(QDialog):
             self.result_table.setItem(i, 4, risk_item)
         apply_content_widths(self.result_table)
 
-    def export_report(self):
+    def export_report(self) -> None:
         if not self._recommendations:
             self._show_message("无法导出", "暂无推荐结果，请先生成推荐")
             return

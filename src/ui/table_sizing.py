@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from PySide6.QtCore import QRect, QSize, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPalette
 from PySide6.QtWidgets import (
@@ -402,6 +403,9 @@ class SizedTableMixin:
     使用方需提供 ``self._pal``（``src.ui.advice.tokens.Palette``）作为底色来源，
     并按页面布局选择 ``TABLE_FIXED_HEIGHT``：表内滚动为 True，外层拉伸为 False。
     """
+
+    # 由宿主 MainWindow（QMainWindow + 其余 mixin）提供；仅供类型检查，不在此创建
+    _pal: Any
 
     #: 数据行高下限：保证空行/单行不被压扁
     MIN_ROW_HEIGHT = MIN_ROW_HEIGHT

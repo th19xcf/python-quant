@@ -57,7 +57,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic  # noqa: E402
+from src.data.dataset_contracts import write_dataset  # noqa: E402
 from src.data.trading_calendar import trading_dates  # noqa: E402
+from src.data.dataset_contracts import write_dataset_at
 
 STORE = ROOT / 'data' / 'local_store'
 OUT_DIR = STORE / 'meta' / 'st' / 'daily'
@@ -335,7 +337,8 @@ def main(argv: list[str] | None = None) -> int:
                  .select(['ts_code', 'trade_date']))
         panel = _status_frame(pairs, name_ev, off_ev).sort(['trade_date', 'ts_code'])
         path = OUT_DIR / f'st_daily_{month_start:%Y%m}.parquet'
-        write_parquet_atomic(panel, path)
+        write_dataset('st_daily', panel, rel_path=f'meta/st/daily/{path.name}',
+                      root=STORE, writer='tools/build_st_daily.py')
         files.append({
             'path': path.name, 'rows': panel.height,
             'start': str(panel['trade_date'].min()),
@@ -347,8 +350,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f'  {path.name}: {panel.height} 行', flush=True)
 
     evidence = pl.concat([name_ev, off_ev], how='vertical_relaxed')
-    write_parquet_atomic(evidence.sort(['ts_code', 'start_date', 'name']),
-                         OUT_DIR / 'st_daily_intervals.parquet')
+    # TODO(write_dataset): st_daily_intervals 未登记契约，暂保留裸写
+    write_dataset_at(evidence.sort(['ts_code', 'start_date', 'name']),
+                     OUT_DIR / 'st_daily_intervals.parquet', root=STORE,
+                     writer='tools/build_st_daily.py')
 
     produced = {item['path'] for item in files}
     if not args.incremental:

@@ -136,6 +136,8 @@ def _next_rebalance_note(rule: Dict[str, Any] | None, after: str | None,
         return '该规则按信号触发，无固定调仓日'
     months = FREQUENCY_MONTHS[frequency]
     if calendar is None:
+        if rule is None:
+            return '下次调仓日：无法推算'
         try:
             from src.quant.strategy_lab.backtest import load_benchmark_close
 
@@ -286,7 +288,7 @@ def _switch_rows(payload: Dict[str, Any], rule: Dict[str, Any] | None) -> List[t
         if tail.get('date'):
             lag = (date.today() - date.fromisoformat(str(tail['date']))).days
             rows.append(('估值日期', f'{tail["date"]}（滞后 {lag} 个自然日）'))
-    if (rule or {}).get('rule_type') == 'timing' and (rule or {}).get('signal'):
+    if rule is not None and rule.get('rule_type') == 'timing' and rule.get('signal'):
         sig = rule['signal']
         if sig.get('kind') == 'index_pe_pct':
             metric = {'pb': 'PB', 'pe': 'PE', 'pe_ttm': 'PE(TTM)'}.get(
@@ -695,9 +697,9 @@ class _TradeDialog(QDialog):
             for r in range(table.rowCount()):
                 table.setRowHeight(r, FIXED_ROW_HEIGHT)
                 for c in range(table.columnCount()):
-                    item = table.item(r, c)
-                    if item is not None and len(item.text()) >= TOOLTIP_TEXT_MIN_LEN:
-                        item.setToolTip(item.text())
+                    cell = table.item(r, c)
+                    if cell is not None and len(cell.text()) >= TOOLTIP_TEXT_MIN_LEN:
+                        cell.setToolTip(cell.text())
         else:
             table.resizeRowsToContents()
         use_interactive_columns(table)
@@ -839,7 +841,7 @@ class StrategyLabPage(QWidget):
         header.addLayout(top_row)
         root.addLayout(header)
 
-        splitter = QSplitter(Qt.Vertical)
+        splitter = QSplitter(Qt.Orientation.Vertical)
         splitter.addWidget(self._build_editor())
         splitter.addWidget(self._build_result())
         splitter.setStretchFactor(0, 1)
@@ -955,9 +957,12 @@ class StrategyLabPage(QWidget):
         if not hasattr(self, 'refresh_btn') or not hasattr(self, 'title_label'):
             return
         block_width = self.title_label.sizeHint().width()
-        block_left = self.layout().contentsMargins().left()
+        layout = self.layout()
+        if layout is None:
+            return
+        block_left = layout.contentsMargins().left()
         block_right = block_left + block_width + 24
-        page_right = self.width() - self.layout().contentsMargins().right()
+        page_right = self.width() - layout.contentsMargins().right()
         width = max(page_right - block_right, 240)
         if self.status_label.maximumWidth() != width:
             self.status_label.setMaximumWidth(width)
@@ -975,6 +980,8 @@ class StrategyLabPage(QWidget):
         + 控件行高 + 行距 + 说明块折行高度 + 说明块上下留白」显式给最小高。
         """
         layout = self._editor_card.layout()
+        if layout is None:
+            return
         margins = layout.contentsMargins()
         note_margins = self.rule_text_label.contentsMargins()
         row_height = max(self.rule_combo.minimumHeight(),
@@ -1024,7 +1031,7 @@ class StrategyLabPage(QWidget):
         title_row.addStretch(1)
         title_row.addWidget(self.detail_toggle)
 
-        split = QSplitter(Qt.Horizontal)
+        split = QSplitter(Qt.Orientation.Horizontal)
 
         # 「回测结果」标题放进左列，与表格同列：右列图表容器的顶边因此与标题
         # 顶部齐平（原先标题独占整行，图表容器整体低 21px）。
@@ -1044,8 +1051,8 @@ class StrategyLabPage(QWidget):
             QHeaderView.ResizeMode.Fixed)
         self.metrics_table.verticalHeader().setDefaultSectionSize(FIXED_ROW_HEIGHT)
         self.metrics_table.horizontalHeader().setFixedHeight(HEADER_ROW_HEIGHT)
-        self.metrics_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.metrics_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.metrics_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.metrics_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.metrics_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         use_interactive_columns(self.metrics_table)
         left_layout.addWidget(self.metrics_table, 1)
@@ -1159,8 +1166,8 @@ class StrategyLabPage(QWidget):
         table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
         table.verticalHeader().setDefaultSectionSize(FIXED_ROW_HEIGHT)
         table.horizontalHeader().setFixedHeight(HEADER_ROW_HEIGHT)
-        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        table.setSelectionMode(QAbstractItemView.NoSelection)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         table.setFixedHeight(HEADER_ROW_HEIGHT + visible_rows * FIXED_ROW_HEIGHT
                             + 2 * table.frameWidth())
@@ -1313,7 +1320,7 @@ class StrategyLabPage(QWidget):
         self.rule_combo.clear()
         for item in list_rules():
             try:
-                rule = load_rule(item['path'])
+                rule = load_rule(Path(item['path']))
                 label = f'{rule["name"]}（{RULE_TYPES[rule["rule_type"]]}）'
             except RuleError as exc:
                 logger.warning('规则文件不可用：{}（{}）', item['path'], exc)
@@ -1496,7 +1503,7 @@ class StrategyLabPage(QWidget):
         for i, (label, value) in enumerate(rows):
             self.metrics_table.setItem(i, 0, QTableWidgetItem(label))
             item = QTableWidgetItem(value)
-            item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             if label.startswith('Sharpe'):
                 # 口径说明：与工具研究脚本一致，避免与「日均收益/日波动」混淆
                 item.setToolTip('CAGR ÷ 年化波动率（日收益标准差 × √252，无风险利率取 0）')
@@ -1639,7 +1646,7 @@ class StrategyLabPage(QWidget):
             self.nav_plot.plot(list(range(len(bench))),
                                [float(v) / base for _, v in bench],
                                pen=QColor(self._pal.muted), name=PLOT_LEGEND_BENCH,
-                               style=Qt.DashLine)
+                               style=Qt.PenStyle.DashLine)
 
     def _plot_drawdown(self, drawdown: List[List[Any]]) -> None:
         if not hasattr(self.drawdown_plot, 'plot'):

@@ -19,7 +19,7 @@ STEMS = {
     "meta/suspension/suspension_daily.parquet": "suspension_daily",
     "meta/suspension/implied_suspension.parquet": "implied_suspension",
     "meta/industry_pit/industry_pit_sw.parquet": "industry_pit_sw",
-    "meta/industry_pit/industry_pit.parquet": "industry_pit",
+    "meta/industry_pit/industry_snapshot_recent.parquet": "industry_pit",
     "meta/industry_pit/industry_change_pit.parquet": "industry_change_pit",
     "meta/events/events.parquet": "events.parquet",
     "meta/events/proxy/equity_issue_proxy.parquet": "equity_issue_proxy",

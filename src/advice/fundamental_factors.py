@@ -27,7 +27,12 @@ from typing import Any, Iterable
 import polars as pl
 
 from src.backtest.engine.input_contract import validate_financial_frames
-from src.data.financials.store import financials_dir, read_table
+from src.data.financials.store import (
+    FIN_SNAPSHOT,
+    PIT_LAG_UNKNOWN,
+    financials_dir,
+    read_table,
+)
 from src.data.local_store.share_capital import read_shares
 
 
@@ -171,6 +176,8 @@ def _load_dividend_patch(store_root: Any, codes: list[str],
     原始 ``valuation_daily`` 的 ``dv_ratio`` 在 2018 年前全空；补丁由分红明细
     按 PIT 口径回算，已在 2018-2020 与原表逐值对拍一致。仅用于补齐历史缺口。
     """
+    # 名实说明：``_patch`` 只是 2018 年前的股息率补丁副本，仅补历史缺口；
+    # 估值主表是 ``valuation_daily.parquet``，本文件不得当主表读取。
     path = financials_dir(store_root) / 'valuation_pre2018_patch.parquet'
     if not path.exists():
         return pl.DataFrame(schema={'ts_code': pl.Utf8, 'trade_date': pl.Date,
@@ -320,7 +327,12 @@ def compute_fundamental_factors(panel: pl.DataFrame,
     result = build_fundamentals(panel, valuation, shares, income, balance)
     wanted = set(columns or FUNDAMENTAL_COLUMNS)
     keep = [name for name in FUNDAMENTAL_COLUMNS if name in wanted]
-    return result.select(list(panel.columns) + keep)
+    out = result.select(list(panel.columns) + keep)
+    # G-072：财务三表无版本快照，标记数值口径与 PIT 不可证，供下游识别（不改数值）
+    return out.with_columns([
+        pl.lit(FIN_SNAPSHOT).alias('fin_snapshot'),
+        pl.lit(PIT_LAG_UNKNOWN).alias('pit_lag_unknown'),
+    ])
 
 
 __all__ = [

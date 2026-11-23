@@ -405,7 +405,9 @@ def _parse_cost(rest: str, lineno: int) -> Dict[str, Any]:
             out['stamp_tax_basis'] = 'historical'
             continue
         if re.fullmatch(r'印花税\s*(?:固定)?\s*(?:千1|0\.1%)', clause):
-            out['stamp_tax_basis'] = 'fixed_0.1%'
+            # 固定千 1 口径已废弃（2023-08-28 起卖出印花税 0.05%）：
+            # 旧配方文本继续可解析，但统一落到按成交日取值的 historical。
+            out['stamp_tax_basis'] = 'historical'
             continue
         if re.fullmatch(r'印花税\s*(?:固定)?\s*(?:千0|0(?:\.0+)?%)', clause):
             # 零成本实验专用：spec 校验要求 experimental=true 才放行

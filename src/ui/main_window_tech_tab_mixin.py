@@ -4,6 +4,7 @@
 主窗口技术分析页 Mixin：周期工具栏与 K线/成交量/KDJ 图表画布创建。
 """
 
+from typing import Any
 import pyqtgraph as pg
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QFontMetrics
@@ -27,6 +28,18 @@ from src.ui.data_stock_controller import DEFAULT_BAR_COUNT, MIN_BAR_COUNT
 class MainWindowTechTabMixin:
     """技术分析标签页：周期/柱体数/复权工具栏与三个画布。"""
 
+    # 由宿主 MainWindow（QMainWindow + 其余 mixin）提供；仅供类型检查，不在此创建
+    _bar_count_separator: Any
+    chip_floor_combo: Any
+    chip_full_range_checkbox: Any
+    chip_toggle_btn: Any
+    create_indicator_selection: Any
+    indicator_interaction_manager: Any
+    indicator_widget: Any
+    minus_btn: Any
+    plus_btn: Any
+    tech_tab: Any
+
     # 股票名称标签的最大宽度，超出部分以省略号截断，避免挤压周期按钮
     _STOCK_NAME_MAX_WIDTH = 260
     _STOCK_NAME_PADDING = 8
@@ -46,7 +59,7 @@ class MainWindowTechTabMixin:
     QScrollArea > QWidget > QWidget { background-color: transparent; }
     """
 
-    def create_tech_tab(self):
+    def create_tech_tab(self) -> None:
         """
         创建技术分析标签页
         """
@@ -68,7 +81,7 @@ class MainWindowTechTabMixin:
         # 把下栏已创建的增减柱体按钮移动到上栏复权按钮左侧（复用同一实例）
         self._relocate_bar_count_buttons()
         # 设置指标选择栏的尺寸策略，确保显示完整
-        self.indicator_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.indicator_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.indicator_widget.setMinimumHeight(36)  # 确保高度足够显示按钮
         tech_layout.addWidget(self.indicator_widget)
 
@@ -227,7 +240,7 @@ class MainWindowTechTabMixin:
         # 添加分隔符
         toolbar_layout.addSpacing(10)
 
-    def _relocate_bar_count_buttons(self):
+    def _relocate_bar_count_buttons(self) -> None:
         """把下栏创建的增减柱体按钮移动到上栏复权按钮左侧。
 
         直接搬移原 QPushButton 实例，不重新创建，原有 clicked 连接保持不变；
@@ -322,7 +335,7 @@ class MainWindowTechTabMixin:
         # 添加容器到主布局
         tech_layout.addWidget(self.chart_container, 1)  # 1表示垂直方向拉伸
 
-    def _create_chart_plot_widgets(self):
+    def _create_chart_plot_widgets(self) -> None:
         """
         创建K线、成交量与KDJ三个画布，统一坐标轴样式并对齐竖轴
         """
@@ -377,7 +390,7 @@ class MainWindowTechTabMixin:
         self.kdj_plot_widget.getAxis('left').setWidth(50)
         self.kdj_plot_widget.getAxis('bottom').setHeight(20)
 
-    def _create_chart_containers(self):
+    def _create_chart_containers(self) -> None:
         """
         为三个画布分别创建容器并绑定点击选中窗口事件
         """
@@ -395,7 +408,7 @@ class MainWindowTechTabMixin:
         self.chip_controller = ChipController(self, self.chip_panel)
 
         # 添加点击事件，用于选中窗口
-        self.tech_container.mousePressEvent = lambda event: self.indicator_interaction_manager.on_window_clicked(1)
+        self.tech_container.mousePressEvent = lambda event: self.indicator_interaction_manager.on_window_clicked(1)  # type: ignore[method-assign]  # 运行时替换 Qt 事件回调
 
         # 副图：指标标题栏占据整行，标题栏下方才是「绘图区 + 右侧占位列」。
         # 占位列宽度与筹码栏一致，保证所有绘图区左右边界逐像素对齐。
@@ -415,7 +428,7 @@ class MainWindowTechTabMixin:
         self.volume_container_layout.addWidget(self.volume_plot_row, 1)
 
         # 添加点击事件，用于选中窗口
-        self.volume_container.mousePressEvent = lambda event: self.indicator_interaction_manager.on_window_clicked(2)
+        self.volume_container.mousePressEvent = lambda event: self.indicator_interaction_manager.on_window_clicked(2)  # type: ignore[method-assign]  # 运行时替换 Qt 事件回调
 
         # 为KDJ指标图创建容器：结构同成交量图
         self.kdj_container = QWidget()
@@ -434,7 +447,7 @@ class MainWindowTechTabMixin:
         self.kdj_container_layout.addWidget(self.kdj_plot_row, 1)
 
         # 添加点击事件，用于选中窗口
-        self.kdj_container.mousePressEvent = lambda event: self.indicator_interaction_manager.on_window_clicked(3)
+        self.kdj_container.mousePressEvent = lambda event: self.indicator_interaction_manager.on_window_clicked(3)  # type: ignore[method-assign]  # 运行时替换 Qt 事件回调
 
         # 副图区域右键菜单（主图不接线，保持既有右键行为）
         for window_num, target in (
@@ -486,7 +499,7 @@ class MainWindowTechTabMixin:
             gutter.setFixedWidth(target)
             gutter.setVisible(visible and target > 0)
 
-    def _setup_chart_splitter(self):
+    def _setup_chart_splitter(self) -> None:
         """
         将三个容器加入分割器并设置分割比例
         """

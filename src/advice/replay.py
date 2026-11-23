@@ -23,8 +23,8 @@ from loguru import logger
 from src.advice.config import AdviceConfig, default_config
 from src.advice.data import LocalPanelLoader, panel_trading_dates
 from src.advice.eligibility import check_eligibility
+from src.advice.exclusion_layer import ExclusionLayer
 from src.advice.factor_panel import compute_factor_panel
-from src.advice.margin_filter import MarginMomentumFilter
 from src.advice.pipeline import AdviceEngine
 from src.advice.portfolio import Candidate, allocate
 from src.advice.risk_filters import RiskContext
@@ -195,10 +195,11 @@ class _ReplayTier:
         if not store_root:
             store_root = get_config().data.local_store_path
         self.risk = RiskContext(self.config.risk, store_root, self.dates)
-        self.margin_filter = (MarginMomentumFilter(self.config.margin_filter,
-                                                   store_root)
-                              if self.config.margin_filter.enabled else None)
-        self.margin_filtered = 0
+        self.exclusion = (ExclusionLayer(self.config.exclusion, store_root,
+                                         history=scored)
+                          if self.config.exclusion.any_enabled() else None)
+        self.exclusion_blocked: dict[str, int] = {}
+        self.exclusion_blocked_total = 0
 
     def run(self) -> ReplayResult:
         rules = ExecutionRules()
@@ -283,16 +284,13 @@ class _ReplayTier:
     def _buy_candidates(self, rows: dict[str, dict], day: date,
                         record: bool = True) -> list[tuple[dict, Candidate]]:
         result: list[tuple[dict, Candidate]] = []
-        excluded = (self.margin_filter.excluded_codes(day)
-                    if self.margin_filter is not None else set())
+        exclusion = (self.exclusion.status_for(day)
+                     if self.exclusion is not None else None)
         for code, row in rows.items():
             if code in self.positions:
                 continue
             percentile = float(row.get('score_percentile') or 0.0)
             if percentile < self.tier.buy_percentile:
-                continue
-            if excluded and code in excluded:
-                self.margin_filtered += 1
                 continue
             eligibility = check_eligibility(
                 row, self.tier, self.config, 'buy',
@@ -303,6 +301,15 @@ class _ReplayTier:
                 continue
             if not self.risk.evaluate(code, day, record=record).ok:
                 continue
+            if exclusion is not None:
+                hits = [rule for rule, codes in exclusion.by_rule.items()
+                        if code in codes]
+                if hits:
+                    for rule in hits:
+                        self.exclusion_blocked[rule] = (
+                            self.exclusion_blocked.get(rule, 0) + 1)
+                    self.exclusion_blocked_total += 1
+                    continue
             if self.risk.config.industry_enabled:
                 industry, industry_source = self.risk.industry(code, day)
             else:
@@ -495,8 +502,10 @@ class _ReplayTier:
         positions = self._positions_ledger()
         diagnostics = self._diagnostics()
         filter_stats = dict(self.risk.counts)
-        if self.margin_filter is not None:
-            filter_stats['margin_filtered'] = self.margin_filtered
+        if self.exclusion is not None:
+            for rule, count in self.exclusion_blocked.items():
+                filter_stats[f'excluded_{rule}'] = count
+            filter_stats['excluded_total'] = self.exclusion_blocked_total
         return ReplayResult(
             tier=self.tier.key, label=self.tier.label, start=self.dates[0],
             end=self.dates[-1], initial_equity=self.initial, final_equity=final,
@@ -730,7 +739,8 @@ def run_replay(config: AdviceConfig | None = None, store_root: Any = None,
     for tier in selected:
         scored = attach_score(
             factors, tier,
-            min_history_rows=advice_config.min_history_rows)
+            min_history_rows=advice_config.min_history_rows,
+            min_coverage=advice_config.min_factor_coverage)
         if extended and advice_config.soft_filter.enabled:
             from src.advice.soft_filters import apply_soft_filter
 

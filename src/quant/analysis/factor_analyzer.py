@@ -24,11 +24,11 @@ class FactorAnalyzer:
     因子分析器
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """
         初始化因子分析器，按需创建数据管理器（延迟初始化避免纯计算场景报错）
         """
-        self._data_manager = None
+        self._data_manager: DataManager | None = None
 
     @property
     def data_manager(self) -> DataManager:

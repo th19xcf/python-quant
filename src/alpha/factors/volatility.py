@@ -51,7 +51,7 @@ class VolatilityFactors(PartitionAware):
 
         return self.data
 
-    def _calculate_atr(self):
+    def _calculate_atr(self) -> None:
         """
         计算平均真实波幅(ATR)
         """
@@ -64,7 +64,7 @@ class VolatilityFactors(PartitionAware):
             self._fill(self._p(atr_expr('high', 'low', 'close', 21).shift(1))).cast(cdt, strict=False).alias('atr_21')
         ])
 
-    def _calculate_historical_volatility(self):
+    def _calculate_historical_volatility(self) -> None:
         """
         计算历史波动率
         """
@@ -89,7 +89,7 @@ class VolatilityFactors(PartitionAware):
             self._fill(self._p(volatility_60)).cast(cdt, strict=False).alias('volatility_60')
         ])
 
-    def _calculate_garman_klass_volatility(self):
+    def _calculate_garman_klass_volatility(self) -> None:
         """
         计算Garman-Klass波动率
         """
@@ -114,7 +114,7 @@ class VolatilityFactors(PartitionAware):
         ])
         self.data = self.data.drop('_gk_volatility')
 
-    def _calculate_volatility_trend(self):
+    def _calculate_volatility_trend(self) -> None:
         """
         计算波动率趋势因子
         """

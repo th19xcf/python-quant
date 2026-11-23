@@ -40,7 +40,7 @@ class DataReadThread(QThread):
         self.data_manager = data_manager
         self.is_running = True
 
-    def run(self):
+    def run(self) -> None:
         """
         线程运行函数，实现异步数据读取和解析
 
@@ -88,7 +88,7 @@ class DataReadThread(QThread):
             logger.exception(error_msg)
             self.data_read_error.emit(error_msg)
 
-    def stop(self):
+    def stop(self) -> None:
         """
         停止线程
         """
@@ -116,7 +116,7 @@ class IndicatorCalculateThread(QThread):
         self.df = df
         self.is_running = True
 
-    def run(self):
+    def run(self) -> None:
         """
         线程运行函数，实现异步指标计算
         """
@@ -148,7 +148,7 @@ class IndicatorCalculateThread(QThread):
             logger.exception(error_msg)
             self.indicator_calculate_error.emit(error_msg)
 
-    def stop(self):
+    def stop(self) -> None:
         """
         停止线程
         """
@@ -176,7 +176,7 @@ class ChartDataPrepareThread(QThread):
         self.df = df
         self.is_running = True
 
-    def run(self):
+    def run(self) -> None:
         """
         线程运行函数，实现异步图表数据准备
         """
@@ -200,7 +200,7 @@ class ChartDataPrepareThread(QThread):
             logger.exception(error_msg)
             self.chart_data_prepare_error.emit(error_msg)
 
-    def stop(self):
+    def stop(self) -> None:
         """
         停止线程
         """

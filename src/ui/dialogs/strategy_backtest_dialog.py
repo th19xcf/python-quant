@@ -72,7 +72,7 @@ class StrategyBacktestDialog(QDialog):
 
         self.init_ui()
 
-    def init_ui(self):
+    def init_ui(self) -> None:
         main_layout = QVBoxLayout(self)
         self._build_basic_section(main_layout)
         self._build_param_section(main_layout)
@@ -174,7 +174,7 @@ class StrategyBacktestDialog(QDialog):
 
         main_layout.addLayout(button_layout)
 
-    def run_backtest(self):
+    def run_backtest(self) -> None:
         """启动策略回测：参数校验后下沉到 global_task_manager 后台执行。
 
         UI 线程只做参数组装与信号连接，长区间回测期间事件循环不被阻塞，
@@ -290,7 +290,7 @@ class StrategyBacktestDialog(QDialog):
         for signal, handler in self._task_handlers:
             signal.connect(handler)
 
-    def _disconnect_task_signals(self):
+    def _disconnect_task_signals(self) -> None:
         """断开本次任务的信号连接，避免回调累积。"""
         for signal, handler in self._task_handlers:
             with contextlib.suppress(RuntimeError, TypeError):
@@ -360,7 +360,7 @@ class StrategyBacktestDialog(QDialog):
 
         self.result_text.setText(text)
 
-    def export_report(self):
+    def export_report(self) -> None:
         if not self._last_result:
             self.result_text.append("\n暂无回测结果，请先执行回测再导出报告")
             return

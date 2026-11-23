@@ -9,6 +9,8 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
+import pytest
+
 from tools.task_ledger import (
     ABSOLUTE_MAX_TOOL_CALLS,
     FIELDS,
@@ -53,7 +55,8 @@ def _rows(path: Path) -> list[dict[str, str]]:
 def test_append_finalize_row_creates_file_with_header(tmp_path):
     ledger = tmp_path / 'nested' / 'task_ledger.csv'
     state = append_finalize_row(
-        ledger, commit='abcdef1234567890', task_id='sess-1', tool_calls=82, duration_min=31.5
+        ledger, commit='abcdef1234567890', task_id='sess-1', tool_calls=82,
+        duration_min=31.5, budget_calls=30,
     )
     assert state == 'written'
     lines = ledger.read_text(encoding='utf-8').splitlines()
@@ -67,32 +70,38 @@ def test_append_finalize_row_creates_file_with_header(tmp_path):
     assert row['rounds'] == 'unknown'
     assert row['tool_calls'] == '82'
     assert row['duration_min'] == '31.5'
+    assert row['budget_calls'] == '30'
     assert 'commit abcdef1' in row['note']
 
 
 def test_append_finalize_row_is_idempotent_per_commit(tmp_path):
     """同一提交重复收口只写一行；第二次返回 duplicate。"""
     ledger = tmp_path / 'task_ledger.csv'
-    first = append_finalize_row(ledger, commit='deadbee1', task_id='sess-1', tool_calls=3)
+    first = append_finalize_row(
+        ledger, commit='deadbee1', task_id='sess-1', tool_calls=3, budget_calls=10)
     second = append_finalize_row(ledger, commit='deadbee1', task_id='sess-1', tool_calls=4)
     assert (first, second) == ('written', 'duplicate')
     assert len(_rows(ledger)) == 1
 
 
 def test_append_finalize_row_marks_unknown_calls(tmp_path):
-    """调用数与耗时取不到时写 unknown / 留空，任务标识退化为提交短哈希。"""
+    """调用数与耗时取不到时写 unknown / 留空；任务标识必须显式给，不再退化为哈希。"""
     ledger = tmp_path / 'task_ledger.csv'
-    append_finalize_row(ledger, commit='cafe1234', tool_calls=None, duration_min=None)
+    append_finalize_row(ledger, commit='cafe1234', task_id='任务X', tool_calls=None,
+                        duration_min=None, budget_calls=5)
     row = _rows(ledger)[0]
     assert row['tool_calls'] == 'unknown'
     assert row['duration_min'] == ''
-    assert row['session_id'] == 'cafe123'
+    assert row['session_id'] == '任务X'
+    assert row['title'] == '任务X'
+    assert row['budget_calls'] == '5'
 
 
 def test_add_derives_rounds_from_prior_rows(tmp_path):
     """未显式给 --rounds 时按该任务既有行数 +1 累积。"""
     ledger = tmp_path / 'task_ledger.csv'
-    base = ['--ledger', str(ledger), 'add', '--session-id', 's1', '--title', 'T1']
+    base = ['--ledger', str(ledger), 'add', '--session-id', 's1', '--title', 'T1',
+            '--budget-calls', '20']
     assert main(base + ['--phase', 'dispatch', '--apply']) == 0
     assert main(base + ['--phase', 'done', '--tool-calls', '40',
                         '--duration-min', '12.5', '--apply']) == 0
@@ -104,7 +113,7 @@ def test_add_derives_rounds_from_prior_rows(tmp_path):
 def test_add_accepts_explicit_rounds(tmp_path):
     ledger = tmp_path / 'task_ledger.csv'
     main(['--ledger', str(ledger), 'add', '--session-id', 's1', '--title', 'T1',
-          '--phase', 'done', '--rounds', '17', '--apply'])
+          '--phase', 'done', '--rounds', '17', '--budget-calls', '20', '--apply'])
     assert _read_rows(ledger)[0]['rounds'] == '17'
 
 
@@ -120,7 +129,7 @@ def test_legacy_header_reads_and_upgrades_on_append(tmp_path):
     assert rows[0]['turns'] == '3'
 
     main(['--ledger', str(ledger), 'add', '--session-id', 's1', '--title', 'T1',
-          '--phase', 'done', '--tool-calls', '30', '--apply'])
+          '--phase', 'done', '--tool-calls', '30', '--budget-calls', '20', '--apply'])
     lines = ledger.read_text(encoding='utf-8').splitlines()
     assert lines[0] == ','.join(FIELDS)
     rows = _read_rows(ledger)
@@ -165,7 +174,7 @@ def test_finalize_without_dispatch_warns_unknown_rounds(tmp_path, capsys):
     """找不到派单行时轮次写 unknown、stderr 告警，但不抛错、不阻断收口。"""
     ledger = tmp_path / 'task_ledger.csv'
     state = append_finalize_row(
-        ledger, commit='bee1234abcd', task_id='无派单任务', tool_calls=7)
+        ledger, commit='bee1234abcd', task_id='无派单任务', tool_calls=7, budget_calls=10)
     assert state == 'written'
     assert _rows(ledger)[0]['rounds'] == 'unknown'
     assert 'unknown' in capsys.readouterr().err
@@ -174,6 +183,35 @@ def test_finalize_without_dispatch_warns_unknown_rounds(tmp_path, capsys):
 def test_finalize_with_dispatch_counts_rounds(tmp_path):
     ledger = tmp_path / 'task_ledger.csv'
     main(['--ledger', str(ledger), 'add', '--session-id', 'T9', '--title', 'T9',
-          '--phase', 'dispatch', '--apply'])
+          '--phase', 'dispatch', '--budget-calls', '20', '--apply'])
     append_finalize_row(ledger, commit='feed1234567', task_id='T9', tool_calls=5)
     assert _rows(ledger)[-1]['rounds'] == '2'
+    assert _rows(ledger)[-1]['budget_calls'] == '20'
+
+
+def test_add_rejects_commit_hash_title(tmp_path):
+    """title 传 commit 哈希即拒绝写入，且不产生账本文件。"""
+    ledger = tmp_path / 'task_ledger.csv'
+    code = main(['--ledger', str(ledger), 'add', '--session-id', 's1',
+                 '--title', 'deadbee1', '--budget-calls', '20', '--apply'])
+    assert code == 2
+    assert not ledger.exists()
+
+
+def test_add_rejects_missing_budget(tmp_path):
+    """预算为空即拒绝写入。"""
+    ledger = tmp_path / 'task_ledger.csv'
+    code = main(['--ledger', str(ledger), 'add', '--session-id', 's1',
+                 '--title', '核对备份仓', '--apply'])
+    assert code == 2
+    assert not ledger.exists()
+
+
+def test_finalize_rejects_missing_budget_and_hash_title(tmp_path):
+    """收口侧：没有派单预算、或任务标识是哈希，都拒绝写入。"""
+    ledger = tmp_path / 'task_ledger.csv'
+    with pytest.raises(RuntimeError):
+        append_finalize_row(ledger, commit='abc1234def', task_id='任务Y', tool_calls=3)
+    with pytest.raises(RuntimeError):
+        append_finalize_row(ledger, commit='abc1234def', tool_calls=3, budget_calls=10)
+    assert not ledger.exists()

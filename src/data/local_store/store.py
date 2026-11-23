@@ -26,7 +26,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import functools
 import hashlib
 import json
@@ -50,6 +49,7 @@ from src.data.quote_schema import (
     assert_formal_quote_glob_schema,
     assert_formal_quote_schema,
 )
+from src.utils.dates import as_date
 
 STORE_VERSION = 1
 # 因子快照单文件可能达到千万行，不能像分红快照那样一次性 partition 进内存。
@@ -159,18 +159,8 @@ def read_parquet_frame(
 
 
 def _as_date(value: Any) -> date | None:
-    """把 str/date/datetime 统一成 date。"""
-    if value is None or value == '':
-        return None
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    text = str(value)
-    for fmt in ('%Y-%m-%d', '%Y%m%d'):
-        with contextlib.suppress(ValueError):
-            return datetime.strptime(text[:10] if '-' in text else text, fmt).date()
-    return None
+    """委托统一真源 ``src.utils.dates.as_date``（含整数 YYYYMMDD / 斜杠 / NaT 归一）。"""
+    return as_date(value)
 
 
 def market_of(ts_code: str) -> str:
@@ -1073,7 +1063,7 @@ def verify_quote_factor_consistency(
             ['ts_code', 'date'])
         joined = quotes.join_asof(
             snapshot, left_on='date', right_on='trade_date',
-            by='ts_code', strategy='backward')
+            by='ts_code', strategy='backward', check_sortedness=False)  # 两侧已按 (by, on) 排序；by 分组下 polars 无法自检，显式关闭告警
         bad_q = (pl.col('qfq_factor') - pl.col('qfq_factor_right').fill_null(1.0)).abs() > (
             tolerance * pl.col('qfq_factor_right').fill_null(1.0).abs().clip(1e-300))
         bad_h = (pl.col('hfq_factor') - pl.col('hfq_factor_right').fill_null(1.0)).abs() > (

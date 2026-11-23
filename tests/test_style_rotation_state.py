@@ -127,14 +127,14 @@ def test_headless_page_renders_tables(qapp):
     try:
         page.render_state(state)
         assert page.dimension_table.rowCount() == len(state.dimensions)
-        assert page.dimension_table.columnCount() == 4
+        assert page.dimension_table.columnCount() == 5  # 第 0 列为「序号」列（SizedTableMixin 统一插入），数据 4 列 + 序号 1 列
         assert page.dimension_table.showGrid()
         assert page.portfolio_table.rowCount() == len(state.portfolios)
-        assert page.portfolio_table.columnCount() == 4
+        assert page.portfolio_table.columnCount() == 5  # 第 0 列为「序号」列（SizedTableMixin 统一插入），数据 4 列 + 序号 1 列
         assert page.portfolio_table.showGrid()
         assert '判定完成' in page.status_label.text()
         assert '占优' in page.direction_label.text() or '均衡' in page.direction_label.text()
-        assert page.dimension_table.item(0, 2).text() in (
+        assert page.dimension_table.item(0, 3).text() in (  # 序号列使数据列右移 1
             '小盘占优', '大盘占优', '价值占优', '成长占优', '高波占优', '低波占优', '均衡')
     finally:
         page.deleteLater()

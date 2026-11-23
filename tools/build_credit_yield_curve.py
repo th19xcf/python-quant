@@ -42,6 +42,7 @@ from pathlib import Path
 
 import polars as pl
 
+from src.data.dataset_contracts import contract_for_path, write_dataset
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic
 from src.data.manifest_semantics import apply_semantics
 
@@ -267,7 +268,14 @@ def build(apply: bool) -> int:
         return 0
 
     out = MACRO / 'cn_credit_yield_curve.parquet'
-    write_parquet_atomic(credit, out)
+    _root = Path(__file__).resolve().parents[1] / 'data' / 'local_store'
+    _contract = contract_for_path(out, _root)
+    if _contract is None:
+        write_parquet_atomic(credit, out)
+    else:
+        write_dataset(_contract.key, credit,
+                      rel_path=Path(out).resolve().relative_to(_root.resolve()).as_posix(),
+                      root=_root, writer='tools/build_credit_yield_curve.py')
     manifest = {
         'dataset': 'cn_credit_yield_curve',
         'semantics': '中债中短期票据到期收益率曲线(AAA)，多期限；信用债无风险基准之上的 AAA 级信用利差来源',

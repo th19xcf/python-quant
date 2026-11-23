@@ -29,6 +29,10 @@ SCORE_COLUMNS = (
     'amount_ma20', 'liquidity_log', 'history_rows',
 )
 
+#: 打分侧 RSI(14) 预热 bar 数：14 个有效 diff 需要 15 根 K 线，前 14 根置 null
+#: （与旧 Wilder 种子口径一致；只作用于推荐打分，不影响指标/画图的通达信口径）
+RSI_WARMUP = 14
+
 
 def compute_factor_panel(panel: pl.DataFrame, extended: bool = False) -> pl.DataFrame:
     """在本地行情面板上计算因子，并追加推荐层衍生列。
@@ -74,6 +78,19 @@ def compute_factor_panel(panel: pl.DataFrame, extended: bool = False) -> pl.Data
         (amount_ma20 + 1.0).log().alias('liquidity_log'),
         pl.len().over(partition).cast(pl.Int64).alias('history_rows'),
     ])
+
+    # RSI 预热期（仅打分侧）：rsi_expr 自 2026-11-21 改为通达信 SMA 口径，第 2 根 K 线
+    # 起即有值，K 线图与通达信对齐所需，不改公式本身。但打分层按「有效因子」重新
+    # 归一权重，新股/复牌短历史票其余因子窗口不足为 null 时，几根 K 线的 RSI 会独占
+    # 100% 权重并拿到高分。这里按逐行累计 bar 数补回 Wilder 口径的预热：前 RSI_WARMUP
+    # 根置 null，与其它窗口不足因子同一处理方式。
+    if 'rsi_14' in frame.columns:
+        # 逐票 bar 序号依赖行序，显式按 (ts_code, date) 排序，不依赖因子库输出顺序
+        frame = frame.sort([partition, 'date'])
+        bar_no = pl.int_range(1, pl.len() + 1).over(partition)
+        frame = frame.with_columns(
+            pl.when(bar_no > RSI_WARMUP).then(pl.col('rsi_14'))
+            .otherwise(None).alias('rsi_14'))
 
     score_cols = [column for column in SCORE_COLUMNS if column in frame.columns]
     if extended:

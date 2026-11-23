@@ -5,6 +5,7 @@
 Refactored into Mixins
 """
 
+from typing import Any
 import warnings
 
 from PySide6.QtCore import Qt
@@ -105,7 +106,7 @@ class MainWindow(MainWindowNavigationMixin, MainWindowChartInteractionMixin,
 
         logger.info("MainWindow initialized successfully (Refactored)")
 
-    def _init_managers(self):
+    def _init_managers(self) -> None:
         """
         初始化功能管理器、辅助管理器与数据控制器
         """
@@ -129,7 +130,7 @@ class MainWindow(MainWindowNavigationMixin, MainWindowChartInteractionMixin,
         # 数据控制器：组合替代原 MainWindowDataMixin 继承
         self.data_controller = DataController(self)
 
-    def _init_state_attributes(self):
+    def _init_state_attributes(self) -> None:
         """
         初始化绘图辅助线、均线与当前显示状态等属性
         """
@@ -159,8 +160,8 @@ class MainWindow(MainWindowNavigationMixin, MainWindowChartInteractionMixin,
 
         # 页面类型和排序状态管理
         self.current_page_type = "全部A股"  # 默认页面类型
-        self.page_sort_states = {}  # 存储每个页面的排序状态
-        self.page_sorted_columns = {}  # 存储每个页面的当前排序列
+        self.page_sort_states: dict[str, Any] = {}  # 存储每个页面的排序状态
+        self.page_sorted_columns: dict[str, Any] = {}  # 存储每个页面的当前排序列
 
     def show_message(self, message):
         self.statusBar().showMessage(message, 3000)
@@ -168,10 +169,10 @@ class MainWindow(MainWindowNavigationMixin, MainWindowChartInteractionMixin,
     def show_error(self, error):
         self.statusBar().showMessage(f"Error: {error}", 5000)
 
-    def refresh(self):
+    def refresh(self) -> None:
         self.update()
 
-    def _install_global_key_filter(self):
+    def _install_global_key_filter(self) -> None:
         """
         安装全局按键事件过滤器
         捕获所有按键事件，即使焦点在其他控件上
@@ -311,7 +312,9 @@ class MainWindow(MainWindowNavigationMixin, MainWindowChartInteractionMixin,
 
         # 创建并安装事件过滤器
         self._key_filter = GlobalKeyFilter(self)
-        QApplication.instance().installEventFilter(self._key_filter)
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self._key_filter)
         logger.info("全局按键过滤器已安装")
 
     # ================= DataController 信号转发（原 MainWindowDataMixin）=================

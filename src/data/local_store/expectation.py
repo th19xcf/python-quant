@@ -31,13 +31,15 @@ r"""本地列存「缺数据」的判定：预期为空，还是故障。
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 from typing import Any
 
 import polars as pl
 from loguru import logger
 from polars.exceptions import PolarsError
+
+from src.utils.dates import as_date
 
 #: 上市信息缓存：只保留最新一份 ``(路径, mtime)`` 对应的表，避免常驻多份
 _LISTING_CACHE: dict[tuple[str, int], dict[str, ListingWindow]] = {}
@@ -67,22 +69,8 @@ class ListingWindow:
 
 
 def _as_date(value: Any) -> date | None:
-    """把 parquet 日期值（date / datetime / 字符串）归一为 ``date``。"""
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    text = str(value).strip()
-    if not text or text.lower() in {'none', 'nat', 'null'}:
-        return None
-    for fmt in ('%Y-%m-%d', '%Y%m%d'):
-        try:
-            return datetime.strptime(text[:10] if '-' in text else text[:8], fmt).date()
-        except ValueError:
-            continue
-    return None
+    """委托统一真源 ``src.utils.dates.as_date``（含整数 YYYYMMDD / 斜杠 / NaT 归一）。"""
+    return as_date(value)
 
 
 def listing_windows(store_root: Path | str) -> dict[str, ListingWindow]:

@@ -16,6 +16,10 @@ class IndicatorCacheMixin:
 
     # 由宿主 TechnicalAnalyzer 持有的计算结果缓存
     _calculate_cache: dict[str, Any]
+    pl_df: Any
+    _data_hash: Any
+    _init_plugin_indicator_mapping: Any
+    _calculate_polars_data_hash: Any
 
     # 需要按窗口维护计算状态的指标
     _WINDOW_BASED_INDICATORS = {
@@ -96,7 +100,7 @@ class IndicatorCacheMixin:
                     if cache_key.startswith('plugin_'):
                         del self._calculate_cache[cache_key]
 
-    def _reset_all_indicators(self):
+    def _reset_all_indicators(self) -> None:
         """重置所有指标"""
         # 重新初始化计算状态字典
         self.calculated_indicators = {

@@ -168,6 +168,14 @@ def _date_bounds(path: Path, column: str) -> list[str] | None:
     return [str(low)[:10], str(high)[:10]]
 
 
+def _resolve_date_column(node: dict[str, Any], columns: list[str]) -> str | None:
+    """登记的 ``date_column`` 仍在列里就用它，否则取第一个已知日期列。"""
+    column = node.get('date_column')
+    if isinstance(column, str) and column in columns:
+        return column
+    return next((name for name in DATE_COLUMNS if name in columns), None)
+
+
 def _apply(node: dict[str, Any], path: Path, facts: dict[str, Any]) -> list[str]:
     """按磁盘实测更新一个登记节点的统计字段，返回实际改动的键。"""
     changed: list[str] = []
@@ -188,25 +196,30 @@ def _apply(node: dict[str, Any], path: Path, facts: dict[str, Any]) -> list[str]
         node['cols'] = len(columns)
         changed.append('cols')
     if 'date_range' in node:
-        column = node.get('date_column')
-        if not isinstance(column, str) or column not in columns:
-            column = next((name for name in DATE_COLUMNS if name in columns), None)
+        column = _resolve_date_column(node, columns)
         if column is not None:
             bounds = _date_bounds(path, column)
             if bounds is not None and list(node['date_range']) != bounds:
                 node['date_range'] = bounds
                 changed.append('date_range')
     if 'min_trade_date' in node or 'max_trade_date' in node:
-        column = node.get('date_column')
-        if not isinstance(column, str) or column not in columns:
-            column = next((name for name in DATE_COLUMNS if name in columns), None)
-        bounds = _date_bounds(path, column) if column is not None else None
-        if bounds is not None:
-            low, high = bounds
-            for key, value in (('min_trade_date', low), ('max_trade_date', high)):
-                if key in node and node[key] != value:
-                    node[key] = value
-                    changed.append(key)
+        changed += _apply_trade_date_bounds(node, path, columns)
+    return changed
+
+
+def _apply_trade_date_bounds(node: dict[str, Any], path: Path,
+                             columns: list[str]) -> list[str]:
+    """按磁盘实测刷新 ``min_trade_date`` / ``max_trade_date``，返回改动的键。"""
+    column = _resolve_date_column(node, columns)
+    bounds = _date_bounds(path, column) if column is not None else None
+    if bounds is None:
+        return []
+    changed: list[str] = []
+    low, high = bounds
+    for key, value in (('min_trade_date', low), ('max_trade_date', high)):
+        if key in node and node[key] != value:
+            node[key] = value
+            changed.append(key)
     return changed
 
 

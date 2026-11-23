@@ -176,7 +176,7 @@ _MANIFEST_PAYLOAD: _ManifestPayload = {
         'src/advice/risk_filters.py 推荐/风控逐日行业分散度上限',
         'src/data/services/finance_service.py get_industry',
         'src/data/quality/extended_builders.py::_industry_snapshots 逐层抽取 '
-        'meta/industry_pit/industry_pit.parquet',
+        'meta/industry_pit/industry_snapshot_recent.parquet',
         'tools/research/build_analysis_monthly.py 研究侧同一选择函数',
         'tools/single_window_diag.py --industry 默认取 as_of == 2026-11-04 那一层',
     ],

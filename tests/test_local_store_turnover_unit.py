@@ -57,7 +57,9 @@ from src.data.local_store.turnover import (
 )
 from src.utils.exceptions import DataSourceConnectionError
 
-_DATES = [date(2024, 1, 2) + timedelta(days=i) for i in range(5)]
+#: 连续 5 个工作日（周一至周五）：派生层按交易日历剔除非交易日（G-112），
+#: 原先从 2024-01-02 起连取 5 天会落到周六 01-06，被过滤后行数少 1
+_DATES = [date(2024, 1, 8) + timedelta(days=i) for i in range(5)]
 
 
 @pytest.fixture(autouse=True)

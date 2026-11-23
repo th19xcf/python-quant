@@ -455,14 +455,14 @@ class MainWindowNavigationMixin:
                 target_index = 0  # 循环到开头
         return target_index
 
-    def _on_prev_stock_clicked(self):
+    def _on_prev_stock_clicked(self) -> None:
         """
         点击"上一只"按钮时切换到列表中的上一只股票
         """
         logger.info("点击上一只按钮")
         self._switch_to_adjacent_stock('prev')
 
-    def _on_next_stock_clicked(self):
+    def _on_next_stock_clicked(self) -> None:
         """
         点击"下一只"按钮时切换到列表中的下一只股票
         """

@@ -83,6 +83,8 @@ class BaseBacktestEngine:
         #: 未装配规则时 RiskGate 的处置策略：'adv_gate'（默认，自动装 ADV 闸门）、
         #: 'fail_closed'（直接抛错）、'off'（显式关闭，仅对照实验）
         self.risk_gate_policy: str = 'adv_gate'
+        #: 涨跌停可成交性是否改读 meta/limit/daily 新表（生产 pipeline 打开；裸引擎关闭避免读盘）
+        self.limit_table: bool = False
         #: 行情列契约：换数据源只改 input_contract，缺必需列即抛错
         self.input_contract: FrameContract = BAR_CONTRACT
         #: 价格口径：'auto' / 'adjusted' / 'raw'，见 input_contract

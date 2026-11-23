@@ -128,10 +128,17 @@ def test_registry_has_no_runtime_consumer() -> None:
 
 
 def test_session_ledger_read_only_by_calendar_module() -> None:
-    """台账只有 src/data/trading_calendar.py 一个运行期读取方。"""
+    """台账只有 src/data/trading_calendar.py 一个运行期读取方。
+
+    ``src/data/dataset_contracts.py`` 只登记写入契约与工具注册表（路径/列/dtype
+    元数据），不读取台账内容，故不计为读取方（2026-11-22 契约接入后出现）。
+    """
+    #: 只登记契约、不读内容的元数据模块
+    registry_only = {'src/data/dataset_contracts.py'}
     consumers = [
         path.relative_to(PROJECT_ROOT).as_posix()
         for path in (PROJECT_ROOT / 'src').rglob('*.py')
         if 'session_ledger' in path.read_text(encoding='utf-8')
     ]
-    assert consumers == ['src/data/trading_calendar.py'], consumers
+    readers = [rel for rel in consumers if rel not in registry_only]
+    assert readers == ['src/data/trading_calendar.py'], consumers

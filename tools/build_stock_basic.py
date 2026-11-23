@@ -940,6 +940,7 @@ def main(argv: list[str] | None = None) -> int:
 
     staging = staging_dir(f'stock_basic_{datetime.now():%Y%m%d_%H%M%S}')
     staging.mkdir(parents=True, exist_ok=False)
+    # TODO(write_dataset): stock_basic 未登记契约（暂存写入）
     write_parquet_atomic(candidate, staging / 'stock_basic.parquet')
     if merge_diffs:
         write_text_atomic(

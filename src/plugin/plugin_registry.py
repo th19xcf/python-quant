@@ -20,7 +20,7 @@ class PluginRegistry:
     插件注册表，负责插件的注册和查询
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         # 插件注册表，按插件类型分类
         self.registry: Dict[str, Dict[str, Type[PluginBase]]] = {
             'datasource': {},

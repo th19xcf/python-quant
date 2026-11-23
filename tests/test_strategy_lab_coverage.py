@@ -9,7 +9,6 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 import polars as pl
-import pytest
 
 from src.quant.strategy_lab import backtest, coverage, switch_timing
 from src.quant.strategy_lab.rules import validate_rule
@@ -148,7 +147,9 @@ def _run_switch(tmp_path, monkeypatch, factors):
         }).write_parquet(path)
         paths[code] = path
     monkeypatch.setattr(switch_timing, '_quote_path', lambda code: paths[code])
-    monkeypatch.setattr(backtest, '_load_st_status', lambda *a, **k: {})
+    # 11-22 分层整改后 backtest 改为模块级导入公开函数 panel_inputs.load_st_status
+    # （原 core 私有 _load_st_status 已移除），桩打在 backtest 模块的引用上
+    monkeypatch.setattr(backtest, 'load_st_status', lambda *a, **k: {})
     monkeypatch.setattr(backtest, 'load_benchmark_close', lambda code: {})
     monkeypatch.setattr(coverage, 'DEFAULT_FACTOR_DIR', factors)
     return backtest.run_rule(_rule(days))

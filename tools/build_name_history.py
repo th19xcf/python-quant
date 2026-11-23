@@ -76,6 +76,7 @@ from build_st_history_from_tushare import (  # noqa: E402
 
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic  # noqa: E402
 from src.data.name_consistency import build_tables  # noqa: E402
+from src.data.dataset_contracts import write_dataset
 
 TARGET = ROOT / 'data' / 'local_store' / 'meta' / 'name_history.parquet'
 COVERAGE = ROOT / 'data' / 'local_store' / 'meta' / 'name_history_coverage.json'
@@ -439,7 +440,14 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     if args.apply:
         backup = backup_existing(target, Path(args.backup_dir))
-        write_parquet_atomic(frame, target)
+        # TODO(write_dataset): name_history 未登记契约
+        try:
+            _rel = Path(target).resolve().relative_to((Path(__file__).resolve().parents[1] / 'data' / 'local_store').resolve()).as_posix()
+        except ValueError:
+            write_parquet_atomic(frame, target)
+        else:
+            write_dataset('name_history', frame, rel_path=_rel,
+                          root=Path(__file__).resolve().parents[1] / 'data' / 'local_store', writer='tools/build_name_history.py')
         coverage = {
             'dataset': 'name_history',
             'source': f'{SOURCE}+{SOURCE_SZ}+{CARRIED_SOURCE_PREFIX}<旧码>',

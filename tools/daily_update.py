@@ -9,39 +9,49 @@
      3. 行情采集入库    src.data.tencent.daily_fill.fill_daily_gap(workers=1) + LocalQuoteStore.flush_meta()
      4. 本地行情构建    python -m src.data.local_store build（增量 + 换手派生 + 异常清单）
                        收尾断言：meta/daily_index 末日 == 交易日历最近已完成交易日，不等即判失败
-                       本步带 --skip-factor-verify：因子副本一致性断言依赖第 6 步结果，见下
+                       本步带 --skip-factor-verify：因子副本一致性断言依赖第 7 步结果，见下
      5. 基金行情刷新    python -m src.data.local_store build --data-type fund（增量，末日已最新则跳过）
-     6. 复权因子刷新    factor_rebuild / fund_factors 仅重算「行情末日 > 因子末日」的标的（已最新则跳过）
+     6. 期货行情增量    tools/fetch_futures_daily.py（按交易日增量追加，已覆盖日跳过；
+                       每日 1 次请求，不再整只跳过已存在合约）→
+                       tools/build_futures_continuous.py --apply（重建连续/换月/合约三表）
+                       实测（2026-11-22）无新交易日 ≈20 秒（采集 9 + 重建 11），每新增
+                       交易日 +≈1.5 秒；某日失败即退出且不写该日进度，下次重跑从该日续；
+                       非致命，失败只告警
+     7. 复权因子刷新    factor_rebuild / fund_factors 仅重算「行情末日 > 因子末日」的标的（已最新则跳过）
                        刷新后复验行情内嵌因子副本与快照逐行一致（个股/指数/基金）
-     7. 月度分红全量    tools/refresh_dividend_monthly.py（季度/半年度除权除息 + 月度分红全量 +
+     8. 月度分红全量    tools/refresh_dividend_monthly.py（季度/半年度除权除息 + 月度分红全量 +
                        因子重建，5 阶段串行；非致命，失败只告警）
-     8. 分红日频增量    tools/refresh_dividend_daily.py（基金年度批量 + 个股近两报告期，
+     9. 分红日频增量    tools/refresh_dividend_daily.py（基金年度批量 + 个股近两报告期，
                        只追加/补缺并重建受影响标的因子；非致命，失败只告警）
-     9. 申万行业指数    tools/build_sw_industry_index.py --re-pull（801xxx 段 31 只，幂等只追加；
+    10. 申万行业指数    tools/build_sw_industry_index.py --re-pull（801xxx 段 31 只，幂等只追加；
                        源端 OHLC 只到 2026-11-09，不追 T 日、不伪造，尾缺口记侧车 tail_gap；
                        非致命，失败只告警）
-    10. ST 快照与区间表  src.data.risk_flags refresh + src.data.st_history build
-    11. 名录每日检查    src.main --update-fund / --update-index（有变更才落盘）
-    12. 估值增量        tools/collect_financials.py --only valuation --since auto
-    13. 因子面板增量    tools/factor_panel.py --apply --mode incremental --date <目标日>
+    11. ST 快照与区间表  src.data.risk_flags refresh + src.data.st_history build
+    12. 名录每日检查    src.main --update-fund / --update-index（有变更才落盘）
+    13. 估值增量        tools/collect_financials.py --only valuation --since auto
+    14. 指数月末估值    tools/collect_index_valuation.py --apply（红利择时信号，月末执行）
+    15. 因子面板增量    tools/factor_panel.py --apply --mode incremental --date <目标日>
                        （只算当日截面，按 signal_date 分区 upsert；非致命，失败只告警）
-    14. B 候选名单      tools/b_topn_picks.py --date <目标日>（仅目标日为月末调仓日
+    16. B 候选名单      tools/b_topn_picks.py --date <目标日>（仅目标日为月末调仓日
                        时产出：申万一级行业内前 2 → 合并前 50 等权；只写 reports/）
-    15. 市场宽度增量    src.data.services.breadth_service.refresh
-    16. ST 逐日面板     tools/build_st_daily.py --since <窗口月首> --incremental
+    17. 市场宽度增量    src.data.services.breadth_service.refresh
+    18. ST 逐日面板     tools/build_st_daily.py --since <窗口月首> --incremental
                        只重写最近 N（默认 5）个交易日所在月分区；月末当天即整月重建，
                        窗口跨月时上月一并重写；历史 ST 输入指纹变了或月分区有空洞
                        则转全量（见 ``_derived_window``）
-    17. 涨跌停逐日      tools/build_limit_board.py --since <同上> --incremental
-                       依赖第 16 步的当日 ST 结果：第 16 步失败或面板末日 < 行情末日
+    19. 涨跌停逐日      tools/build_limit_board.py --since <同上> --incremental
+                       依赖第 18 步的当日 ST 结果：第 18 步失败或面板末日 < 行情末日
                        时本步直接阻断（不使用旧 ST 面板静默生成）
-    18. 候选池周更      tools/build_multi_asset_etf_pool.py --apply（未到期不跑）
-    19. 回写与校验      manifest 回写 → 逐件 rows/bytes/sha256 对账 → 预期差集为 0
-    20. 洁净集快照      python -m src.data.quality.clean_set build
-    21. 保鲜体检        src.data.quality.freshness_check --summary
-    22. 版本记录        src.data.data_version（失败只告警，不改数据）
-    23. 备份            tools/backup_critical_assets.py（必须在所有写 data/ 的步骤之后）
-    24. 门禁            tools/daily_data_gate.py（必须在备份之后）
+    20. 候选池周更      tools/build_multi_asset_etf_pool.py --apply（未到期不跑）
+    21. 回写与校验      manifest 回写 → 逐件 rows/bytes/sha256 对账 → 预期差集为 0
+    22. 洁净集快照      python -m src.data.quality.clean_set build
+    23. 保鲜体检        src.data.quality.freshness_check --summary
+    24. 版本记录        python -m src.data.data_version（失败只告警，不改数据）
+    25. 备份            tools/backup_critical_assets.py（必须在所有写 data/ 的步骤之后）
+    26. 门禁            tools/daily_data_gate.py（必须在备份之后）
+    27. 数据集体检      tools/dataset_health_check.py（只读收尾闸门：异常数非 0 时
+                       日更整体判失败并逐条打印 ERROR/WARNING，不回滚已入库步骤；
+                       一页摘要写入 ``_staging/<批次>/dataset_health_summary.md``）
 
 口径与边界::
 
@@ -54,8 +64,10 @@
     - 每步独立记录成败，某步失败只记录并继续后续步骤；最后一行汇总给出
       「N 步 ok / 失败 M（致命 K）」与总耗时，失败步逐条列出明细。
     - 致命步（行情采集、本地构建、基金行情刷新、复权因子刷新、回写校验、
-      备份、门禁）任一失败，退出码为 1；其余步骤失败只记录，不影响退出码。
-      备份/门禁的先后顺序是硬约束，新增步骤只能插在它们之前。
+      备份、门禁、数据集体检）任一失败，退出码为 1；其余步骤失败只记录，
+      不影响退出码。备份/门禁的先后顺序是硬约束，新增步骤只能插在它们之前；
+      唯一的例外是只读的数据集体检，它必须排在门禁之后做最后一道闸门，且
+      只改退出码、不回滚也不阻断前面已完成的入库步骤。
     - ST 逐日/涨跌停逐日固定排在「市场宽度」之后（第 16、17 步）：两者都只吃
       行情 + 名称/ST 区间，涨跌停还要读当天的 ST 面板，故必须先后相邻；第 16 步
       失败或面板末日 < 行情末日时，第 17 步直接判失败，不落旧 ST 结果。
@@ -106,6 +118,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -227,6 +240,14 @@ AUX_POOL_OUTPUTS = (
 DEFAULT_POOL_REFRESH_DAYS = 7
 #: ST 逐日 / 涨跌停逐日增量窗口：最近 N 个交易日所在月分区（跨月自然含上月）
 DERIVED_LOOKBACK_SESSIONS = 5
+#: 期货日更会写的件（三张元数据表 + 侧车；单合约日线按 ``quotes/futures/`` 前缀另行登记）。
+AUX_FUTURES_OUTPUTS = (
+    'meta/multi_asset/futures_contracts.parquet',
+    'meta/multi_asset/futures_continuous.parquet',
+    'meta/multi_asset/futures_roll_events.parquet',
+    'meta/multi_asset/futures_manifest.json',
+)
+
 #: 市场宽度日更会写的件（增量补齐，行情末根未前进时不落盘）。
 AUX_BREADTH_OUTPUTS = (
     'meta/breadth/breadth_daily.parquet',
@@ -241,19 +262,27 @@ AUX_INDEX_VALUATION_OUTPUTS = (
 #: 增量清点跳过 ``backtest_runs``：回测运行记录是结果归档（json/csv/log 与索引），
 #: 不是数据表，日更既不产出也不消费它，计入会让「本次新增文件」混入非数据资产。
 SKIP_DIRS = {'_backup', '__pycache__', 'backtest_runs'}
+#: 单入口统一日志（JSONL 追加：run_start / step_start / step_end / run_end）。
+DAILY_LOG = ROOT / 'work' / 'logs' / 'daily_update.log'
+#: 入口锁：同一时间只允许一个写数据进程；持有超过该小时数即判陈旧并归档告警。
+LOCK_PATH = ROOT / '_locks' / 'daily_update.lock'
+LOCK_MAX_AGE_HOURS = float(os.environ.get('QUANT_DAILY_LOCK_MAX_HOURS', '12'))
 
 #: 单入口步骤顺序（dry-run 与 apply 共用）：(键, 名称, 是否致命)。
 #: 硬约束：备份在所有写 ``data/`` 的步骤之后，门禁在备份之后。
 #: 顺序理由：``build``（第 4 步）跑的是 ``--skip-factor-verify``，因为它自带的
-#: 「行情内嵌因子副本 == 因子快照」断言依赖第 5 步（基金行情刷新）与第 6 步
+#: 「行情内嵌因子副本 == 因子快照」断言依赖第 5 步（基金行情刷新）与第 7 步
 #: （复权因子刷新）。断言若留在第 4 步，基金滞后时第 4 步必红、而能修复它的
-#: 第 6 步排在后面，形成死锁；故断言收窄到第 6 步刷新完成后执行。
+#: 第 7 步排在后面，形成死锁；故断言收窄到第 7 步刷新完成后执行。
+#: 期货（第 6 步）插在行情族（3~5 步）之后、派生层（7 步起）之前：只依赖自己的
+#: 采集与构建，不被任何股票派生步骤消费。
 STEP_PLAN: tuple[tuple[str, str, bool], ...] = (
     ('code_table', '证券码表（names.json / name_history / stock_basic）', False),
     ('industry', '行业快照', False),
     ('fill', '行情采集入库', True),
     ('build', '本地行情构建 + 末日断言', True),
     ('fund_quote', '基金行情刷新（通达信本地增量）', True),
+    ('futures', '期货行情增量（按交易日追加 + 连续合约重建）', False),
     ('factor', '复权因子刷新（个股 + 基金）', True),
     ('dividend_monthly', '月度分红全量（季度/半年度除权除息 + 月度分红 + 因子重建）', False),
     ('dividend', '分红日频增量（基金年度批量 + 个股近两报告期）', False),
@@ -265,6 +294,9 @@ STEP_PLAN: tuple[tuple[str, str, bool], ...] = (
     ('factor_panel', '因子面板增量（当日截面按 signal_date 分区 upsert）', False),
     ('b_topn_picks', 'B 股东盈余比候选名单（月末调仓日：行业内前 2 → 前 50 等权）', False),
     ('breadth', '市场宽度增量', False),
+    ('breadth_ma', '均线占比宽度（breadth_ma_daily，依赖 build）', False),
+    ('state_vector', '市场状态向量（state_vector_daily，依赖 breadth_ma）', False),
+    ('macro', '宏观两融日更（源端缺口补齐，需 --allow-remote）', False),
     ('st_daily', 'ST 逐日面板增量（最近 N 个交易日所在月分区）', False),
     ('limit_daily', '涨跌停逐日增量（依赖 ST 逐日当日结果）', False),
     ('pool', '候选池周更', False),
@@ -274,6 +306,8 @@ STEP_PLAN: tuple[tuple[str, str, bool], ...] = (
     ('version', '数据版本记录', False),
     ('backup', '不可重建资产备份', True),
     ('gate', '每日数据门禁', True),
+    # 只读收尾闸门：放在门禁之后，异常只改退出码，不回滚已完成的入库步骤。
+    ('dataset_health', '数据集体检（一页摘要入日更日志）', True),
 )
 
 
@@ -1536,6 +1570,30 @@ def _step_fund_quotes(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]
     return ok, f'末日 {before}→{after or "-"} | 落后 {len(behind)} 只 | rc={code}'
 
 
+def _step_futures(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
+    """期货日线按交易日增量追加 → 重建连续/换月/合约三表（非致命）。
+
+    采集失败即不重建：避免在旧数据上刷出新的 ``built_at`` 掩盖停更。
+    无新交易日时采集与构建均不落盘（见 ``fetch/build`` 的幂等分支）。
+    """
+    code = _run_module([sys.executable, str(ROOT / 'tools' / 'fetch_futures_daily.py')],
+                       '期货日线采集')
+    if code != 0:
+        return False, f'采集返回 {code}，该日未记进度、未重建'
+    build = _run_module([sys.executable, str(ROOT / 'tools' / 'build_futures_continuous.py'),
+                         '--apply'], '期货连续合约重建')
+    plan.expected.update(AUX_FUTURES_OUTPUTS)
+    futures_dir = plan.root / 'quotes' / 'futures'
+    if futures_dir.is_dir():
+        for path in futures_dir.rglob('*.parquet'):
+            rel = path.relative_to(plan.root).as_posix()
+            plan.expected.add(rel)
+            plan.expected.add(Path(rel).with_suffix('.manifest.json').as_posix())
+    if build != 0:
+        return False, f'重建返回 {build}'
+    return True, '增量追加 + 三表重建完成'
+
+
 def _read_optional_frame(path: Path) -> pl.DataFrame:
     if not path.is_file():
         return pl.DataFrame()
@@ -1767,6 +1825,126 @@ def _step_gate(plan: _Plan) -> tuple[bool, str]:
     return code == 0, f'rc={code}'
 
 
+def _step_dataset_health(plan: _Plan, args: argparse.Namespace,
+                         state: dict[str, Any]) -> tuple[bool, str]:
+    """日更最后一道闸门：按契约只读体检，异常只判失败、不回滚已入库步骤。
+
+    分级沿用 ``tools/dataset_health_check.py``：契约违规 / schema 不符 / 空表 /
+    关键列空值 / ``max_date`` 滞后超阈值算异常；ledger 未登记、目录级 manifest
+    缺失或滞后算告警。滞后阈值取契约里的 ``max_lag_days``（与
+    ``freshness_check.LAG_WARN_MAX`` 同为 5 自然日），不另造一套。
+    """
+    out_dir = ROOT / 'artifacts' / 'dataset_health'
+    proc = subprocess.run(
+        [sys.executable, str(ROOT / 'tools' / 'dataset_health_check.py'),
+         '--root', str(plan.root), '--json'],
+        cwd=str(ROOT), capture_output=True, text=True,
+        encoding='utf-8', errors='replace')
+    if proc.returncode not in (0, 1):
+        tail = (proc.stderr or proc.stdout or '').strip().splitlines()
+        return False, f'体检未跑通（rc={proc.returncode}）：{tail[-1][:200] if tail else "无输出"}'
+
+    as_of = date.today().isoformat()
+    report_path = out_dir / f'{as_of}.json'
+    try:
+        report = json.loads(report_path.read_text(encoding='utf-8'))
+    except (OSError, ValueError) as exc:
+        return False, f'体检报告读取失败（{report_path.name}）：{exc}'
+
+    summary = report.get('summary') or {}
+    errors = int(summary.get('error') or 0)
+    warns = int(summary.get('warn') or 0)
+    lines = [
+        f'# 数据体检摘要 {report.get("as_of")}',
+        f'- 覆盖数据集：{summary.get("datasets", 0)}；异常 {errors}；仅告警 {warns}；'
+        f'健康 {summary.get("ok", 0)}',
+        '- 异常：契约违规 / schema 不符 / 空表 / 关键列空值 / max_date 滞后超阈值',
+        '- 告警：ledger 未登记 / 目录级 manifest 缺失或滞后',
+        f'- 报告：{(out_dir / (as_of + ".md")).relative_to(ROOT).as_posix()}',
+        '',
+    ]
+    bad: list[str] = []
+    for item in report.get('results') or []:
+        kinds = [f.get('kind') for f in (item.get('findings') or [])
+                 if f.get('level') == 'error']
+        if kinds:
+            bad.append(f'{item.get("key")}({",".join(sorted({str(k) for k in kinds}))})')
+        for finding in item.get('findings') or []:
+            level = 'ERROR' if finding.get('level') == 'error' else 'WARNING'
+            line = (f'[{level}] {item.get("key")}（{item.get("label", "")}）'
+                    f'· {finding.get("kind")}：{finding.get("detail")}')
+            lines.append(line)
+            print(line)
+            if level == 'ERROR':
+                logger.error('[daily] {}', line)
+            else:
+                logger.warning('[daily] {}', line)
+
+    batch_dir = state.get('batch_dir')
+    if batch_dir:
+        batch_dir.mkdir(parents=True, exist_ok=True)
+        (batch_dir / 'dataset_health_summary.md').write_text(
+            '\n'.join(lines) + '\n', encoding='utf-8')
+    state['health'] = {'error': errors, 'warn': warns}
+    detail = f'异常 {errors} / 告警 {warns}'
+    if bad:
+        detail += ' | ' + ', '.join(bad)
+    return errors == 0, detail
+
+
+def _step_derived_builder(plan: _Plan, dataset: str, script: str,
+                          label: str) -> tuple[bool, str]:
+    """本地派生表日更：跑 ``tools/<script> --apply``，末根未前进不算失败。
+
+    幂等键：按交易日重写整表，断点分块续算；落盘后由构建脚本自行补登 ledger。
+    """
+    import polars as pl  # noqa: PLC0415
+    from src.data.dataset_contracts import contract_for_key  # noqa: PLC0415
+
+    contract = contract_for_key(dataset)
+    target = plan.root / contract.pattern
+    try:
+        before = target.stat().st_mtime_ns
+    except OSError:
+        before = 0
+    code = _run_module([sys.executable, str(ROOT / 'tools' / script),
+                        '--store-root', str(plan.root), '--apply'], label)
+    if code != 0:
+        return False, f'{script} rc={code}'
+    try:
+        after = target.stat().st_mtime_ns
+    except OSError:
+        return False, '未落盘'
+    if after == before:
+        return True, '无新增未落盘'
+    frame = pl.read_parquet(target, columns=[contract.date_column])
+    last = str(frame[contract.date_column].max())[:10]
+    return True, f'末日 {last} | {frame.height:,} 行 | 已补齐'
+
+
+def _step_macro(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
+    """宏观两融日更：源端补缺 → 合并校验 → 追加发布（需 --allow-remote）。
+
+    幂等键：只补源端缺失日，按 (date, market) 追加；发布前断言既有行不变。
+    """
+    if not args.allow_remote:
+        return True, '本轮跳过（未加 --allow-remote）'
+    tool = ROOT / 'tools' / 'margin_daily.py'
+    for sub in ('collect', 'build'):
+        code = _run_module([sys.executable, str(tool), sub], f'宏观两融 {sub}')
+        if code != 0:
+            return False, f'{sub} rc={code}'
+    code = _run_module([sys.executable, str(tool), 'publish', '--yes'], '宏观两融发布')
+    if code != 0:
+        return False, f'publish rc={code}'
+    import polars as pl  # noqa: PLC0415
+    from src.data.dataset_contracts import contract_for_key  # noqa: PLC0415
+
+    contract = contract_for_key('macro_market_margin')
+    frame = pl.read_parquet(plan.root / contract.pattern, columns=['date'])
+    return True, f'末日 {str(frame["date"].max())[:10]} | {frame.height:,} 行 | 已发布'
+
+
 def _step_list(plan: _Plan, args: argparse.Namespace,
                state: dict[str, Any]) -> list[tuple[str, str, bool,
                                                     Callable[[], tuple[bool, str]]]]:
@@ -1777,6 +1955,7 @@ def _step_list(plan: _Plan, args: argparse.Namespace,
         'fill': lambda: _step_fill(plan, args),
         'build': lambda: _step_build(plan, args),
         'fund_quote': lambda: _step_fund_quotes(plan, args),
+        'futures': lambda: _step_futures(plan, args),
         'factor': lambda: _step_factors(plan, args),
         'dividend_monthly': lambda: _step_dividend_monthly(plan, args),
         'dividend': lambda: _step_dividend(plan, args),
@@ -1788,6 +1967,11 @@ def _step_list(plan: _Plan, args: argparse.Namespace,
         'factor_panel': lambda: _step_factor_panel(plan, args),
         'b_topn_picks': lambda: _step_b_topn_picks(plan, args),
         'breadth': lambda: _run_breadth(plan),
+        'breadth_ma': lambda: _step_derived_builder(
+            plan, 'breadth_ma_daily', 'build_breadth_ma.py', '均线占比宽度'),
+        'state_vector': lambda: _step_derived_builder(
+            plan, 'state_vector_daily', 'build_state_vector.py', '市场状态向量'),
+        'macro': lambda: _step_macro(plan, args),
         'st_daily': lambda: _step_st_daily(plan, args, state),
         'limit_daily': lambda: _step_limit_daily(plan, args, state),
         'pool': lambda: _step_pool(plan, args),
@@ -1797,6 +1981,7 @@ def _step_list(plan: _Plan, args: argparse.Namespace,
         'version': lambda: _run_version(plan.root, state.get('changed') or {}),
         'backup': _step_backup,
         'gate': lambda: _step_gate(plan),
+        'dataset_health': lambda: _step_dataset_health(plan, args, state),
     }
     return [(key, name, critical, runners[key])
             for key, name, critical in STEP_PLAN]
@@ -1932,19 +2117,108 @@ def _print_dry_plan(plan: _Plan, args: argparse.Namespace) -> None:
     for index, (key, name, critical) in enumerate(STEP_PLAN, 1):
         mark = '（致命）' if critical else ''
         print(f'  {index:>2}. {name}{mark}{_skip_note(key, plan, args)}')
-    print(f'  顺序约束：备份（第 {len(STEP_PLAN) - 1} 步）在所有写 data/ 的步骤之后，'
-          f'门禁（第 {len(STEP_PLAN)} 步）在备份之后；任一步失败只记录并继续，'
-          '致命步失败返回 1。')
+    index = {key: no for no, (key, _, _) in enumerate(STEP_PLAN, 1)}
+    print(f'  顺序约束：备份（第 {index["backup"]} 步）在所有写 data/ 的步骤之后，'
+          f'门禁（第 {index["gate"]} 步）在备份之后，数据集体检（第 '
+          f'{index["dataset_health"]} 步）是只读收尾闸门：异常只改退出码、'
+          '不回滚已完成的入库步骤；任一步失败只记录并继续，致命步失败返回 1。')
 
 
-def _run_apply(plan: _Plan, args: argparse.Namespace) -> int:
+def _log_event(payload: dict[str, Any]) -> None:
+    """统一日志：锁与 run 事件追加到同一份 JSONL（失败不影响执行）。"""
+    try:
+        DAILY_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with DAILY_LOG.open('a', encoding='utf-8') as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + '\n')
+    except OSError as exc:
+        logger.warning('[daily] 日志写入失败（不影响执行）：{}', exc)
+
+
+def _pid_alive(pid: int) -> bool:
+    """进程存活判定（不发信号，避免误杀）。"""
+    if pid <= 0:
+        return False
+    if os.name == 'nt':
+        try:
+            import ctypes  # noqa: PLC0415 - 仅 Windows
+
+            handle = ctypes.windll.kernel32.OpenProcess(0x00100000, False, pid)
+        except Exception:  # noqa: BLE001 - 判定失败按存活处理，宁可拒绝也不覆盖
+            return True
+        if not handle:
+            return False
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return True
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _acquire_lock(token: dict[str, Any]) -> Path:
+    """入口锁 + run 令牌：同一时间只允许一个写数据进程；陈旧锁归档告警后接管。"""
+    LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    for _ in range(2):
+        try:
+            fd = os.open(str(LOCK_PATH), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            info: dict[str, Any] = {}
+            try:
+                info = json.loads(LOCK_PATH.read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                info = {}
+            pid = int(info.get('pid') or 0)
+            alive = _pid_alive(pid)
+            try:
+                age = (datetime.now()
+                       - datetime.fromisoformat(str(info.get('started_at')))).total_seconds() / 3600
+            except (TypeError, ValueError):
+                age = LOCK_MAX_AGE_HOURS + 1.0
+            if alive and pid != os.getpid() and age <= LOCK_MAX_AGE_HOURS:
+                raise SystemExit(
+                    f'[daily] 已有数据更新进程在运行（pid {pid}，起始 '
+                    f'{info.get("started_at", "?")}，锁 {LOCK_PATH}）；本次退出')
+            archived = LOCK_PATH.with_name(
+                f'{LOCK_PATH.name}.stale.{datetime.now():%Y%m%d%H%M%S}')
+            os.replace(LOCK_PATH, archived)
+            logger.warning('[daily] 陈旧锁（pid {}，存活 {}，{:.1f}h）已归档到 {}，继续执行',
+                           pid, alive, age, archived)
+            _log_event({'event': 'stale_lock', 'pid': pid, 'alive': alive,
+                        'hours': round(age, 2), 'archived': archived.name})
+            continue
+        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+            json.dump(token, handle, ensure_ascii=False)
+        _log_event({'event': 'lock_acquired', **token})
+        return LOCK_PATH
+    raise SystemExit(f'[daily] 两次尝试仍未取得入口锁：{LOCK_PATH}')
+
+
+def _release_lock(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        logger.warning('[daily] 锁释放失败（需人工清理 {}）：{}', path, exc)
+        return
+    _log_event({'event': 'lock_released', 'pid': os.getpid()})
+
+
+def _run_apply(plan: _Plan, args: argparse.Namespace,
+               only: tuple[str, ...] = ()) -> int:
     batch = args.batch or f'daily_{plan.latest.strftime("%Y%m%d")}'
     batch_dir = ROOT / '_staging' / batch
     _write_staging(batch_dir, plan.gaps, plan.inputs)
 
-    state: dict[str, Any] = {}
+    state: dict[str, Any] = {'batch_dir': batch_dir}
+    steps = [item for item in _step_list(plan, args, state)
+             if not only or item[0] in only]
+    _log_event({'event': 'run_start', 'pid': os.getpid(), 'argv': sys.argv[1:],
+                'range': plan.range_label, 'steps': [item[0] for item in steps],
+                'ts': datetime.now().isoformat(timespec='seconds')})
     started = time.perf_counter()
-    outcomes = _run_steps(_step_list(plan, args, state))
+    outcomes = _run_steps(steps)
     seconds = time.perf_counter() - started
 
     report = state.get('report') or {}
@@ -1954,8 +2228,16 @@ def _run_apply(plan: _Plan, args: argparse.Namespace) -> int:
         'rows_deleted': report.get('deleted', 0),
         'diffs': len(report.get('problems') or ()),
         'agg_sha256': state.get('digest'),
+        'health_errors': (state.get('health') or {}).get('error', 0),
+        'health_warns': (state.get('health') or {}).get('warn', 0),
     })
     code = _print_run_summary(plan, outcomes, state, seconds)
+    done = {item.key for item in outcomes}
+    _log_event({'event': 'run_end', 'exit': code, 'seconds': round(seconds, 2),
+                'failed': [item.key for item in outcomes if not item.ok],
+                'not_run': [item[0] for item in _step_list(plan, args, state)
+                            if item[0] not in done],
+                'ts': datetime.now().isoformat(timespec='seconds')})
     if args.target_holdings:
         _run_target_holdings(plan.latest, args.capital)
     return code
@@ -1963,10 +2245,10 @@ def _run_apply(plan: _Plan, args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description='日更/补数单入口（一条命令 + 一行状态）')
-    parser.add_argument('--start', type=_parse_date, default=None,
-                        help='起始日期（YYYY-MM-DD；作为采集 since 与构建 --since 下界）')
-    parser.add_argument('--end', type=_parse_date, default=None,
-                        help='目标交易日（缺省：允许联网时自动探测，否则取本地最新末根）')
+    parser.add_argument('--start', '--since', dest='start', type=_parse_date, default=None,
+                        help='起始日期（YYYY-MM-DD；--since 同义，作为采集/构建下界）')
+    parser.add_argument('--end', '--until', dest='end', type=_parse_date, default=None,
+                        help='目标交易日（--until 同义；缺省：允许联网时自动探测，否则取本地最新末根）')
     parser.add_argument('--codes', default='', help='逗号分隔的 ts_code 清单（补数用）')
     parser.add_argument('--code-file', default='', help='代码清单文件（一行一个，补数用）')
     parser.add_argument('--batch', default='', help='补数批次名，缺口落到 _staging/<批次>/')
@@ -1976,6 +2258,12 @@ def main(argv: list[str] | None = None) -> int:
                         help='末根距目标交易日超过该天数视为长期停更，不进待补清单（默认 90）')
     parser.add_argument('--store-root', default=None, help='local_store 根（默认取项目配置）')
     parser.add_argument('--apply', action='store_true', help='真正写盘（缺省 dry-run）')
+    parser.add_argument('--dry-run', action='store_true',
+                        help='显式 dry-run（默认行为；与 --apply 同给时以 dry-run 为准，不取锁不写盘）')
+    parser.add_argument('--only', default='',
+                        help='只执行指定步骤（逗号分隔步骤键，键见 dry-run 清单）')
+    parser.add_argument('--full', action='store_true',
+                        help='全量模式（等同 --full-derived：ST/涨跌停全量重建）')
     parser.add_argument('--allow-remote', action='store_true',
                         help='显式允许联网采集（缺省只跑本地构建与校验）')
     parser.add_argument('--verbose', action='store_true',
@@ -2025,21 +2313,50 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--pool-refresh-days', type=int, default=DEFAULT_POOL_REFRESH_DAYS,
                         help='候选池距上次重建超过该天数才重建（默认 7）')
     args = parser.parse_args(argv)
+    if args.full:
+        args.full_derived = True
 
     logger.remove()
     logger.add(sys.stderr, level='DEBUG' if args.verbose else 'WARNING')
 
-    plan = _build_plan(args)
-    logger.info('[daily] 覆盖 {} 个标的，目标交易日 {}，待补 {} 个（长期停更跳过 {} 个），输入集合哈希 {}',
-                len(plan.coverage), plan.latest, len(plan.gaps), len(plan.skipped),
-                plan.inputs['input_hash'])
+    only = tuple(item.strip() for item in args.only.split(',') if item.strip())
+    valid = {spec[0] for spec in STEP_PLAN}
+    unknown = [item for item in only if item not in valid]
+    if unknown:
+        print(f'[daily] 未知步骤键：{",".join(unknown)}；可用键：{",".join(sorted(valid))}')
+        return 2
 
+    args.apply = bool(args.apply and not args.dry_run)
     if not args.apply:
-        # dry-run：只盘点，不联网、不落盘（含 _staging）；打印完整步骤清单与顺序
+        # dry-run：只盘点，不联网、不落盘（含 _staging）、不取锁
+        plan = _build_plan(args)
+        logger.info('[daily] 覆盖 {} 个标的，目标交易日 {}，待补 {} 个（长期停更跳过 {} 个），'
+                    '输入集合哈希 {}', len(plan.coverage), plan.latest, len(plan.gaps),
+                    len(plan.skipped), plan.inputs['input_hash'])
         _print_dry_plan(plan, args)
+        if only:
+            print(f'  本次只执行：{",".join(only)}（其余步骤不纳入）')
         return 0
 
-    return _run_apply(plan, args)
+    from src.data.dataset_contracts import (  # noqa: PLC0415
+        RUN_TOKEN_ENV, RUN_TOKEN_FILE_ENV, build_run_token)
+
+    step_keys = [spec[0] for spec in STEP_PLAN if not only or spec[0] in only]
+    token = build_run_token(steps=step_keys)
+    lock = _acquire_lock(token)
+    os.environ[RUN_TOKEN_ENV] = json.dumps(token, ensure_ascii=False)
+    os.environ[RUN_TOKEN_FILE_ENV] = str(lock)
+    try:
+        plan = _build_plan(args)
+        logger.info('[daily] 覆盖 {} 个标的，目标交易日 {}，待补 {} 个（长期停更跳过 {} 个），'
+                    '输入集合哈希 {}，run_id {}', len(plan.coverage), plan.latest,
+                    len(plan.gaps), len(plan.skipped), plan.inputs['input_hash'],
+                    token['run_id'])
+        return _run_apply(plan, args, only)
+    finally:
+        os.environ.pop(RUN_TOKEN_ENV, None)
+        os.environ.pop(RUN_TOKEN_FILE_ENV, None)
+        _release_lock(lock)
 
 
 if __name__ == '__main__':

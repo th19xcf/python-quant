@@ -68,6 +68,7 @@ from src.data.manifest_refresh import refresh_manifest_files  # noqa: E402
 from src.data.staging import staging_dir  # noqa: E402
 from tools.derive_free_float_fill import BASE_COLUMNS, clip_filled_to_float, derive  # noqa: E402
 from tools.derive_free_float_fill import check as derive_check  # noqa: E402
+from src.data.dataset_contracts import write_dataset
 
 #: 任务名：``_staging/<任务>_<日期>/`` 的固定前缀（DG-5）
 TASK = 'free_float_shares_em'
@@ -202,7 +203,13 @@ def fetch(*, work: Path, throttle: float = THROTTLE) -> Path:
             'SECUCODE': pl.String, 'END_DATE': pl.String,
             'LISTED_A_SHARES': pl.Float64, 'FREELIQCI_SHARES': pl.Float64,
             'TOTAL_SHARES': pl.Float64, 'CHANGE_REASON': pl.String})
-        write_parquet_atomic(frame, target)
+        try:
+            _rel = Path(target).resolve().relative_to((Path(__file__).resolve().parents[1] / 'data' / 'local_store').resolve()).as_posix()
+        except ValueError:
+            write_parquet_atomic(frame, target)
+        else:
+            write_dataset('stock_shares', frame, rel_path=_rel,
+                          root=Path(__file__).resolve().parents[1] / 'data' / 'local_store', writer='tools/fill_free_float_shares.py')
         _append_csv(progress, ['page', 'rows', 'status', 'attempts', 'updated_at'],
                     [page, frame.height, 'ok', attempts, now])
         done[page] = frame.height
@@ -407,7 +414,13 @@ def cmd_apply(table: pl.DataFrame, planned: pl.DataFrame, stats: dict[str, int],
     if _sha256(backup) != sha_before:
         raise RuntimeError('备份校验失败')
 
-    write_parquet_atomic(derived, src)
+    try:
+        _rel = Path(src).resolve().relative_to((Path(__file__).resolve().parents[1] / 'data' / 'local_store').resolve()).as_posix()
+    except ValueError:
+        write_parquet_atomic(derived, src)
+    else:
+        write_dataset('stock_shares', derived, rel_path=_rel,
+                      root=Path(__file__).resolve().parents[1] / 'data' / 'local_store', writer='tools/fill_free_float_shares.py')
     sha_after = _sha256(src)
     reread = pl.read_parquet(src)
     derive_check(reread, base)

@@ -31,7 +31,7 @@ from typing import Dict, Type
 class _FactorRegistry:
     """因子类注册表：factor_name → 因子类"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._registry: Dict[str, Type] = {}
 
     def register(self, name: str) -> Callable[[Type], Type]:

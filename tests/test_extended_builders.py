@@ -153,7 +153,7 @@ def test_industry_pit_splits_on_change_points(tmp_path: Path) -> None:
     assert summary['snapshots'] == 2
     assert summary['codes'] == 2
 
-    frame = pl.read_parquet(tmp_path / 'meta' / 'industry_pit' / 'industry_pit.parquet')
+    frame = pl.read_parquet(tmp_path / 'meta' / 'industry_pit' / 'industry_snapshot_recent.parquet')
     l2 = frame.filter((pl.col('ts_code') == '600000.SH') & (pl.col('level') == 'L2'))
     assert l2.sort('effective_date')['industry_code'].to_list() == ['T0101', 'T0102']
     assert l2.sort('effective_date')['end_date'].to_list() == [day2, None]

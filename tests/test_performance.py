@@ -67,7 +67,7 @@ def data() -> pl.DataFrame:
     return generate_test_data()
 
 
-def test_data_processing_performance(data: pl.DataFrame):
+def _run_data_processing_performance(data: pl.DataFrame):
     """
     测试数据处理性能
 
@@ -118,6 +118,11 @@ def test_data_processing_performance(data: pl.DataFrame):
     }
 
 
+def test_data_processing_performance(data: pl.DataFrame) -> None:
+    """pytest 入口：断言在 ``_run_data_processing_performance`` 内完成；指标字典只给 ``main()`` 打印用。"""
+    _run_data_processing_performance(data)
+
+
 def _assert_factor_result(calculator, factor_type, columns_before, expected_height):
     """断言因子计算成功：返回表行数不变，且至少新增一列因子。"""
     result = calculator.calculate_factors([factor_type])
@@ -128,7 +133,7 @@ def _assert_factor_result(calculator, factor_type, columns_before, expected_heig
     assert len(result.columns) > columns_before
 
 
-def test_alpha_factor_calculation(data: pl.DataFrame):
+def _run_alpha_factor_calculation(data: pl.DataFrame):
     """
     测试Alpha因子计算性能
 
@@ -189,7 +194,12 @@ def test_alpha_factor_calculation(data: pl.DataFrame):
     }
 
 
-def test_backtest_performance(data: pl.DataFrame):
+def test_alpha_factor_calculation(data: pl.DataFrame) -> None:
+    """pytest 入口：断言在 ``_run_alpha_factor_calculation`` 内完成；指标字典只给 ``main()`` 打印用。"""
+    _run_alpha_factor_calculation(data)
+
+
+def _run_backtest_performance(data: pl.DataFrame):
     """
     测试回测性能
 
@@ -247,7 +257,12 @@ def test_backtest_performance(data: pl.DataFrame):
     }
 
 
-def test_stock_recommendation(data: pl.DataFrame):
+def test_backtest_performance(data: pl.DataFrame) -> None:
+    """pytest 入口：断言在 ``_run_backtest_performance`` 内完成；指标字典只给 ``main()`` 打印用。"""
+    _run_backtest_performance(data)
+
+
+def _run_stock_recommendation(data: pl.DataFrame):
     """
     测试股票推荐性能
 
@@ -283,7 +298,12 @@ def test_stock_recommendation(data: pl.DataFrame):
     }
 
 
-def test_memory_usage(data: pl.DataFrame):
+def test_stock_recommendation(data: pl.DataFrame) -> None:
+    """pytest 入口：断言在 ``_run_stock_recommendation`` 内完成；指标字典只给 ``main()`` 打印用。"""
+    _run_stock_recommendation(data)
+
+
+def _run_memory_usage(data: pl.DataFrame):
     """
     测试内存使用情况
 
@@ -324,7 +344,12 @@ def test_memory_usage(data: pl.DataFrame):
     }
 
 
-def test_cpu_usage_baseline(data: pl.DataFrame):
+def test_memory_usage(data: pl.DataFrame) -> None:
+    """pytest 入口：断言在 ``_run_memory_usage`` 内完成；指标字典只给 ``main()`` 打印用。"""
+    _run_memory_usage(data)
+
+
+def _run_cpu_usage_baseline(data: pl.DataFrame):
     """CPU/内存资源基线：向量化信号路径的粗粒度资源门禁。
 
     固定工作量（单标的 1825 根 K 线 × 20 轮）采集进程 CPU 时间与 RSS 增量，
@@ -378,6 +403,11 @@ def test_cpu_usage_baseline(data: pl.DataFrame):
     }
 
 
+def test_cpu_usage_baseline(data: pl.DataFrame) -> None:
+    """pytest 入口：断言在 ``_run_cpu_usage_baseline`` 内完成；指标字典只给 ``main()`` 打印用。"""
+    _run_cpu_usage_baseline(data)
+
+
 def main():
     """
     主函数
@@ -388,22 +418,22 @@ def main():
     test_data = generate_test_data(days=1825, stocks=1000)
 
     # 测试数据处理性能
-    data_processing_results = test_data_processing_performance(test_data)
+    data_processing_results = _run_data_processing_performance(test_data)
 
     # 测试Alpha因子计算性能
-    alpha_calculation_results = test_alpha_factor_calculation(test_data)
+    alpha_calculation_results = _run_alpha_factor_calculation(test_data)
 
     # 测试回测性能
-    backtest_results = test_backtest_performance(test_data)
+    backtest_results = _run_backtest_performance(test_data)
 
     # 测试股票推荐性能
-    recommendation_results = test_stock_recommendation(test_data)
+    recommendation_results = _run_stock_recommendation(test_data)
 
     # 测试内存使用情况
-    memory_results = test_memory_usage(test_data)
+    memory_results = _run_memory_usage(test_data)
 
     # 测试 CPU/内存资源基线
-    resource_results = test_cpu_usage_baseline(test_data)
+    resource_results = _run_cpu_usage_baseline(test_data)
 
     # 输出测试结果
     logger.info("\n===== 性能测试结果 =====")

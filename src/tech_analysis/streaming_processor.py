@@ -192,7 +192,7 @@ class StreamingProcessor:
     def get_history_data(self) -> pl.DataFrame | None:
         return self.history_data
 
-    def reset(self):
+    def reset(self) -> None:
         self.history_data = None
         for ind in self.indicators:
             self.calculated_indicators[ind] = False

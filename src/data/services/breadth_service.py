@@ -39,6 +39,7 @@ from src.core.market_rules import ExecutionRules
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic
 from src.data.quality.code_migration import load_entity_index
 from src.data.st_history import load_intervals
+from src.utils.dates import as_date
 
 #: 快照口径版本号；口径变化时必须改版本，触发全量重建
 BREADTH_VERSION = 'breadth_v1'
@@ -461,14 +462,5 @@ def get_breadth(
 
 
 def _as_date(value: Any) -> date | None:
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    text = str(value)[:10]
-    try:
-        return date.fromisoformat(text)
-    except ValueError:
-        return None
+    """委托统一真源 ``src.utils.dates.as_date``（含整数 YYYYMMDD / 斜杠 / NaT 归一）。"""
+    return as_date(value)

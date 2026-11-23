@@ -35,13 +35,18 @@ RULE_TYPES: Dict[str, str] = {
     'dca_grid': '定投补仓',
 }
 
-#: 与既有配方一致的默认成本口径（详见 docs/策略试算使用说明.md）
+#: 默认成本口径（2026-11-23 起：仅滑点含冲击，往返 ETF 16.5bp / A 股 21.9bp；
+#: 可被规则覆盖）。
+#: - ``slippage_bps=5.75/边`` 是 16.5bp 往返扣除佣金后的全部余额，已含冲击，
+#:   故 ``impact_coef`` 默认 0，避免与滑点重复计入（2026-11-23 核对结论）；
+#: - ``stamp_tax_basis='historical'``：按成交日取印花税（2023-08-28 起 0.05%，
+#:   之前 0.1%，仅卖出侧收）；旧的 ``fixed_0.1%`` 已废弃，传入时按历史口径解析。
 DEFAULT_COST: Dict[str, Any] = {
-    'slippage_bps': 10.0,
-    'stamp_tax_basis': 'fixed_0.1%',
+    'slippage_bps': 5.75,
+    'stamp_tax_basis': 'historical',
     'commission_rate': 0.00025,
     'min_commission': 5.0,
-    'impact_coef': 0.015,
+    'impact_coef': 0.0,
 }
 DEFAULT_PORTFOLIO: Dict[str, Any] = {
     'initial_capital': 1e9,
@@ -257,9 +262,10 @@ def _validate_cost(raw: Any) -> Dict[str, Any]:
                      if k != 'stamp_tax_basis'})
     basis = raw.get('stamp_tax_basis', DEFAULT_COST['stamp_tax_basis'])
     if basis not in ('fixed_0.1%', 'fixed_0.0%', 'historical'):
-        raise RuleError(f"cost.stamp_tax_basis 必须是 'fixed_0.1%'、'fixed_0.0%' 或 "
-                        f"'historical'，收到 {basis!r}")
-    resolved['stamp_tax_basis'] = basis
+        raise RuleError(f"cost.stamp_tax_basis 必须是 'historical' 或 'fixed_0.0%'，收到 {basis!r}")
+    # 向后兼容：旧配置里的固定千 1 已过时（2023-08-28 起印花税 0.05%），
+    # 统一解析为按成交日取的历史口径，不报错、不保留 10bp 静态值。
+    resolved['stamp_tax_basis'] = 'historical' if basis == 'fixed_0.1%' else basis
     for key in ('slippage_bps', 'commission_rate', 'min_commission', 'impact_coef'):
         if resolved[key] < 0:
             raise RuleError(f'cost.{key} 不能为负数，收到 {resolved[key]}')
@@ -496,7 +502,7 @@ def _validate_signal(raw: Any) -> Dict[str, Any]:
 def _validate_levels(raw: Any, descending_ok: bool = False) -> List[Dict[str, float]]:
     if not isinstance(raw, list) or len(raw) < 2:
         raise RuleError('levels 必须是至少 2 档的数组')
-    parsed = []
+    parsed: list[dict[str, Any]] = []
     last_threshold = None
     for i, item in enumerate(raw):
         where = f'levels[{i}]'

@@ -44,6 +44,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic  # noqa: E402
+from src.data.dataset_contracts import write_dataset  # noqa: E402
 from src.data.manifest_refresh import sha256_file  # noqa: E402
 from src.data import margin_quality  # noqa: E402
 from src.data.trading_calendar import trading_dates  # noqa: E402
@@ -154,7 +155,9 @@ def _merge_month(frame: pl.DataFrame) -> Path:
     merged = (merged.unique(subset=['trade_date', 'ts_code'], keep='last')
               .sort(['trade_date', 'ts_code']))
     path.parent.mkdir(parents=True, exist_ok=True)
-    write_parquet_atomic(merged, path)
+    write_dataset('margin_detail', merged,
+                  rel_path=f'meta/margin_detail/{path.name}', root=STORE,
+                  writer='tools/fetch_margin_detail.py')
     return path
 
 
