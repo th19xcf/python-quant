@@ -18,7 +18,7 @@ from datetime import date, datetime, time, timedelta
 import polars as pl
 import pytest
 
-from src.data.quality import freshness_check as fc
+from src.data.quality import freshness as fc
 
 
 def _biz_days(count: int, end: date = date(2026, 11, 9)) -> list[date]:
@@ -422,6 +422,23 @@ def test_index_internal_hole_still_reported_as_break(tmp_path):
 
     row = _row(report, 'quotes/{stock,fund,index}')
     assert row.gap == 1
+    assert '未登记断裂 1 只' in row.detail
+
+
+def test_index_one_day_lag_is_break_but_stock_is_not(tmp_path):
+    """指数末根断裂更严：指数落后 1 个交易日即断裂，股票同日仅告警不误红。"""
+    calendar = _biz_days(12)
+    store, calendar = _build_store(tmp_path, daily_end=calendar[-1],
+                                   coverage_end=calendar[-1], event_end=calendar[-1])
+    _write_daily_index(store, [('600000.SH', 'stock', calendar[-1]),
+                               ('510300.SH', 'fund', calendar[-1]),
+                               ('000001.SH', 'index', calendar[-2])])
+
+    report = fc.run_check(store, calendar=calendar, doc_path=_write_doc(tmp_path))
+
+    row = _row(report, 'quotes/{stock,fund,index}')
+    assert row.gap == 1
+    assert '000001.SH' in row.detail
     assert '未登记断裂 1 只' in row.detail
 
 

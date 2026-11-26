@@ -184,10 +184,22 @@ def select_members(ctx: compute.Context, panels: FieldPanels, rule: Dict[str, An
 # ---------------------------------------------------------------------------
 
 def load_benchmark_close(code: str) -> Dict[str, float]:
+    """基准收盘序列：优先指数行情；指数里没有时回落到场内基金，并按 qfq_factor 前复权。
+
+    基金基准用于「同标的买入持有」对照（如择时规则以 510880.SH 自身为基准），
+    前复权后含分红，避免拿不含分红的价格指数做基准而高估超额。
+    """
     paths = sorted(INDEX_QUOTES.glob(f'**/{code}.parquet'))
-    if not paths:
-        raise RuntimeError(f'基准指数行情缺失：{code}（{INDEX_QUOTES}）')
-    df = pl.read_parquet(paths[0], columns=['date', 'close']).sort('date')
+    if paths:
+        df = pl.read_parquet(paths[0], columns=['date', 'close']).sort('date')
+    else:
+        fund = sorted((INDEX_QUOTES.parent / 'fund').glob(f'**/{code}.parquet'))
+        if not fund:
+            raise RuntimeError(f'基准行情缺失：{code}（{INDEX_QUOTES} 与 fund 目录均无）')
+        raw = pl.read_parquet(fund[0]).sort('date')
+        factor = (pl.col('qfq_factor').cast(pl.Float64).fill_null(1.0)
+                  if 'qfq_factor' in raw.columns else pl.lit(1.0))
+        df = raw.select([pl.col('date'), (pl.col('close') * factor).alias('close')])
     return {str(d)[:10]: float(c) for d, c in
             zip(df['date'].to_list(), df['close'].to_list(), strict=True)
             if c is not None}

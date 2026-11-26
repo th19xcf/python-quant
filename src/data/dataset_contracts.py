@@ -59,8 +59,17 @@ STANDALONE_LEDGER_REL = 'meta/registry/standalone_writes.jsonl'
 #: 步骤 → 该步允许写入的数据集键（步骤键与 tools/daily_update.py 的 STEP_PLAN 一致）。
 #: 未登记的步骤不限制数据集，但体检会点名（见 :func:`unregistered_writers`）。
 STEP_DATASETS: dict[str, tuple[str, ...]] = {
-    'st_daily': ('st_daily',),
+    # 码表步：build_name_history 走 write_dataset('name_history')；stock_basic 当前
+    # 仍是裸写，但一并声明，避免后续改受控写入时再次触发越界。
+    'code_table': ('name_history', 'stock_basic'),
+    # 名录步经 src.main 合并式导出 fund_basic / index_basic（后者尚无契约键）。
+    'basic': ('fund_basic',),
+    'futures': ('futures_continuous', 'futures_contracts', 'futures_roll_events'),
+    # 逐日面板写 st_daily_YYYYMM 分片；证据表写 st_daily_intervals。
+    'st_daily': ('st_daily', 'st_daily_intervals'),
     'limit_daily': ('limit_daily',),
+    # 公告事件库：正式表 + 覆盖声明；分片写 research/events（不在列存根下，不走令牌）
+    'events': ('events',),
     'st': ('st_intervals', 'st_coverage', 'st_supplement_intervals',
            'st_supplement_coverage'),
     'valuation': ('valuation_daily',),
@@ -70,6 +79,7 @@ STEP_DATASETS: dict[str, tuple[str, ...]] = {
     'macro': ('macro_market_margin',),
     'breadth_ma': ('breadth_ma_daily',),
     'state_vector': ('state_vector_daily',),
+    'pool': ('etf_pool',),
 }
 
 #: 步骤 → 该步实际调用的 tools 脚本（体检据此判断「写数据但未登记」）。
@@ -78,8 +88,10 @@ STEP_SCRIPTS: dict[str, tuple[str, ...]] = {
     'futures': ('fetch_futures_daily.py', 'build_futures_continuous.py'),
     'dividend_monthly': ('refresh_dividend_monthly.py',),
     'dividend': ('refresh_dividend_daily.py',),
+    'events': ('update_events.py',),
     'sw_index': ('build_sw_industry_index.py',),
     'valuation': ('collect_financials.py',),
+    'margin': ('fetch_margin_detail.py',),
     'index_valuation': ('collect_index_valuation.py',),
     'factor_panel': ('factor_panel.py',),
     'b_topn_picks': ('b_topn_picks.py',),
@@ -120,7 +132,7 @@ WRITER_REGISTRY: dict[str, dict[str, Any]] = {
     'derive_free_float_fill.py': {'step': None, 'depends': 'basic', 'idem': '整列重写自由流通派生列', 'trigger': '按需'},
     'derive_total_dividend.py': {'step': None, 'depends': 'dividend', 'idem': '整列重写分红派现总额派生列', 'trigger': '按需'},
     'fetch_etf_fee.py': {'step': None, 'depends': 'pool', 'idem': '整表覆盖 ETF 费率分段', 'trigger': '按需'},
-    'fetch_margin_detail.py': {'step': None, 'depends': 'build', 'idem': '按 (ts_code, date) upsert margin_detail', 'trigger': '按需'},
+    'fetch_margin_detail.py': {'step': 'margin', 'depends': 'build', 'idem': '按 (ts_code, date) upsert margin_detail', 'trigger': '日更（--allow-remote）'},
     'fill_free_float_shares.py': {'step': None, 'depends': 'basic', 'idem': '按 ts_code 覆盖自由流通股本', 'trigger': '按需'},
     'fill_internal_gaps.py': {'step': 'fill', 'depends': 'fill', 'idem': '按本地为空的交易日补 TDX 历史缺口', 'trigger': '按需'},
     'fund_split_repair.py': {'step': None, 'depends': 'factor', 'idem': '按 (ts_code, 折算日) 重算基金因子', 'trigger': '按需'},
@@ -129,7 +141,7 @@ WRITER_REGISTRY: dict[str, dict[str, Any]] = {
     'repair_quote_anomalies.py': {'step': 'build', 'depends': 'build', 'idem': '按契约唯一正确值就地修复（默认 dry-run）', 'trigger': '按需'},
     'reconcile_p2_metadata.py': {'step': None, 'depends': None, 'idem': '按代码对齐 fund_meta 元数据（JSON 覆盖）', 'trigger': '按需'},
     'treasury_yield.py': {'step': None, 'depends': 'macro', 'idem': '按交易日重写 10Y 国债收益率', 'trigger': '按需'},
-    'update_events.py': {'step': None, 'depends': None, 'idem': '按自然日抓取追加入库', 'trigger': '按需'},
+    'update_events.py': {'step': 'events', 'depends': None, 'idem': '按自然日抓取追加入库', 'trigger': '日更（--allow-remote）'},
 }
 
 #: 一次性迁移/历史回补脚本：已归档到 tools/_oneshot/，保留可执行，不再纳入日常运行。

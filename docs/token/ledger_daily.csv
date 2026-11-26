@@ -1,0 +1,27 @@
+date,done_rows,total_tool_calls,total_budget_calls,anomaly,note
+2026-10-26,6,unknown,unknown,backfill;calls_unknown(6);budget_unknown(6),事后补录 6 笔缺失提交（session_id=backfill，note 标 backfill，另有原有 0 行）；当日 git commit 6 笔；calls 有值 0/6；budget 有值 0/6；不可回溯部分记 unknown
+2026-10-27,14,unknown,unknown,backfill;calls_unknown(14);budget_unknown(14),事后补录 14 笔缺失提交（session_id=backfill，note 标 backfill，另有原有 0 行）；当日 git commit 14 笔；calls 有值 0/14；budget 有值 0/14；不可回溯部分记 unknown
+2026-10-28,16,unknown,unknown,backfill;calls_unknown(16);budget_unknown(16),事后补录 16 笔缺失提交（session_id=backfill，note 标 backfill，另有原有 0 行）；当日 git commit 16 笔；calls 有值 0/16；budget 有值 0/16；不可回溯部分记 unknown
+2026-10-29,9,unknown,unknown,backfill;calls_unknown(9);budget_unknown(9),事后补录 9 笔缺失提交（session_id=backfill，note 标 backfill，另有原有 0 行）；当日 git commit 9 笔；calls 有值 0/9；budget 有值 0/9；不可回溯部分记 unknown
+2026-10-30,5,unknown,unknown,backfill;calls_unknown(5);budget_unknown(5),事后补录 5 笔缺失提交（session_id=backfill，note 标 backfill，另有原有 0 行）；当日 git commit 5 笔；calls 有值 0/5；budget 有值 0/5；不可回溯部分记 unknown
+2026-11-02,14,unknown,unknown,backfill;calls_unknown(14);budget_unknown(14),事后补录 14 笔缺失提交（session_id=backfill，note 标 backfill，另有原有 0 行）；当日 git commit 14 笔；calls 有值 0/14；budget 有值 0/14；不可回溯部分记 unknown
+2026-11-03,48,unknown,unknown,backfill;calls_unknown(48);budget_unknown(48),事后补录 48 笔缺失提交（session_id=backfill，note 标 backfill，另有原有 0 行）；当日 git commit 48 笔；calls 有值 0/48；budget 有值 0/48；不可回溯部分记 unknown
+2026-11-04,3,unknown,unknown,backfill;calls_unknown(3);budget_unknown(3),事后补录 3 笔缺失提交（session_id=backfill，note 标 backfill，另有原有 0 行）；当日 git commit 3 笔；calls 有值 0/3；budget 有值 0/3；不可回溯部分记 unknown
+2026-11-05,22,unknown,unknown,backfill;calls_unknown(22);budget_unknown(22),事后补录 22 笔缺失提交（session_id=backfill，note 标 backfill，另有原有 0 行）；当日 git commit 22 笔；calls 有值 0/22；budget 有值 0/22；不可回溯部分记 unknown
+2026-11-06,9,unknown,unknown,backfill;calls_unknown(9);budget_unknown(9),事后补录 9 笔缺失提交（session_id=backfill，note 标 backfill，另有原有 0 行）；当日 git commit 9 笔；calls 有值 0/9；budget 有值 0/9；不可回溯部分记 unknown
+2026-11-09,30,unknown,unknown,backfill;calls_unknown(30);budget_unknown(30),事后补录 30 笔缺失提交（session_id=backfill，note 标 backfill，另有原有 0 行）；当日 git commit 30 笔；calls 有值 0/30；budget 有值 0/30；不可回溯部分记 unknown
+2026-11-10,83,unknown,unknown,backfill;calls_unknown(83);budget_unknown(83),事后补录 83 笔缺失提交（session_id=backfill，note 标 backfill，另有原有 0 行）；当日 git commit 83 笔；calls 有值 0/83；budget 有值 0/83；不可回溯部分记 unknown
+2026-11-11,122,unknown,unknown,backfill;calls_unknown(122);budget_unknown(122),事后补录 122 笔缺失提交（session_id=backfill，note 标 backfill，另有原有 0 行）；当日 git commit 122 笔；calls 有值 0/122；budget 有值 0/122；不可回溯部分记 unknown
+2026-11-12,196,unknown,unknown,backfill;calls_unknown(196);budget_unknown(196),事后补录 196 笔缺失提交（session_id=backfill，note 标 backfill，另有原有 0 行）；当日 git commit 196 笔；calls 有值 0/196；budget 有值 0/196；不可回溯部分记 unknown
+2026-11-13,111,unknown,unknown,backfill;calls_unknown(111);budget_unknown(111),事后补录 111 笔缺失提交（session_id=backfill，note 标 backfill，另有原有 0 行）；当日 git commit 111 笔；calls 有值 0/111；budget 有值 0/111；不可回溯部分记 unknown
+2026-11-14,30,unknown,unknown,backfill;calls_unknown(30);budget_unknown(30),事后补录 30 笔缺失提交（session_id=backfill，note 标 backfill，另有原有 0 行）；当日 git commit 30 笔；calls 有值 0/30；budget 有值 0/30；不可回溯部分记 unknown
+2026-11-15,51,unknown,unknown,backfill;calls_unknown(51);budget_unknown(51),事后补录 51 笔缺失提交（session_id=backfill，note 标 backfill，另有原有 0 行）；当日 git commit 51 笔；calls 有值 0/51；budget 有值 0/51；不可回溯部分记 unknown
+2026-11-16,28,unknown,unknown,backfill;calls_unknown(28);budget_unknown(28),事后补录 26 笔缺失提交（session_id=backfill，note 标 backfill，另有原有 2 行）；当日 git commit 28 笔；calls 有值 0/28；budget 有值 0/28；不可回溯部分记 unknown
+2026-11-17,33,unknown,unknown,backfill;calls_unknown(31);budget_unknown(33);ledger_over(1),事后补录 12 笔缺失提交（session_id=backfill，note 标 backfill，另有原有 21 行）；当日 git commit 32 笔；calls 有值 2/33（合计 84）；budget 有值 0/33；不可回溯部分记 unknown；另有 1 行只读排查类任务未产生提交（未删改）
+2026-11-18,35,unknown,unknown,backfill;calls_unknown(23);budget_unknown(35),事后补录 7 笔缺失提交（session_id=backfill，note 标 backfill，另有原有 28 行）；当日 git commit 35 笔；calls 有值 12/35（合计 417）；budget 有值 0/35；不可回溯部分记 unknown
+2026-11-19,29,unknown,unknown,backfill;calls_unknown(24);budget_unknown(29),事后补录 12 笔缺失提交（session_id=backfill，note 标 backfill，另有原有 17 行）；当日 git commit 29 笔；calls 有值 5/29（合计 197）；budget 有值 0/29；不可回溯部分记 unknown
+2026-11-20,33,unknown,unknown,backfill;calls_unknown(27);budget_unknown(33);ledger_over(1),事后补录 6 笔缺失提交（session_id=backfill，note 标 backfill，另有原有 27 行）；当日 git commit 32 笔；calls 有值 6/33（合计 205）；budget 有值 0/33；不可回溯部分记 unknown；另有 1 行只读排查类任务未产生提交（未删改）
+2026-11-21,62,unknown,unknown,backfill;calls_unknown(30);budget_unknown(62),事后补录 8 笔缺失提交（session_id=backfill，note 标 backfill，另有原有 54 行）；当日 git commit 62 笔；calls 有值 32/62（合计 747）；budget 有值 0/62；不可回溯部分记 unknown
+2026-11-22,78,unknown,unknown,backfill;calls_unknown(76);budget_unknown(78),事后补录 68 笔缺失提交（session_id=backfill，note 标 backfill，另有原有 10 行）；当日 git commit 78 笔；calls 有值 2/78（合计 68）；budget 有值 0/78；不可回溯部分记 unknown
+2026-11-23,11,unknown,unknown,violated;backfill;calls_unknown(11);budget_unknown(11),事后补录 11 笔缺失提交（session_id=backfill，note 标 backfill，另有原有 0 行）；当日 git commit 11 笔；calls 有值 0/11；budget 有值 0/11；不可回溯部分记 unknown
+2026-11-24,0,unknown,unknown,violated;commit_gap,当日 git commit 5 笔，台账 0 行；未收工，缺口不计入；budget/calls 无记录，不估算

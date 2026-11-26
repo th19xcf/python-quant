@@ -1,0 +1,5 @@
+date,ts_code,weight,actual_return,benchmark_return,diff,sleeve
+2026-10-30,510300.SH,0.333333,,,,etf_base
+2026-10-30,511010.SH,0.333333,,,,etf_base
+2026-10-30,518880.SH,0.333333,,,,etf_base
+2026-10-30,510880.SH,0.500000,,,,dividend

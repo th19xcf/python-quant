@@ -70,7 +70,11 @@ def build_completeness(store_root: Path | str, *, write: bool = True) -> pl.Data
     frame = pl.concat([pl.read_parquet(path, columns=['trade_date', 'ts_code'])
                        for path in files], how='vertical_relaxed')
     frame = frame.with_columns(
-        pl.col('ts_code').map_elements(_exchange, return_dtype=pl.Utf8)
+        # 向量化等价于 _exchange：取最后一个「.」后的后缀（大写）映射交易所
+        pl.col('ts_code').cast(pl.Utf8).str.to_uppercase()
+        .str.split('.').list.last()
+        .replace_strict({'SH': 'sh', 'SZ': 'sz', 'BJ': 'bj'}, default='other',
+                        return_dtype=pl.Utf8)
         .alias('exchange'))
     daily = (frame.group_by('trade_date')
              .agg(pl.len().alias('rows'),

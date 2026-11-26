@@ -283,6 +283,15 @@ def _patch_value_em(monkeypatch: pytest.MonkeyPatch, dates: list[date],
     monkeypatch.setattr(collector.ak, 'stock_value_em', fake)
 
 
+def _seed_valuation_table(root, rows: list[tuple[str, date]]) -> None:
+    """预置合并后的估值表（只含跳过判据需要的两列）。"""
+    frame = pl.DataFrame({'ts_code': [c for c, _ in rows],
+                          'trade_date': [d for _, d in rows]})
+    path = store.table_path('valuation', root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    store.write_parquet_atomic(frame, path)
+
+
 def test_fetch_valuation_frame_passes_plain_symbol_only(
         monkeypatch: pytest.MonkeyPatch) -> None:
     """akshare 1.20.x 的 stock_value_em 只接受 symbol；多传关键字即 TypeError。"""
@@ -365,6 +374,45 @@ def test_collect_valuation_since_resumes_from_parts(
     assert merged == 3
     assert table.filter(pl.col('ts_code') == '300750.SZ').height == 1
     assert table.select('ts_code', 'trade_date').is_duplicated().sum() == 0
+
+
+def test_collect_valuation_skips_only_codes_at_target_date(
+        tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """跳过判据严格按末日：末根 == 目标日才跳，落后一天/无记录都照常抓。"""
+    calls: list[str] = []
+    _patch_value_em(monkeypatch, [date(2026, 11, 9)], calls)
+    _seed_valuation_table(tmp_path, [
+        ('600519.SH', date(2026, 11, 9)),   # 末根 == 目标日 → 跳过
+        ('000001.SZ', date(2026, 11, 8)),   # 落后一天 → 照常抓（不按「最近 N 天」）
+    ])
+
+    result = FinancialsCollector(tmp_path, workers=1, valuation_interval=0.0).collect_valuation(
+        ['600519.SH', '000001.SZ', '300750.SZ'], since=date(2026, 11, 9),
+        until=date(2026, 11, 9))
+
+    assert sorted(calls) == ['000001', '300750']
+    assert result.units == 2
+    assert result.rows == 2
+    assert result.details['skipped_current'] == 1
+    assert result.details['codes'] == 2
+
+
+def test_collect_valuation_all_current_makes_zero_requests(
+        tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """全部码末根已到目标日时零请求、零分片，仅报跳过数量。"""
+    calls: list[str] = []
+    _patch_value_em(monkeypatch, [date(2026, 11, 9)], calls)
+    codes = ['600519.SH', '000001.SZ']
+    _seed_valuation_table(tmp_path, [(c, date(2026, 11, 9)) for c in codes])
+
+    result = FinancialsCollector(tmp_path, workers=1, valuation_interval=0.0).collect_valuation(
+        codes, since=date(2026, 11, 9), until=date(2026, 11, 9))
+
+    assert calls == []
+    assert result.units == 0
+    assert result.rows == 0
+    assert result.details['skipped_current'] == 2
+    assert not list(store.parts_dir('valuation', tmp_path).glob('*.parquet'))
 
 
 def test_collect_valuation_force_rewrites_history(

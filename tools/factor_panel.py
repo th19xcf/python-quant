@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -32,6 +33,11 @@ import polars as pl
 from loguru import logger
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+#: RD-9 标注口径与财务快照指纹（G-072），与 src/advice、src/alpha 的因子输出同一份常量。
+from src.data.financials.store import FIN_SNAPSHOT, PIT_LAG_UNKNOWN  # noqa: E402
 
 #: 默认正式表根（全量本地权威，无 staging 依赖）；``--store-root`` 可覆盖。
 DATA_ROOT = ROOT / 'data/local_store'
@@ -323,6 +329,17 @@ def _write_manifest(path: Path, rows: int, cols: list[str],
         'updated_at': now,
         'sources': MANIFEST_SOURCES,
         'note': '日频因子面板；财报按 ann_date PIT，估值按 trade_date asof',
+        # RD-9 强制标注：只记口径，不改任何因子数值
+        'fin_snapshot': FIN_SNAPSHOT,
+        'pit_lag_unknown': PIT_LAG_UNKNOWN,
+        'neutralization': (
+            'none：ep/bp/dy/b_ocf_ttm/roe_ttm/accruals/gross_margin 均为未中性化原始因子；'
+            'ep_ind_pct 只是行业 L1 内分位示例列，不是行业/市值中性化后的因子。'
+            '暴露方向：ep/bp/dy/b_ocf_ttm/roe_ttm/gross_margin 正向指向低估值与高质量，'
+            'accruals 正向指向高应计（收益方向通常相反）。'),
+        'pit_note': (
+            '财务字段按 ann_date 对齐；三表无版本快照（G-072），'
+            'ann_date−end_date 的真实延迟不可证，不得以「已按公告日对齐」代替。'),
     })
     manifest.setdefault('created_at', now)
     if day is not None:

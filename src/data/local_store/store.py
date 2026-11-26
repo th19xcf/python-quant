@@ -1080,6 +1080,8 @@ def verify_quote_factor_consistency(
             'mismatch_codes': int(bad.height),
             'mismatch_rows': int(agg['bad_rows'].sum()),
             'sample_codes': bad.sort('bad_rows', descending=True)['ts_code'].head(20).to_list(),
+            # 全量不一致代码：供调用方按快照定向重写行情副本（自愈路径）
+            'mismatch_code_list': sorted(bad['ts_code'].to_list()),
         }
     return result
 

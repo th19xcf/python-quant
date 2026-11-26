@@ -1,0 +1,30 @@
+﻿limit files=263
+calendar 4343 days 14249..20777  codes=5839
+quote files=5839
+  quotes 1500/5839  ok=1494  18s
+  quotes 3000/5839  ok=2976  33s
+  quotes 4500/5839  ok=4475  48s
+quotes filled 5750 in 61s
+industry intervals=12931 cells_filled=15631867 coverage=61.6428%
+delist codes=259
+load 63s
+A_weekly_n20_buf30       ann=  -9.62% mdd= -95.19% sharpe=-0.169 calmar=-0.101 to=53.36 trades= 9495 maxloss= -93.2% fill= 95.03% 0.6s
+  rand 100 reps 60s
+A2_weekly_n20_nobuf      ann=  -8.30% mdd= -94.12% sharpe=-0.115 calmar=-0.088 to=58.90 trades=10454 maxloss= -93.2% fill= 95.15% 0.5s
+  rand 100 reps 54s
+P_monthly_n20_nobuf      ann=  -2.92% mdd= -83.36% sharpe= 0.065 calmar=-0.035 to=21.83 trades= 3800 maxloss= -90.2% fill= 96.27% 0.2s
+  rand 100 reps 21s
+B_monthly_n50_nobuf      ann=   1.10% mdd= -70.78% sharpe= 0.181 calmar= 0.015 to=21.01 trades= 9475 maxloss= -90.2% fill= 96.72% 0.3s
+  rand 100 reps 39s
+shape: (3, 3)
+┌────────────────────────────┬───────────────┬───────────────┐
+│ component                  ┆ effect_ann_pp ┆ effect_gap_pp │
+│ ---                        ┆ ---           ┆ ---           │
+│ str                        ┆ f64           ┆ f64           │
+╞════════════════════════════╪═══════════════╪═══════════════╡
+│ buffer_removal             ┆ 1.316111      ┆ 1.289227      │
+│ frequency(weekly->monthly) ┆ 5.3793        ┆ 1.608174      │
+│ concentration(n20->n50)    ┆ 4.017023      ┆ 3.344141      │
+└────────────────────────────┴───────────────┴───────────────┘
+gap A=-0.1007 gap B=-0.0383  total_change=0.1071
+done 237s

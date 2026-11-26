@@ -56,7 +56,9 @@ DEFAULT_PORTFOLIO: Dict[str, Any] = {
     'pooled_cash': True,
 }
 #: 既有可选基准（本地指数行情齐全的宽基）
-BENCHMARKS: Dict[str, str] = {'000300.SH': '沪深300'}
+#: 2026-11-24：新增 510880.SH 作为「同标的买入持有」基准（前复权含分红，
+#: 由 backtest.load_benchmark_close 回落到 fund 行情加载），用于红利择时复核。
+BENCHMARKS: Dict[str, str] = {'000300.SH': '沪深300', '510880.SH': '红利ETF持有'}
 #: 月频与半年频（6/12 月最后一个交易日）
 REBALANCE_FREQUENCIES = ('monthly', 'semi')
 #: 最小版执行口径：信号日收盘生成，下一交易日开盘成交

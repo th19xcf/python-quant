@@ -74,7 +74,12 @@ def _save_state(path: Path, state: dict[str, Any]) -> None:
 
 def _run(cmd: list[str]) -> int:
     print('$ ' + ' '.join(cmd), flush=True)
-    return subprocess.run(cmd, cwd=str(ROOT)).returncode
+    # 子脚本（如 tools/_oneshot/*）以脚本方式启动时 sys.path[0] 不是仓库根，
+    # 注入 PYTHONPATH 才能 ``from src...``；单独运行本入口时同样生效。
+    import os  # noqa: PLC0415
+    env = dict(os.environ)
+    env['PYTHONPATH'] = os.pathsep.join(filter(None, [str(ROOT), env.get('PYTHONPATH')]))
+    return subprocess.run(cmd, cwd=str(ROOT), env=env).returncode
 
 
 def _py(script: str) -> str:
@@ -132,17 +137,24 @@ def _fund_ingest_phase(work: Path) -> tuple[int, dict[str, Any]]:
     codes = _rows_codes(rows_csv)
     if not codes:
         return 0, {'skipped': True, 'reason': '无取证命中行（rows.csv 缺失或为空）'}
+    # 2026-11-24：按 (ts_code, ex_date) 事件键去重，而非按代码。原实现只要命中代码里
+    # 有一只已在正式表（老基金出现新一期分红，如 508602.SH 11-24 除息）就整批拒绝，
+    # 月度跑必然失败；现只剔除已入库的事件，新事件照常入库，既有行仍不覆盖。
     table = STORE / 'factors' / 'fund_dividend.parquet'
-    present = set(pl.read_parquet(table, columns=['ts_code'])['ts_code'].unique().to_list())
-    if codes <= present:
-        return 0, {'skipped': True, 'reason': '命中代码已全部在正式表（幂等重跑）'}
-    if codes & present:
-        overlap = sorted(codes & present)
-        logger.error('命中代码与正式表部分重叠，拒绝覆盖：{}', overlap[:5])
-        return 1, {'overlap_codes': overlap[:20], 'overlap_count': len(overlap)}
-    code = _run([sys.executable, _py('backfill_fund_dividend.py'),
-                 '--rows', str(rows_csv)])
-    return code, {'rows_csv': str(rows_csv), 'codes': len(codes)}
+    present = {(c, str(d)) for c, d in pl.read_parquet(
+        table, columns=['ts_code', 'ex_date']).iter_rows()}
+    raw = pl.read_csv(rows_csv, infer_schema_length=0)
+    keys = [(c, str(d or '').strip()[:10]) for c, d in
+            zip(raw['ts_code'].to_list(), raw['除息日'].to_list(), strict=True)]
+    fresh = raw.filter(pl.Series([k not in present for k in keys]))
+    if fresh.is_empty():
+        return 0, {'skipped': True, 'reason': '取证事件已全部在正式表（幂等重跑）'}
+    new_csv = rows_csv.with_name('rows_new.csv')
+    fresh.write_csv(new_csv)
+    code = _run([sys.executable, _py('_oneshot/backfill_fund_dividend.py'),
+                 '--rows', str(new_csv)])
+    return code, {'rows_csv': str(new_csv), 'codes': fresh['ts_code'].n_unique(),
+                  'new_rows': fresh.height, 'already_present_rows': raw.height - fresh.height}
 
 
 def _ledger_phase(work: Path) -> tuple[int, dict[str, Any]]:

@@ -1,0 +1,220 @@
+{
+  "generated_at": "2026-11-25",
+  "store_root": "E:\\code\\python\\quant\\data\\local_store",
+  "quotes_end": "2026-11-24",
+  "anchor": "quotes_end",
+  "hardcoded_error": null,
+  "universe": {
+    "verdict": "ok",
+    "gap": 0,
+    "detail": "全集 9,933 只（股票 5,921 / 基金 2,646 / 指数 1,366）；已知停更 763 只（stale_status 登记，不计缺口）；未登记断裂 0 只"
+  },
+  "counts": {
+    "config_datasets": 24,
+    "hardcoded_rows": 13,
+    "compared_both": 7,
+    "only_config": 17,
+    "only_hardcoded": 5,
+    "red_green_flips": 0
+  },
+  "flips": [],
+  "comparisons": [
+    {
+      "path": "factors/stock_dividend.parquet",
+      "branch": "both",
+      "config_key": "stock_dividend",
+      "config": "ok",
+      "hardcoded": "ok",
+      "config_class": "绿",
+      "hc_class": "绿",
+      "agree_class": true
+    },
+    {
+      "path": "factors/stock_adj_factor.parquet",
+      "branch": "both",
+      "config_key": "stock_adj_factor",
+      "config": "ok",
+      "hardcoded": "ok",
+      "config_class": "绿",
+      "hc_class": "绿",
+      "agree_class": true
+    },
+    {
+      "path": "meta/breadth/breadth_daily.parquet",
+      "branch": "both",
+      "config_key": "breadth_daily",
+      "config": "ok",
+      "hardcoded": "ok",
+      "config_class": "绿",
+      "hc_class": "绿",
+      "agree_class": true
+    },
+    {
+      "path": "meta/financials/valuation_daily.parquet",
+      "branch": "both",
+      "config_key": "valuation_daily",
+      "config": "ok",
+      "hardcoded": "ok",
+      "config_class": "绿",
+      "hc_class": "绿",
+      "agree_class": true
+    },
+    {
+      "path": "meta/events/events.parquet",
+      "branch": "both",
+      "config_key": "events",
+      "config": "ok",
+      "hardcoded": "ok",
+      "config_class": "绿",
+      "hc_class": "绿",
+      "agree_class": true
+    },
+    {
+      "path": "factors/fund_dividend.parquet",
+      "branch": "both",
+      "config_key": "fund_dividend",
+      "config": "ok",
+      "hardcoded": "ok",
+      "config_class": "绿",
+      "hc_class": "绿",
+      "agree_class": true
+    },
+    {
+      "path": "meta/fund_basic.parquet",
+      "branch": "only_hardcoded",
+      "hardcoded": "ok"
+    },
+    {
+      "path": "meta/index_basic.parquet",
+      "branch": "only_hardcoded",
+      "hardcoded": "ok"
+    },
+    {
+      "path": "meta/stock_basic.parquet",
+      "branch": "both",
+      "config_key": "stock_basic",
+      "config": "ok",
+      "hardcoded": "ok",
+      "config_class": "绿",
+      "hc_class": "绿",
+      "agree_class": true
+    },
+    {
+      "path": "meta/st/st_intervals.parquet",
+      "branch": "only_hardcoded",
+      "hardcoded": "ok"
+    },
+    {
+      "path": "meta/st/st_coverage.parquet",
+      "branch": "only_hardcoded",
+      "hardcoded": "ok"
+    },
+    {
+      "path": "meta/multi_asset/etf_pool.parquet",
+      "branch": "only_hardcoded",
+      "hardcoded": "ok"
+    },
+    {
+      "path": "meta/daily_index.parquet",
+      "branch": "only_config",
+      "config_key": "quotes_stock",
+      "config": "ok"
+    },
+    {
+      "path": "meta/daily_index.parquet",
+      "branch": "only_config",
+      "config_key": "quotes_index",
+      "config": "ok"
+    },
+    {
+      "path": "meta/daily_index.parquet",
+      "branch": "only_config",
+      "config_key": "quotes_fund",
+      "config": "ok"
+    },
+    {
+      "path": "meta/financials/income.parquet",
+      "branch": "only_config",
+      "config_key": "financials_income",
+      "config": "ok"
+    },
+    {
+      "path": "meta/financials/balance.parquet",
+      "branch": "only_config",
+      "config_key": "financials_balance",
+      "config": "ok"
+    },
+    {
+      "path": "meta/financials/cashflow.parquet",
+      "branch": "only_config",
+      "config_key": "financials_cashflow",
+      "config": "ok"
+    },
+    {
+      "path": "meta/names.json",
+      "branch": "only_config",
+      "config_key": "names_json",
+      "config": "ok"
+    },
+    {
+      "path": "meta/new_share.parquet",
+      "branch": "only_config",
+      "config_key": "new_share",
+      "config": "ok"
+    },
+    {
+      "path": "factors/stock_turnover.parquet",
+      "branch": "only_config",
+      "config_key": "stock_turnover",
+      "config": "ok"
+    },
+    {
+      "path": "factors/fund_share_change.parquet",
+      "branch": "only_config",
+      "config_key": "fund_share_change",
+      "config": "ok"
+    },
+    {
+      "path": "meta/factors/stock_shares.parquet",
+      "branch": "only_config",
+      "config_key": "stock_shares",
+      "config": "ok"
+    },
+    {
+      "path": "meta/index_valuation/index_valuation.parquet",
+      "branch": "only_config",
+      "config_key": "index_valuation",
+      "config": "ok"
+    },
+    {
+      "path": "meta/st_status/st_status_history.parquet",
+      "branch": "only_config",
+      "config_key": "st_status",
+      "config": "ok"
+    },
+    {
+      "path": "meta/st/daily/st_daily",
+      "branch": "only_config",
+      "config_key": "st_daily",
+      "config": "ok"
+    },
+    {
+      "path": "meta/limit/daily/limit_daily",
+      "branch": "only_config",
+      "config_key": "limit_board_daily",
+      "config": "ok"
+    },
+    {
+      "path": "meta/industry/industry_history.parquet",
+      "branch": "only_config",
+      "config_key": "industry",
+      "config": "ok"
+    },
+    {
+      "path": "meta/margin_detail/margin_detail_*.parquet",
+      "branch": "only_config",
+      "config_key": "stock_margin_detail",
+      "config": "warn"
+    }
+  ]
+}

@@ -46,6 +46,9 @@ _ROLES: dict[str, tuple[str, str]] = {
         '个股换手率派生表',
         'python -m src.data.local_store sync-turnover（baostock 回补）'
         ' + derive-turnover（本地派生，98.95% 行）'),
+    'factor_panel.parquet': (
+        '日频因子面板（估值 + 财务 + 行业 PIT 合成的长表）',
+        'python tools/factor_panel.py --apply（日更为 --mode incremental）'),
     'fund_adj_factor.parquet': (
         '基金复权因子快照',
         'src/data/local_store/fund_factors.py::rebuild_fund_factors'),
@@ -68,7 +71,22 @@ _ROLES: dict[str, tuple[str, str]] = {
 }
 _SUB_MANIFESTS = (Path('rebuild') / MANIFEST_NAME,)
 #: 逐文件附加语义键（写入 files 段对应条目）；未列出的文件不加。
+#: ``fin_snapshot`` / ``pit_lag_unknown`` / ``neutralization`` 为 RD-9 强制标注，
+#: 键名与 ``src/data/financials/store.py``、``src/advice/fundamental_factors.py``、
+#: ``src/alpha/factors/research_candidates.py`` 保持一致（不新造命名）。
 _FILE_EXTRA: dict[str, dict[str, Any]] = {
+    'factor_panel.parquet': {
+        'fin_snapshot': '2026-11',
+        'pit_lag_unknown': True,
+        'neutralization': (
+            'none：ep/bp/dy/b_ocf_ttm/roe_ttm/accruals/gross_margin 均为未中性化原始因子；'
+            'ep_ind_pct 只是行业 L1 内分位示例列，不是行业/市值中性化后的因子。'
+            '暴露方向：ep/bp/dy/b_ocf_ttm/roe_ttm/gross_margin 正向指向低估值与高质量，'
+            'accruals 正向指向高应计（收益方向通常相反）。'),
+        'pit_note': (
+            '财务字段按 ann_date PIT 对齐；三表无版本快照（G-072），'
+            'ann_date−end_date 的真实延迟不可证，不得以「已按公告日对齐」代替。'),
+    },
     'stock_turnover.parquet': {
         'source_semantics': (
             'turn 为百分数（0.1979 表示 0.1979%）。同一列含两套来源语义，按 source 列区分，'
@@ -86,6 +104,14 @@ _FILE_EXTRA: dict[str, dict[str, Any]] = {
             '未来股本回算，属该档的已知边界（本例 688827.SH 唯一有效记录为 2026-10-29 '
             'float=12,877,616，首根 K 线 2026-11-10，两行均为 float_share_static 且与 asof 同值；'
             '表内 44 只单记录标的同档）；无股本序列时 turn_source 回落 stored 的 source（如 baostock）。'),
+        'fin_snapshot': 'n/a（换手率派生，不使用财务数据）',
+        'pit_lag_unknown': False,
+        'neutralization': 'none：原始换手率（百分数），未做行业/市值中性化',
+    },
+    'stock_adj_factor.parquet': {
+        'fin_snapshot': 'n/a（复权因子，不使用财务数据）',
+        'pit_lag_unknown': False,
+        'neutralization': 'n/a：复权因子是价格归一化输入，不做中性化',
     },
 }
 

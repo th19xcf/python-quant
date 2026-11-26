@@ -740,9 +740,20 @@ def _write_atomic(frame: pl.DataFrame, path: Path) -> None:
 def run(store_root: Path | str, *, codes: Iterable[str] | None = None,
         window: int = WINDOW, touch_need: int = TOUCH_NEED) -> dict[str, Any]:
     """全量推断 + 对拍 + 落盘，返回摘要。"""
+    # 2026-11-24：原实现用 ``global`` 改写模块常量，一次带参调用会污染同进程后续
+    # 所有默认调用（测试、UI 二次运行）；改为调用内临时覆盖并在结束后恢复。
     global WINDOW, TOUCH_NEED
+    saved = (WINDOW, TOUCH_NEED)
     WINDOW = int(window)
     TOUCH_NEED = int(touch_need)
+    try:
+        return _run_impl(store_root, codes=codes)
+    finally:
+        WINDOW, TOUCH_NEED = saved
+
+
+def _run_impl(store_root: Path | str, *, codes: Iterable[str] | None = None
+              ) -> dict[str, Any]:
     root = Path(store_root)
     from src.data.local_store.store import LocalQuoteStore  # noqa: PLC0415
 

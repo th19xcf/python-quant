@@ -501,8 +501,7 @@ class FinancialsCollector:
             if 'ts_code' not in frame.columns:
                 continue
             frame = frame.with_columns(
-                pl.col('ts_code').str.split('.').list.first()
-                .map_elements(_parent_lookup(mapping), return_dtype=pl.Float64)
+                _parent_expr(pl.col('ts_code').str.split('.').list.first(), mapping)
                 .alias('parent_net_profit'))
             self._write_part('income', period, frame)
             result.rows += frame.height
@@ -552,6 +551,24 @@ class FinancialsCollector:
         else:
             self._mark_done('valuation_ranges', code, sub=range_key)
 
+    def _valuation_local_last_dates(self) -> dict[str, date]:
+        """读合并后估值表的每票末根交易日（只读两列），供按码末日跳过使用。
+
+        最终表缺失或读取失败时返回空表（等价于不跳过任何代码，宁可重抓）。
+        """
+        path = store.table_path('valuation', self.store_root)
+        if not path.is_file():
+            return {}
+        try:
+            frame = pl.read_parquet(path, columns=['ts_code', 'trade_date'])
+        except (OSError, pl.exceptions.PolarsError) as exc:
+            logger.warning(f'[financials] 估值表读取失败，本轮不按末根跳过: {exc}')
+            return {}
+        if frame.is_empty():
+            return {}
+        grouped = frame.group_by('ts_code').agg(pl.col('trade_date').max())
+        return {str(code): last for code, last in grouped.iter_rows()}
+
     @staticmethod
     def _clip_valuation(frame: pl.DataFrame, since: date | None,
                         until: date | None) -> pl.DataFrame:
@@ -590,6 +607,19 @@ class FinancialsCollector:
         range_key, prefix, done = self._valuation_resume_state(since, until)
         existing_batches = len(list(batch_dir.glob(f'{prefix}*.parquet')))
         pending = [c for c in codes if force or c not in done]
+        skipped_resume = len(codes) - len(pending)
+        skipped_current = 0
+        if until is not None and not force and pending:
+            # 跳过判据只认「该码末根 == 目标交易日」，不用「最近 N 天」或文件 mtime；
+            # 末根落后（含无数据/停牌）的代码照常抓取，避免把缺口永久标完成。
+            last_dates = self._valuation_local_last_dates()
+            kept: list[str] = []
+            for code in pending:
+                if last_dates.get(code) == until:
+                    skipped_current += 1
+                else:
+                    kept.append(code)
+            pending = kept
 
         dividends = self._load_dividends()
         buffer: list[pl.DataFrame] = []
@@ -642,8 +672,13 @@ class FinancialsCollector:
         self._save_progress()
         result.elapsed_s = round(time.perf_counter() - started, 2)
         result.details['codes'] = len(pending)
+        result.details['skipped_current'] = skipped_current
+        result.details['skipped_resume'] = skipped_resume
         if range_key is not None:
             result.details['range'] = range_key
+        logger.info(f'[financials] 估值本轮实抓 {len(pending)} 只 / 断点跳过 {skipped_resume} 只'
+                    f' / 按末日跳过 {skipped_current} 只'
+                    + (f'（末根 == {until}）' if until is not None else ''))
         return result
 
     def _write_part(self, table: str, name: str, frame: pl.DataFrame) -> None:
@@ -689,6 +724,16 @@ class FinancialsCollector:
 # ----------------------------------------------------------------------
 # 规范化（纯函数，便于单测）
 # ----------------------------------------------------------------------
+def _statutory_deadline_expr(end: pl.Expr) -> pl.Expr:
+    """``statutory_deadline`` 的向量化版本（逐元素语义完全一致，null 进 null 出）。"""
+    year = end.dt.year()
+    month = end.dt.month()
+    return (pl.when(month == 3).then(pl.date(year, 4, 30))
+            .when(month == 6).then(pl.date(year, 8, 31))
+            .when(month == 9).then(pl.date(year, 10, 31))
+            .otherwise(pl.date(year + 1, 4, 30)))
+
+
 def statutory_deadline(period_end: date) -> date:
     """法定披露截止日（保守可见日）：季报 4/30、半年报 8/31、三季报 10/31。"""
     if period_end.month == 3:
@@ -784,10 +829,20 @@ def normalize_bulk_statement(table: str, df: Any, period_end: date,
     frame = frame.with_columns(_ann_date_expr(ann_map)).unnest('_ann_info')
     if table == 'income':
         frame = frame.with_columns(
-            pl.col('symbol').map_elements(
-                _parent_lookup(ann_map), return_dtype=pl.Float64)
-            .alias('parent_net_profit'))
+            _parent_expr(pl.col('symbol'), ann_map).alias('parent_net_profit'))
     return store.coerce_schema(frame, table)
+
+
+def _parent_expr(symbol: pl.Expr,
+                 ann_map: dict[str, tuple[date, date | None, float | None]]) -> pl.Expr:
+    """``_parent_lookup`` 的向量化版本：按 symbol 字典映射归母净利润，未命中为 null。"""
+    mapping = {k: v[2] for k, v in ann_map.items() if v and v[2] is not None}
+    if not mapping:
+        # 用 when 不带 otherwise 生成与 symbol 等长的全 null 列；pl.lit(None) 在
+        # select 中只有 1 行，与原逐行实现（每行 None）的长度不一致
+        return pl.when(pl.lit(False)).then(symbol.cast(pl.Float64, strict=False))
+    return symbol.cast(pl.Utf8).replace_strict(
+        mapping, default=None, return_dtype=pl.Float64)
 
 
 def _parent_lookup(
@@ -800,13 +855,24 @@ def _parent_lookup(
 
 def _ann_date_expr(
         ann_map: dict[str, tuple[date, date | None, float | None]]) -> pl.Expr:
-    """按 symbol 取真实公告日，缺失/早于报告期时退化为法定截止日。"""
-    return pl.struct(['symbol', 'end_date']).map_elements(
-        _ann_lookup(ann_map), return_dtype=pl.Struct({
-            'ann_date': pl.Date,
-            'ann_date_source': pl.Utf8,
-        })).alias('_ann_info')
+    """按 symbol 取真实公告日，缺失/早于报告期时退化为法定截止日。
 
+    2026-11-24 向量化：与原 ``_ann_lookup`` 逐行语义一致（end_date 为 null 时
+    ann_date=null、来源记 statutory_deadline），输出同名 struct 列 ``_ann_info``。
+    """
+    mapping = {k: v[0] for k, v in ann_map.items() if v and v[0] is not None}
+    ann = (pl.col('symbol').cast(pl.Utf8).replace_strict(
+        mapping, default=None, return_dtype=pl.Date)
+        if mapping else pl.when(pl.lit(False)).then(pl.col('end_date')))
+    end = pl.col('end_date')
+    use_notice = ann.is_not_null() & end.is_not_null() & (ann >= end)
+    ann_date = (pl.when(end.is_null()).then(pl.lit(None, dtype=pl.Date))
+                .when(use_notice).then(ann)
+                .otherwise(_statutory_deadline_expr(end)))
+    source = (pl.when(use_notice).then(pl.lit('em_notice'))
+              .otherwise(pl.lit('statutory_deadline')))
+    return pl.struct([ann_date.alias('ann_date'),
+                      source.alias('ann_date_source')]).alias('_ann_info')
 
 def _ann_lookup(
         ann_map: dict[str, tuple[date, date | None, float | None]]
@@ -880,7 +946,7 @@ def normalize_bj_statement(table: str, df: Any, ts_code: str,
     valid = pl.col('_notice').is_not_null() & (pl.col('_notice') >= pl.col('end_date'))
     frame = frame.with_columns(
         pl.when(valid).then(pl.col('_notice'))
-        .otherwise(pl.col('end_date').map_elements(statutory_deadline, return_dtype=pl.Date))
+        .otherwise(_statutory_deadline_expr(pl.col('end_date')))
         .alias('ann_date'),
         pl.when(valid).then(pl.lit('em_notice')).otherwise(pl.lit('statutory_deadline'))
         .alias('ann_date_source'),

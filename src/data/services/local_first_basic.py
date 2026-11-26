@@ -519,6 +519,7 @@ def check_fund_basic_local(
         stock_path,
         columns=['ts_code', 'name', 'market', 'list_date', 'delist_date', 'status'])
     existing = set(local['ts_code'].to_list())
+    seen = set(existing)
     now = datetime.now().isoformat(timespec='seconds')
     stamped = datetime.now().strftime('%Y%m%d_%H%M%S')
 
@@ -526,7 +527,7 @@ def check_fund_basic_local(
     max_id = local['id'].max() if local.height else 0
     next_id = int(max_id or 0) + 1  # type: ignore[arg-type]  # polars max 返回宽联合类型
     for ts_code, name, market, list_date, delist_date, status in stock.iter_rows():
-        if not ts_code or ts_code in existing:
+        if not ts_code or ts_code in seen:
             continue
         if not _is_fund_ts_code(ts_code, name, market):
             continue
@@ -550,7 +551,44 @@ def check_fund_basic_local(
             'tradable_reason': 'migrated_from_local_stock_basic',
             'source': f'migrated_from_stock_basic@{stamped}',
         })
+        seen.add(ts_code)
         next_id += 1
+
+    # 行情先行、源端名录尚未收录的新基金（2026-11-24 实测 20 只新上市主动 ETF，
+    # 如 158900.SZ）：按 meta/daily_index 的基金覆盖 + 本地名称快照补进本地名录。
+    # 不补的话保鲜体检会把「行情有、名录无」判成新增未登记，直接把 basic 步打成失败。
+    index_path = root / 'meta' / 'daily_index.parquet'
+    names_path = root / 'meta' / 'names.json'
+    if index_path.is_file() and names_path.is_file():
+        covered = pl.read_parquet(index_path, columns=['ts_code', 'data_type', 'start', 'end'])
+        names = json.loads(names_path.read_text(encoding='utf-8'))
+        for ts_code, _data_type, start, end in covered.filter(
+                pl.col('data_type') == 'fund').iter_rows():
+            if not ts_code or ts_code in seen:
+                continue
+            name = names.get(ts_code)
+            classified = _classify_local_fund_symbol(str(ts_code)[:6], name)
+            if classified is None:
+                continue
+            fund_type, _target = classified
+            appended.append({
+                'id': next_id,
+                'ts_code': ts_code,
+                'symbol': str(ts_code)[:6],
+                'name': name,
+                'fund_type': fund_type,
+                'market': str(ts_code)[-2:].upper(),
+                'list_date': start,
+                'delist_date': None,
+                'status': 'L',
+                'created_at': datetime.now(),
+                'updated_at': datetime.now(),
+                'is_tradable': True,
+                'tradable_reason': None,
+                'source': f'status=local_tdx_quote|last_bar={end}',
+            })
+            seen.add(ts_code)
+            next_id += 1
 
     manifest_path = root / FUND_MANIFEST
     manifest = _read_manifest(manifest_path)

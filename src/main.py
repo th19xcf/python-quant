@@ -218,7 +218,7 @@ def _enforce_freshness(config) -> None:
     这里会当场报 error，而不是等下一个人发现表停在旧日期。
     """
     from src.data.local_store.paths import resolve_store_root
-    from src.data.quality.freshness_check import format_report, run_check
+    from src.data.quality.freshness import format_report, run_check
 
     try:
         report = run_check(resolve_store_root(config))

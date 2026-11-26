@@ -37,12 +37,15 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
 
 import polars as pl
 from loguru import logger
 
 from src.data.atomic_write import write_text_atomic
+
+if TYPE_CHECKING:  # pragma: no cover - 仅类型标注
+    from src.data.hash_cache import FactsCache
 
 #: 视为「统计字段」的键：节点至少要带一个，才算声明了该文件的登记条目。
 STAT_KEYS = ('rows', 'bytes', 'sha256', 'columns', 'cols', 'date_range')
@@ -65,10 +68,19 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def file_facts(path: Path) -> dict[str, Any]:
-    """按磁盘实测取 rows / bytes / sha256 / columns（非 parquet 按文本表处理）。"""
+def file_facts(path: Path, cache: 'FactsCache | None' = None) -> dict[str, Any]:
+    """按磁盘实测取 rows / bytes / sha256 / columns（非 parquet 按文本表处理）。
+
+    ``cache`` 给出时按 ``(path, size, mtime_ns)`` 复用已算事实：三项全一致才命中，
+    任一项变化即重算（判据见 :mod:`src.data.hash_cache`）。
+    """
+    stat = path.stat()
+    if cache is not None:
+        cached = cache.get(path, stat)
+        if cached is not None:
+            return cached
     facts: dict[str, Any] = {
-        'bytes': path.stat().st_size,
+        'bytes': stat.st_size,
         'sha256': sha256_file(path),
         'rows': None,
         'columns': None,
@@ -87,6 +99,8 @@ def file_facts(path: Path) -> dict[str, Any]:
             records = list(csv.reader(handle))
         facts['columns'] = [c.strip() for c in records[0]] if records else []
         facts['rows'] = max(len(records) - 1, 0)
+    if cache is not None:
+        cache.put(path, stat, facts)
     return facts
 
 
@@ -232,7 +246,8 @@ def _dump_indent(text: str) -> int:
 
 def refresh_manifest_files(manifest_path: Path | str, store_root: Path | str,
                            written: Iterable[Path | str], *,
-                           required: bool = False) -> list[str]:
+                           required: bool = False,
+                           facts_cache: 'FactsCache | None' = None) -> list[str]:
     """把本次写盘的正式文件按磁盘实测回写进指定 manifest。
 
     ``manifest_path`` 不存在时直接返回空列表（测试用的临时 store 不凭空造登记）；
@@ -252,7 +267,7 @@ def refresh_manifest_files(manifest_path: Path | str, store_root: Path | str,
     for item in written:
         path = Path(item)
         rel = path.relative_to(root).as_posix() if path.is_relative_to(root) else str(path)
-        facts = file_facts(path)
+        facts = file_facts(path, facts_cache)
         hits = [node for node, fallback, base in nodes
                 if _declares(node, fallback, path, root, base)]
         if not hits:

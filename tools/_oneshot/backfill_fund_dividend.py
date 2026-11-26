@@ -91,9 +91,13 @@ def main() -> int:
     old = pl.read_parquet(target).select(DIVIDEND_COLUMNS)
     new = parse_rows(Path(args.rows), fetched_at)
 
-    overlap = set(old['ts_code'].unique().to_list()) & set(new['ts_code'].unique().to_list())
-    if overlap:
-        raise RuntimeError(f'新行与既有分红表代码重叠，拒绝覆盖：{sorted(overlap)[:5]}')
+    # 2026-11-24：按 (ts_code, ex_date) 事件键判重叠（原按代码，老基金的新一期分红
+    # 会被整批拒绝）。既有事件仍不得覆盖；同一基金的新除息日允许追加。
+    key = ['ts_code', 'ex_date']
+    overlap = new.join(old.select(key), on=key, how='semi')
+    if overlap.height:
+        raise RuntimeError(f'新行与既有分红事件重叠 {overlap.height} 条，拒绝覆盖：'
+                           f'{overlap.select(key).head(5).rows()}')
 
     merged = pl.concat([old, new], how='vertical_relaxed').select(DIVIDEND_COLUMNS)
     dup = merged.group_by(['ts_code', 'ex_date']).len().filter(pl.col('len') > 1)

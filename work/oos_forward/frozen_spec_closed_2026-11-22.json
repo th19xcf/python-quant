@@ -1,0 +1,57 @@
+{
+  "schema": "oos_forward/frozen_low_valuation_monthly_cross_section",
+  "frozen_at": "2026-11-22",
+  "closed_at": "2026-11-22",
+  "status": "closed_2026-11-22",
+  "closed_reason": "低估值选股线未通过预注册裁决（裁决提交 b78f88a），不再作为前向记录对象；记录对象改为实盘配置（ETF 等权底仓 + 510880 红利 sleeve）。本文件仅存档，不得再据此生成信号。",
+  "replaced_by": "spec_live_config_2026-11-22.json",
+  "scope": "EP 主导的低估值月频横截面（已关闭）",
+  "items": [
+    {
+      "item": "股票池",
+      "value": "全 A 含退市（补回 237 只可补退市股）；剔除 ST、上市不足 60 个交易日",
+      "source": "docs/A股日线买点与因子研究_合并结论_2026-11-21.md §三 基准 ⑧、§五-1"
+    },
+    {
+      "item": "排序口径",
+      "value": "EP 主导：EP=1/PE_TTM 与 BP=1/PB 等权；BP 全为 null 的 2015-01-01~2017-12-31 降级为 EP 单因子；PE<=0 / PB<=0 单列亏损组，不参与分位排序",
+      "source": "docs/估值因子_EP_BP_分层与剔除_2026-11-14.json definitions；合并结论 §五-2"
+    },
+    {
+      "item": "持仓只数",
+      "value": "n=30，等权",
+      "source": "合并结论 §一 #7、§四 ③"
+    },
+    {
+      "item": "调仓频率",
+      "value": "月末收盘生成信号，次一交易日（T+1）开盘成交，月度调仓",
+      "source": "合并结论 §三 基准口径"
+    },
+    {
+      "item": "成本",
+      "value": "0.13% 往返（买入 1.5bp、卖出 11.5bp，含 10bp 印花税，无冲击成本）",
+      "source": "合并结论 §三；config/strategy_lab/rules/红利择时_上证红利PB五年分位.json"
+    },
+    {
+      "item": "中性化方式",
+      "value": "选股信号层不做中性化；评估同时披露行业+市值中性化后的超额（历史：估值 n30 中性化后 +0.79pp，EP+质量 −0.23pp）",
+      "source": "合并结论 §一 修订表 ③、§四 ③"
+    },
+    {
+      "item": "基准",
+      "value": "全 A 等权 5.80%（月频、T+1 开盘、剔 ST/上市不足 60 日、0.13% 往返、含 237 只退市股）",
+      "source": "合并结论 §三「唯一权威基准 = 5.80%」"
+    },
+    {
+      "item": "PIT 对齐",
+      "value": "财报按 income.ann_date 首次公告日；估值按 trade_date 向后 as-of，不填补",
+      "source": "合并结论 §五-3；估值因子 JSON data.factor_source"
+    },
+    {
+      "item": "研究窗口",
+      "value": "2010-01-04~2026-11-20",
+      "source": "docs/数据可支撑性评估_2026-11-22.md（行情覆盖至 2026-11-20）"
+    }
+  ],
+  "change_policy": "已关闭，不再变更；任何重启须重新预注册并新建 spec。"
+}

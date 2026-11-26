@@ -1666,14 +1666,23 @@ class EventBacktestRunner:
         st_intervals = st_intervals or {}
         st_starts = st_starts or {}
         has_st_intervals = bool(st_intervals)
+        prev_interest_day: date | None = None
         for day_index, trade_day in enumerate(sorted_dates):
             codes_today = day_codes[day_index]
             positions_today = day_positions[day_index]
             # 记录层钩子：仅统计当日是否有成交，用于收盘持仓快照
             trades_before_day = len(ctx.trades)
-            # 现金计息：按上一交易日收盘现金余额计提当日利息（年化/365）
+            # 现金计息：按上一交易日收盘现金余额、按**自然日间隔**计提（年化/365 × 天数）。
+            # 2026-11-24 修正：原实现每个交易日只计 1/365，周末与节假日不计息，
+            # 1.5% 年化实得约 1.04%（252/365）。首日无上一交易日，不计息。
             if ctx.cash_annual_rate:
-                ctx.book.accrue_cash(ctx.cash_annual_rate / 365.0)
+                interest_day = to_trade_date(trade_day)
+                if prev_interest_day is not None and interest_day is not None:
+                    gap = (interest_day - prev_interest_day).days
+                    if gap > 0:
+                        ctx.book.accrue_cash(ctx.cash_annual_rate / 365.0 * gap)
+                if interest_day is not None:
+                    prev_interest_day = interest_day
             # A11：日期解析从每 bar 一次降到每日一次；无区间表时完全跳过
             st_day = to_trade_date(trade_day) if has_st_intervals else None
             # 除权除息必须在当日撮合之前记账：除权日开盘价已扣权，且送转新增

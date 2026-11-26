@@ -16,7 +16,8 @@
   ``000001.SH`` 的真实交易日（法定节假日自动排除）；基准文件缺失时退化为
   「工作日 − 配置 ``defaults.holidays``」近似，并输出 warning。
   纯内存调用（不传 store_root）仍用原工作日循环；
-- 超期倍数 = 距今天数（按 cadence.unit 计） / cadence.expected_interval；
+- 超期倍数 = 距锚点（默认行情末日，可配 ``today``）天数（按 cadence.unit 计）
+  / cadence.expected_interval；
 - ``warn_multiple`` 与 ``critical_multiple`` 全部来自配置，代码内不写死；
 - 覆盖占比 = 覆盖标的数 / 应有标的数，分母由配置声明；无分母的数据集只报
   覆盖数量，占比输出 null。
@@ -27,6 +28,7 @@ from __future__ import annotations
 import csv
 import json
 import unicodedata
+from bisect import bisect_right
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -596,6 +598,52 @@ def _parse_holidays(config: dict[str, Any]) -> set[date]:
     return holidays
 
 
+def quotes_end(store_root: Path | str) -> date | None:
+    """``quotes/stock`` 全量日线的最大 ``date``（相对锚点）。
+
+    与表体检支（``_freshness_tables``）共用同一份「行情末日」定义，
+    两条判据都以此为准。目录不存在或读取失败返回 ``None``，调用方回退到
+    ``today``，保证纯内存巡检行为不变。
+    """
+    root = Path(store_root) / 'quotes' / 'stock'
+    if not root.is_dir():
+        return None
+    try:
+        found = pl.scan_parquet(
+            str(root / '**' / '*.parquet'), extra_columns='ignore',
+        ).select(pl.col('date').max()).collect().item()
+    except (OSError, PolarsError):
+        return None
+    return _coerce_date(found)
+
+
+def count_lag(calendar: list[date], start: date | None, end: date | None) -> int | None:
+    """``(start, end]`` 区间内的交易日数。"""
+    if start is None or end is None:
+        return None
+    if start >= end:
+        return 0
+    right = bisect_right(calendar, end)
+    left = bisect_right(calendar, start)
+    return max(right - left, 0)
+
+
+def _resolve_anchor(
+    store_root: Path | str, config: dict[str, Any], today: date,
+) -> date:
+    """解析滞后锚点：``defaults.anchor='quotes_end'``（默认）时用行情末日。
+
+    ``quotes_end`` 是相对锚点，盘中跑不会因为「今天尚未收盘」把日频表误判超期；
+    行情目录不可用时退回 ``today``，与既往纯内存口径一致。
+    """
+    mode = str((config.get('defaults') or {}).get('anchor', 'quotes_end'))
+    if mode == 'quotes_end':
+        end = quotes_end(store_root)
+        if end is not None:
+            return end
+    return today
+
+
 def check_all(
     store_root: Path | str,
     config: dict[str, Any] | None = None,
@@ -603,15 +651,18 @@ def check_all(
 ) -> list[FreshnessResult]:
     """检查配置中登记的全部数据集。
 
-    单类数据读取异常只把该数据集记为 critical，不影响其它数据集。
+    滞后锚点按 ``defaults.anchor`` 解析（默认 ``quotes_end``，与硬编码支统一），
+    行情末日不可用时回退到 ``today``。单类数据读取异常只把该数据集记为
+    critical，不影响其它数据集。
     """
     config = config or load_config()
     specs = parse_config(config)
     holidays = _parse_holidays(config)
+    anchor = _resolve_anchor(store_root, config, today or date.today())
     results: list[FreshnessResult] = []
     for spec in specs:
         try:
-            results.append(check_dataset(store_root, spec, today, holidays))
+            results.append(check_dataset(store_root, spec, anchor, holidays))
         except _READ_ERRORS as exc:
             results.append(
                 FreshnessResult(
@@ -764,3 +815,20 @@ def format_table(results: list[FreshnessResult], today: date) -> str:
         f'ok {summary["ok"]} / warn {summary["warn"]} / critical {summary["critical"]}'
     )
     return '\n'.join(lines)
+
+
+# ---------------------------------------------------------------------------
+# 统一入口：表级体检（13 行）的实现位于私有 ``_freshness_tables``，由本模块
+# 统一对外暴露。生产代码只依赖 ``freshness``；``freshness_check`` 已退化为
+# 兼容薄封装（见其模块文档）。惰性转发，避免与私有模块的顶层 import 形成环。
+# ---------------------------------------------------------------------------
+def __getattr__(name: str):
+    from src.data.quality import _freshness_tables as _tables  # noqa: PLC0415
+
+    return getattr(_tables, name)
+
+
+if __name__ == '__main__':
+    from src.data.quality._freshness_tables import main as _table_main  # noqa: PLC0415
+
+    raise SystemExit(_table_main())

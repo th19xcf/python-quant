@@ -199,6 +199,13 @@ def fetch_days(args: argparse.Namespace, days: list[date],
     fetcher.WORKERS = 1
     fetcher.REQUEST_SLEEP = max(0.05, args.sleep)
     fetcher.REQUEST_JITTER = 0.0
+    # 单日窗口下稀疏关键词（如「重大合同」）常态返回结构正常的 0，
+    # 原逻辑一律判失败会让整轮补采无法推进（2026-11-24 实测：同一关键词
+    # 11-01~11-24 有 31 条，11-20 当日确实 0 条）。此处由调用方显式承担
+    # 「0 = 该关键词当日无公告」的判断，结构异常仍按失败处理。
+    if args.allow_empty:
+        fetcher.ALLOW_EMPTY = True
+        logger.warning('--allow-empty：结构正常的空响应重试耗尽后按「当日该关键词无公告」接受')
     shard_dir.mkdir(parents=True, exist_ok=True)
     staging = _staging_dir(Path(args.store_root))
     staging.mkdir(parents=True, exist_ok=True)
@@ -349,6 +356,15 @@ def main() -> int:
     parser.add_argument('--store-root', default=str(DEFAULT_STORE_ROOT))
     parser.add_argument('--keywords', nargs='+', default=list(KEYWORDS))
     parser.add_argument('--force', action='store_true', help='重抓已有分片')
+    parser.add_argument('--allow-empty', action='store_true',
+                        help='结构正常的空响应重试耗尽后接受为「当日该关键词无公告」'
+                             '（默认判失败停止；稀疏关键词如「重大合同」常为 0）')
+    # 由 src.data.dataset_contracts 直接解析 sys.argv：独立运行（不经日更调度）
+    # 时显式放行受控写入并留痕；经 daily_update 运行时走运行令牌，无需传。
+    parser.add_argument('--allow-standalone', action='store_true',
+                        help='独立运行的受控写入放行（记入独立写 ledger）')
+    parser.add_argument('--standalone-reason', default=None,
+                        help='独立写入理由（与 --allow-standalone 配套）')
     parser.add_argument('--skip-fetch', action='store_true',
                         help='不抓取，只用已有分片入库（续跑用）')
     parser.add_argument('--dry-run', action='store_true', help='只计算不落盘')

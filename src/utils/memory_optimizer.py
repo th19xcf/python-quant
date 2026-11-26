@@ -233,10 +233,8 @@ class MemoryOptimizer:
         if string_series.len() == 0:
             max_length = 0
         else:
-            max_length = cast(int, string_series.map_elements(
-                lambda x: len(x),
-                return_dtype=pl.Int32,
-            ).max() or 0)
+            max_length = cast(int, string_series.cast(pl.Utf8)
+                              .str.len_chars().max() or 0)
         if max_length < 100:
             # 短字符串可以保持Utf8类型
             return None

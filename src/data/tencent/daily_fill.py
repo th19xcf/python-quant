@@ -74,10 +74,18 @@ class QuoteCoverage:
 # ----------------------------------------------------------------------
 # 盘点：磁盘实况 + 现有 meta
 # ----------------------------------------------------------------------
+#: 腾讯补数覆盖度扫描的行情类型（期货不在本链路内）
+SCAN_KINDS = ('stock', 'index', 'fund')
+
+
 def scan_quote_files(root: Path | str, workers: int = 8) -> dict[tuple[str, str], QuoteCoverage]:
     """扫描 ``quotes/{type}/{market}/*.parquet``，返回按 (类型, 代码) 索引的覆盖度。"""
     base = Path(root) / 'quotes'
-    files = sorted(base.glob('*/*/*.parquet')) if base.is_dir() else []
+    # 只扫股票/指数/基金：期货分片用 trade_date 列（不是 date）、也不归本补数链路，
+    # 旧实现每次日更对 998 个期货文件各报一条「读取失败」告警（日志被刷满）
+    files = sorted(
+        path for kind in SCAN_KINDS for path in (base / kind).glob('*/*.parquet')
+    ) if base.is_dir() else []
 
     def read_one(path: Path) -> tuple[tuple[str, str], QuoteCoverage] | None:
         try:

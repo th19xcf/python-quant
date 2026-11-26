@@ -257,11 +257,23 @@ def test_real_registry_spans() -> None:
     # 侧车覆盖不止 5 只焦点基金），并与 registry 自述的 registered_rows_after 对账
     spans_all = fpb.load_spans(root)
     total = sum(s.rows for spans in spans_all.values() for s in spans)
-    assert total == 26128, total
+    # 2026-11-24：60 只占位基金的区间 end 随日更逐日延伸（每个交易日 +60 行），
+    # 写死总数会每天失效；改为与 CSV 逐行合计对账，并保留下限防回退。
+    import csv
+    csv_path = root / 'meta' / 'anomalies' / 'placeholder_quote_codes.csv'
+    with csv_path.open(encoding='utf-8') as handle:
+        csv_total = sum(int(row['rows']) for row in csv.DictReader(handle))
+    assert total == csv_total, (total, csv_total)
+    assert total >= 26128, total
     registry = json.loads((root / 'meta' / 'anomalies' / fpb.JSON_NAME).read_text(encoding='utf-8'))
     assert registry['registered_rows_after'] == total, (registry['registered_rows_after'], total)
     # 5 只焦点基金合计 2,754 行（G-062~G-066 的行级精确复算值 2,748，
     # 其中 1 只区间 end 于 2026-11-20 前移 +6 行）
     focus = ('160311.SZ', '160314.SZ', '160603.SZ', '163302.SZ', '163503.SZ')
     focus_rows = sum(s.rows for code in focus for s in spans_all.get(code, []))
-    assert focus_rows == 2754, focus_rows
+    # 2026-11-24：160603.SZ 末段 end 随日更延伸（每交易日 +1），改为与 CSV 对账 + 下限
+    with csv_path.open(encoding='utf-8') as handle:
+        focus_csv = sum(int(row['rows']) for row in csv.DictReader(handle)
+                        if row['ts_code'] in focus)
+    assert focus_rows == focus_csv, (focus_rows, focus_csv)
+    assert focus_rows >= 2754, focus_rows

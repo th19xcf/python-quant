@@ -491,8 +491,13 @@ def build_candidate(
             'date_precision': 'official',
         })
 
-    # 旧码回填：继任码行情起点晚于旧码上市期，剔掉会让该实体在早期年份凭空消失
+    # 旧码回填：继任码行情起点晚于旧码上市期，剔掉会让该实体在早期年份凭空消失。
+    # 2026-11-24 起 TDX 旧码（如 000418.SZ / 600087.SH）也会被本地构建落成分片，
+    # 这类已「有行情」的旧码由上面的换码分支按 quote_last_bar 给出 D 状态，
+    # 不再适用「无行情旧码」的官方日期回填。
     for code in MIGRATION_OLD_CODES_KEPT:
+        if code in quoted:
+            continue
         if code not in dropped:
             raise RuntimeError(f'{code} 不在「无行情旧码」清单内，回填逻辑有误')
         list_date, delist_date = official_list.get(code, (None, None))
@@ -793,9 +798,11 @@ def _manifest(candidate: pl.DataFrame, quotes: pl.DataFrame, calendar: pl.Series
         'external_delisted_no_quote': int(
             (candidate['delist_date_basis'] == 'official_delist').sum()),
         'dropped_migration_old_codes': dropped,
-        'restored_migration_old_codes': dict.fromkeys(
-            MIGRATION_OLD_CODES_KEPT,
-            '旧码，实体被吸收，本地无行情；日期取 tushare 官方退市清单'),
+        'restored_migration_old_codes': {
+            code: '旧码，实体被吸收，本地无行情；日期取 tushare 官方退市清单'
+            for code in MIGRATION_OLD_CODES_KEPT
+            if code not in set(quotes['ts_code'].to_list())
+        },
         'tcode_decisions': tcode_decisions,
         'long_suspended': suspended.height,
         'name_missing': int(candidate['name'].is_null().sum()),

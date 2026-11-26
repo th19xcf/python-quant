@@ -44,6 +44,7 @@ import polars as pl
 from loguru import logger
 
 from src.data.atomic_write import write_parquet_atomic
+from src.data.dataset_contracts import write_dataset
 from src.utils.dates import as_date
 
 RISK_EVENT_COOLDOWNS: dict[str, int] = {
@@ -732,7 +733,11 @@ def import_file(path: Path | str, store_root: Path | str | None = None,
                 'source_format': kind, 'dry_run': True, **stats}
 
     path_out.parent.mkdir(parents=True, exist_ok=True)
-    write_parquet_atomic(merged, path_out)
+    # 走受控写入：契约校验 + 自动登记 ledger（此前裸写导致 events 长期
+    # ledger_lag 告警）。经日更调度时用运行令牌；独立运行需显式
+    # --allow-standalone --standalone-reason 放行并留痕。
+    write_dataset('events', merged, rel_path='meta/events/events.parquet',
+                  root=root, writer='src/data/events.py')
     coverage = _write_coverage(root, merged, complete,
                                coverage_start, coverage_end)
     logger.info(f'[events] {mode} 导入 {merged.height} 条 → {path_out}')

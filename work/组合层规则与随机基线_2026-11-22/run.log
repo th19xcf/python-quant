@@ -1,0 +1,29 @@
+﻿limit files=263
+calendar 4343 days 14249..20777  codes=5839
+quote files=5839
+  quotes 1500/5839  ok=1494  7s
+  quotes 3000/5839  ok=2976  15s
+  quotes 4500/5839  ok=4475  24s
+quotes filled 5750 in 32s
+industry intervals=12931 cells_filled=15631867 coverage=61.6428%
+delist codes=259
+load done 33s
+full         ann=  -9.62% mdd= -95.19% calmar=-0.101 sharpe=-0.169 to=53.36 trades= 9495 maxloss= -93.2% fill= 95.03% ind_skip=301 unk=0.0% 0.6s
+no_cap       ann=  -9.62% mdd= -94.98% calmar=-0.101 sharpe=-0.167 to=53.35 trades= 9514 maxloss= -93.2% fill= 95.04% ind_skip=0 unk=0.0% 0.5s
+no_buffer    ann=  -8.30% mdd= -94.12% calmar=-0.088 sharpe=-0.115 to=58.90 trades=10454 maxloss= -93.2% fill= 95.15% ind_skip=327 unk=0.0% 0.5s
+naive_top20  ann=  -8.49% mdd= -93.58% calmar=-0.091 sharpe=-0.121 to=58.86 trades=10481 maxloss= -93.2% fill= 95.16% ind_skip=0 unk=0.0% 0.5s
+rand_iid 100 reps done 51s
+rand_static 100 reps done 45s
+rand_iid_naive 100 reps done 50s
+shape: (4, 3)
+┌─────────────────────────────────┬───────────┬─────────────────────────────────┐
+│ component                       ┆ value_pp  ┆ detail                          │
+│ ---                             ┆ ---       ┆ ---                             │
+│ str                             ┆ f64       ┆ str                             │
+╞═════════════════════════════════╪═══════════╪═════════════════════════════════╡
+│ candidate_generation(REV20 vs … ┆ -9.687082 ┆ full - mean(rand_iid full)      │
+│ portfolio_construction(full vs… ┆ -1.122343 ┆ full - naive_top20              │
+│ random_construction(full vs na… ┆ -0.02289  ┆ mean(rand_naive) - mean(rand_i… │
+│ interaction                     ┆ -1.099453 ┆ construction effect minus rand… │
+└─────────────────────────────────┴───────────┴─────────────────────────────────┘
+done 183s

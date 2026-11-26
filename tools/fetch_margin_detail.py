@@ -66,6 +66,55 @@ class FetchError(RuntimeError):
     pass
 
 
+class SourceNotPublished(RuntimeError):
+    """源端当日尚无数据（T+1 未发布）：按跳过处理，不记失败、不推进进度。"""
+    pass
+
+
+class SourcePartial(RuntimeError):
+    """源端当日只返回部分交易所 / 行数骤降：不写正式层、不推进进度，下一轮重抓。
+
+    2026-11-20 源端首轮只给了沪市 2,019 行（深市/北交所 0），原实现只判「整表
+    0 行」，残缺日被写入并记 done，此后日更永不重抓。判据与
+    ``margin_quality.build_completeness`` 一致：前一完成日该所有票、当日为 0，
+    或当日总行数 < 前一完成日 × ``margin_quality.MIN_ROW_RATIO``。
+    """
+    pass
+
+
+def _exchange_counts(frame: pl.DataFrame) -> dict[str, int]:
+    suffix = frame['ts_code'].cast(pl.String).str.to_uppercase().str.split('.').list.last()
+    counts = dict(zip(*suffix.value_counts().to_dict(as_series=False).values()))
+    return {ex: int(counts.get(ex, 0)) for ex in ('SH', 'SZ', 'BJ')}
+
+
+def _reference_counts(day: date, done: set[str]) -> dict[str, int] | None:
+    """取 ``day`` 之前最近一个已完成交易日的分交易所行数（读原始缓存，缺失返回 None）。"""
+    for iso in sorted((d for d in done if d < day.isoformat()), reverse=True)[:5]:
+        path = _raw_path(date.fromisoformat(iso))
+        if path.is_file():
+            try:
+                return _exchange_counts(pl.read_parquet(path, columns=['ts_code']))
+            except (OSError, pl.exceptions.PolarsError):
+                continue
+    return None
+
+
+def _check_partial(frame: pl.DataFrame, day: date, done: set[str]) -> None:
+    ref = _reference_counts(day, done)
+    if ref is None:
+        return
+    got = _exchange_counts(frame)
+    missing = [ex for ex in ('SH', 'SZ', 'BJ') if ref[ex] > 0 and got[ex] == 0]
+    total_ref, total = sum(ref.values()), sum(got.values())
+    low = total_ref > 0 and total < total_ref * margin_quality.MIN_ROW_RATIO
+    if missing or low:
+        _raw_path(day).unlink(missing_ok=True)
+        why = f'缺 {"/".join(missing)}' if missing else f'行数 {total} < 前日 {total_ref}×{margin_quality.MIN_ROW_RATIO}'
+        raise SourcePartial(f'{day} 源端数据不完整（{why}；本次 {got}，参照 {ref}），'
+                            '未写入、未记完成，下一轮重抓')
+
+
 def _token() -> str:
     import os  # noqa: PLC0415
 
@@ -141,7 +190,11 @@ def _fetch_day(pro: Any, day: date, *, refresh: bool) -> pl.DataFrame:
     if path.is_file() and not refresh:
         return _normalize(pl.read_parquet(path), day)
     raw = _retry(pro.margin_detail, trade_date=f'{day:%Y%m%d}')
-    frame = _normalize(pl.DataFrame(raw), day)
+    raw_frame = pl.DataFrame(raw)
+    if raw_frame.height == 0:
+        # T+1 未发布：源端返回空表。按跳过处理，不落 raw、不推进进度，下一轮重试。
+        raise SourceNotPublished(f'{day} 源端返回 0 行（T+1 尚未发布）')
+    frame = _normalize(raw_frame, day)
     path.parent.mkdir(parents=True, exist_ok=True)
     write_parquet_atomic(frame, path)
     return frame
@@ -241,6 +294,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--audit', action='store_true',
                         help='只重建逐日完整性标记，不抓数')
+    # 由 src.data.dataset_contracts 直接解析 sys.argv：经日更调度时走运行令牌；
+    # 独立补采需显式放行受控写入并留痕。
+    parser.add_argument('--allow-standalone', action='store_true',
+                        help='独立运行的受控写入放行（记入独立写 ledger）')
+    parser.add_argument('--standalone-reason', default=None,
+                        help='独立写入理由（与 --allow-standalone 配套）')
     args = parser.parse_args(argv)
 
     if args.audit:
@@ -274,6 +333,11 @@ def main(argv: list[str] | None = None) -> int:
     for index, day in enumerate(todo, 1):
         try:
             frame = _fetch_day(pro, day, refresh=args.refresh)
+            _check_partial(frame, day, done)
+        except (SourceNotPublished, SourcePartial) as exc:
+            # T+1 未发布：不记失败、不推进进度，下一轮自动重试；整轮仍判成功
+            print(f'[SKIP] {exc}', flush=True)
+            continue
         except Exception as exc:  # noqa: BLE001
             # 失败批次不推进进度、不写正式层，下一轮自动重跑
             failed[day.isoformat()] = str(exc)[:200]

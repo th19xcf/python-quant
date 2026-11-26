@@ -17,7 +17,8 @@
   按 ``progress.json`` 断点跳过，中断重跑不重写全历史；``--force`` 仍是全历史重写，
   两者互斥；
 - ``--since auto`` 供定时任务直接使用：起点取本地估值表末日 + 1，终点取最近
-  交易日（不在命令行写死日期）；本地已追平则打印一行后正常退出（返回码 0）；
+  交易日（不在命令行写死日期）；全局末日已追平时不直接退出，转以最近交易日为
+  目标日逐码核对末根，只补落后码，末根 == 目标日的代码不再请求；
 - 不写 MySQL、不改现有库结构。
 """
 
@@ -86,8 +87,10 @@ def auto_range(store_root: Path, today: date) -> tuple[date, date]:
         raise SystemExit('--since auto 无法推算终点：交易日历无最近交易日')
     since = last + timedelta(days=1)
     if since > until:
-        print(f'[估值] 本地末日 {last} 已覆盖最近交易日 {until}，本轮无需采集')
-        raise SystemExit(0)
+        # 全局末日已追平也不能直接退出：全局末日可能只由少数新码撑起来，
+        # 其余码的末根仍落后。改为以 until 为目标日逐码核对末根，只补落后码。
+        print(f'[估值] 本地末日 {last} 已追平最近交易日 {until}，转逐码核对末根')
+        return until, until
     return since, until
 
 
@@ -226,10 +229,12 @@ def main() -> int:
             bj_codes, start_period=periods[0]).__dict__
     if args.only in {'all', 'valuation'}:
         codes = listed[:args.valuation_limit] if args.valuation_limit else listed
-        results['valuation'] = collector.collect_valuation(
-            codes, force=args.force, since=since, until=until).__dict__
-        if since is not None and not args.no_merge:
-            # 区间增量只动估值表，合并也只重建 valuation_daily，不重写三表
+        valuation = collector.collect_valuation(
+            codes, force=args.force, since=since, until=until)
+        results['valuation'] = valuation.__dict__
+        if since is not None and not args.no_merge and valuation.details.get('codes', 0):
+            # 区间增量只动估值表，合并也只重建 valuation_daily，不重写三表；
+            # 本轮全码按末根跳过（实抓 0 只）时不重写最终表，避免无意义整表重建
             results['merge'] = {'valuation': merge_parts('valuation', store_root)}
     if args.only == 'parent':
         results['parent'] = collector.backfill_parent_net_profit(periods).__dict__

@@ -1,0 +1,45 @@
+{
+  "schema": "oos_forward/live_config_monthly",
+  "frozen_at": "2026-11-22",
+  "status": "frozen",
+  "scope": "实盘配置：ETF 等权底仓（510300/511010/518880）+ 510880 红利择时独立 sleeve",
+  "replaces": "frozen_spec_closed_2026-11-22.json",
+  "items": [
+    {
+      "item": "底仓标的与权重",
+      "value": "510300.SH / 511010.SH / 518880.SH，各 1/3，等权",
+      "source": "docs/实盘配置_2026-11-22.md §2"
+    },
+    {
+      "item": "调仓",
+      "value": "每月最后一个交易日收盘后决策，次一交易日（T+1）开盘调回等权；100 份整数倍，零头留现金",
+      "source": "docs/实盘配置_2026-11-22.md §6"
+    },
+    {
+      "item": "成本",
+      "value": "16.5bp 往返（含冲击），每笔成交按成交额计",
+      "source": "docs/实盘配置_2026-11-22.md §1；research_round_trip_bps=16.5"
+    },
+    {
+      "item": "红利 sleeve",
+      "value": "510880.SH 独立记账：000015.SH PB 滚动 60 月分位（最少 36 期）≤50% 满仓、>50% 半仓，空余现金年化 1.5%；单独一行记录，不与底仓合并",
+      "source": "docs/实盘配置_2026-11-22.md §5"
+    },
+    {
+      "item": "基准",
+      "value": "510300.SH 同窗口买入持有（仅作对照列，不参与决策）",
+      "source": "work/成本16.5bp重跑_2026-11-22/"
+    },
+    {
+      "item": "记录字段",
+      "value": "date/ts_code/weight/actual_return/benchmark_return/diff + sleeve（etf_base / dividend）",
+      "source": "work/oos_forward/README.md"
+    },
+    {
+      "item": "启动",
+      "value": "2026-12 起记录；2026-10、2026-11 仅作脚本基线验证，不纳入考核",
+      "source": "本次重建"
+    }
+  ],
+  "change_policy": "冻结后除修 bug 外不得改参；改参须按 RD-10 解冻并重新冻结、清零前向记录。"
+}

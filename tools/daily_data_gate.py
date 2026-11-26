@@ -13,9 +13,9 @@ r"""每日数据巡检门禁（不改任何数据表、不触发采集或构建�
    （warn 只记录、不阻断：滞后 1 个交易日是常态）；
 3. **关键资产备份**：``backup_critical_assets.py`` 的 manifest 必须存在且
    sha256 全部匹配，防止快照再次整体丢失后无处可恢复；
-4. **保鲜体检（13 行汇总）**：``freshness_check`` 的 12 张登记表 + 行情全集
+4. **保鲜体检（13 行汇总）**：``freshness`` 的 12 张登记表 + 行情全集
    巡检，出现 ``error`` 即失败、``warning`` 只记录——与
-   ``python -m src.data.quality.freshness_check --summary`` 同一判据；
+   ``python -m src.data.quality.freshness --summary`` 同一判据；
 5. **版本记录 + 派生表版本审计**：先 ``ensure_current`` 补记当日基础表版本
    （同 digest 不写），再 ``audit_derived``；派生表文件缺失即失败，
    ``stale`` / ``unstamped`` 只记录（与 ``python tools/data_version.py audit``
@@ -92,8 +92,8 @@ def _check_freshness(store_root: Path, config_path: Path, today: date) -> dict[s
 
 
 def _check_freshness_summary(store_root: Path) -> dict[str, Any]:
-    """保鲜体检 13 行汇总（与 ``freshness_check --summary`` 同判据）。"""
-    from src.data.quality.freshness_check import run_check  # noqa: PLC0415
+    """保鲜体检 13 行汇总（统一入口 ``freshness`` 的表体检）。"""
+    from src.data.quality.freshness import run_check  # noqa: PLC0415
 
     try:
         report = run_check(store_root)

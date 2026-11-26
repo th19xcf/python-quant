@@ -1,0 +1,5 @@
+component,value_pp,detail
+candidate_generation(REV20 vs 随机),-9.687081844617929,full - mean(rand_iid full)
+portfolio_construction(full vs naive20),-1.1223434066570892,full - naive_top20
+random_construction(full vs naive20),-0.022890386144394762,mean(rand_naive) - mean(rand_iid full)
+interaction,-1.0994530205126944,construction effect minus random construction effect
