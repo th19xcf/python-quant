@@ -244,6 +244,40 @@ def rule_amount_dimension(frame: pl.DataFrame, ctx: RuleContext) -> pl.DataFrame
     )
 
 
+#: 成交均价越界的相对容差：均价 = amount / (volume×100)。tick 取整与源端成交额
+#: 四舍五入会让均价轻微越出 [low, high]，0.5% 以内不算错；单位错 100 倍会偏离几十倍。
+VWAP_BAND_TOLERANCE = 0.005
+
+
+def rule_vwap_out_of_range(frame: pl.DataFrame, ctx: RuleContext) -> pl.DataFrame:
+    """成交均价 ``amount/(volume×100)`` 必须落在 ``[low, high]``（仅股票，单位为手/元）。
+
+    比 ``amount_dimension``（只抓 10 倍以上的量纲错位）更严：用当日价格区间而非
+    收盘价作参照，能抓出成交量/成交额单位错、错行拼接、复权价与原始成交额混用。
+    早年口径按 ``HISTORICAL_RULE_START`` 排除。
+    """
+    del ctx
+    if not _guard_columns(frame, ('high', 'low', 'volume', 'amount')):
+        return empty_violations()
+    vwap = pl.col('amount') / (pl.col('volume') * 100)
+    base = (_finite('high') & _finite('low') & _finite('volume') & _finite('amount')
+            & (pl.col('volume') > 0) & (pl.col('amount') > 0) & (pl.col('low') > 0))
+    tol = VWAP_BAND_TOLERANCE
+    mask = (
+        (pl.col('date').cast(pl.Date) >= pl.lit(HISTORICAL_RULE_START))
+        & base
+        & ((vwap > pl.col('high') * (1 + tol)) | (vwap < pl.col('low') * (1 - tol)))
+    )
+    return _build_violations(
+        frame.filter(mask), 'amount', vwap,
+        pl.concat_str([
+            pl.lit('vwap='), vwap.round(4).cast(pl.Utf8),
+            pl.lit(' low='), pl.col('low').cast(pl.Utf8),
+            pl.lit(' high='), pl.col('high').cast(pl.Utf8),
+        ], separator=''),
+    )
+
+
 def rule_placeholder_bar(frame: pl.DataFrame, ctx: RuleContext) -> pl.DataFrame:
     """源端「无行情」占位桩：``close=1.0`` 且 ``volume=0`` 且 ``amount=0``。
 
@@ -443,6 +477,8 @@ RULES: tuple[QualityRule, ...] = (
                 ('stock', 'index'), rule_high_lt_low),
     QualityRule('amount_dimension', 'amount/(close*volume*100) 量纲一致', 'warning',
                 ('stock',), rule_amount_dimension),
+    QualityRule('vwap_out_of_range', '成交均价 amount/(volume*100) 落在 [low, high]', 'warning',
+                ('stock',), rule_vwap_out_of_range),
     QualityRule('pre_close_mismatch', 'pre_close 与上一交易日收盘一致', 'warning',
                 ('stock', 'index'), rule_pre_close_mismatch),
     QualityRule('change_mismatch', 'change 可由 close/pre_close 复算', 'warning',
