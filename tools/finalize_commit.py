@@ -480,6 +480,7 @@ def record_ledger(head: str, args: argparse.Namespace, message: str) -> bool:
             task_id=title,
             tool_calls=calls,
             duration_min=args.duration_min,
+            budget_calls=getattr(args, 'budget_calls', None),
         )
     except (OSError, RuntimeError, csv.Error) as exc:  # 账本异常不回滚已完成的提交与备份
         print(f'记账失败：{exc}', file=sys.stderr)
@@ -507,6 +508,8 @@ def main(argv: list[str] | None = None) -> int:
                         help='任务账本标题；缺省取 --task-id / QUANT_TASK_ID / 提交信息首行，不用短哈希')
     parser.add_argument('--tool-calls', type=int,
                         help='本任务工具调用数；缺省取 QUANT_TOOL_CALLS，取不到写 unknown')
+    parser.add_argument('--budget-calls', type=int,
+                        help='本任务派单预算调用数；缺省取同标识派单行，取不到时账本拒写 done 行')
     parser.add_argument('--duration-min', type=float, help='本任务耗时（分钟），未知留空')
     args = parser.parse_args(argv)
 
