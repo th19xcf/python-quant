@@ -1137,10 +1137,14 @@ def _valuation_last_date(root: Path) -> date | None:
 
 
 def _run_valuation(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
-    """全市场日频估值增量：起点由脚本从本地估值末日 + 1 自动推算，终点取最近交易日。
+    """全市场日频估值增量：起点由脚本从本地估值末日 + 1 自动推算，终点取 plan.latest。
 
     失败只记录、不影响后续步骤；源端当日未更新时本次落 0 行、末日不动，
     次日起点不变、终点前移，不会把未采到的日期永久标记完成。
+
+    ``--until`` 透传 ``plan.latest``（即单入口 ``--end``）：次日补跑时名录只到昨日，
+    若终点仍取「最近交易日」（= 今日）会触发名录新鲜度守卫误判；显式指定终点后
+    守卫的 as_of 与名录末日一致，不再误拒。
     """
     if args.skip_valuation:
         return True, '已跳过（--skip-valuation）'
@@ -1151,7 +1155,8 @@ def _run_valuation(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
         return False, '估值表缺失，无法推算起点'
     code = _run_module(
         [sys.executable, str(ROOT / 'tools' / 'collect_financials.py'),
-         '--only', 'valuation', '--since', 'auto'], '全市场估值增量', timeout=1500)
+         '--only', 'valuation', '--since', 'auto',
+         '--until', plan.latest.isoformat()], '全市场估值增量', timeout=1500)
     after = _valuation_last_date(plan.root)
     ok = code == 0 and after is not None and after >= plan.latest
     return ok, f'末日 {last}→{after or "-"} | rc={code}'

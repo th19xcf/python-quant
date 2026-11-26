@@ -70,11 +70,16 @@ def latest_period_end(today: date) -> date:
     return date(today.year - 1, 12, 31)
 
 
-def auto_range(store_root: Path, today: date) -> tuple[date, date]:
+def auto_range(store_root: Path, today: date,
+               until_override: date | None = None) -> tuple[date, date]:
     """``--since auto`` 的区间：本地估值表末日 + 1 起，到最近交易日止。
 
     起点只依赖本地落盘结果，终点只依赖交易日历，命令行不含任何写死日期，
     可直接放进定时任务。本地已追平（起点晚于终点）时打印一行并正常退出。
+
+    ``until_override``：日更单入口 ``--end`` 透传的目标交易日；传入时替代
+    「最近交易日」作为终点，解决次日补跑时名录只到昨日、终点却算到今日导致
+    守卫误判「名录落后」的问题。
     """
     path = store_root / 'meta' / 'financials' / 'valuation_daily.parquet'
     if not path.is_file():
@@ -82,7 +87,7 @@ def auto_range(store_root: Path, today: date) -> tuple[date, date]:
     last = pl.read_parquet(path, columns=['trade_date'])['trade_date'].max()
     if last is None:
         raise SystemExit('--since auto 无法推算起点：本地估值表无 trade_date')
-    until = previous_trading_day(today, inclusive=True)
+    until = until_override or previous_trading_day(today, inclusive=True)
     if until is None:
         raise SystemExit('--since auto 无法推算终点：交易日历无最近交易日')
     since = last + timedelta(days=1)
@@ -174,9 +179,9 @@ def parse_range(args: argparse.Namespace) -> tuple[date | None, date | None]:
     if auto:
         if args.only not in {'valuation'}:
             raise SystemExit('--since/--until 目前只支持 --only valuation')
-        if args.until:
-            raise SystemExit('--since auto 不接受 --until：终点固定取最近交易日')
-        return auto_range(PROJECT_ROOT / 'data' / 'local_store', date.today())
+        until = date.fromisoformat(args.until) if args.until else None
+        return auto_range(PROJECT_ROOT / 'data' / 'local_store', date.today(),
+                          until_override=until)
     since = date.fromisoformat(args.since) if args.since else None
     until = date.fromisoformat(args.until) if args.until else None
     if until is not None and since is None:
