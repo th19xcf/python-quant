@@ -255,6 +255,13 @@ def rule_vwap_out_of_range(frame: pl.DataFrame, ctx: RuleContext) -> pl.DataFram
     比 ``amount_dimension``（只抓 10 倍以上的量纲错位）更严：用当日价格区间而非
     收盘价作参照，能抓出成交量/成交额单位错、错行拼接、复权价与原始成交额混用。
     早年口径按 ``HISTORICAL_RULE_START`` 排除。
+
+    已知问题（不修）：北交所（``920`` 开头）源端 ``amount`` 与 ``volume`` 口径
+    不一致，按 ``amount/(volume×100)`` 算出的均价会轻微越出 ``[low, high]``，
+    属源端问题而非本地换算错误——**不要改这里的换算公式**去迁就该偏差。
+    2006-07-13 另有 26 行源端 ``amount`` 坏值会命中本规则，已按行登记在
+    ``meta/anomalies/quality_exemptions.csv``（rule_id=vwap_out_of_range /
+    amount_dimension）。
     """
     del ctx
     if not _guard_columns(frame, ('high', 'low', 'volume', 'amount')):
