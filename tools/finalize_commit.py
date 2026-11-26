@@ -448,9 +448,25 @@ def commit_backup(
     return short, _push_backup(backup_root)
 
 
-def record_ledger(head: str, args: argparse.Namespace) -> None:
-    """收口自动记账：向任务账本追加一行；任何失败只告警，不回滚已完成的提交。"""
-    task_id = (args.task_id or os.environ.get('QUANT_TASK_ID', '')).strip() or None
+def resolve_ledger_title(args: argparse.Namespace, message: str) -> str:
+    """账本标题：``--title`` > ``--task-id``/``QUANT_TASK_ID`` > 提交信息首行。
+
+    一律不回落提交短哈希——``task_ledger.append_finalize_row`` 会拒绝哈希标题，
+    以前缺省用短哈希导致记账静默失败。
+    """
+    explicit = (getattr(args, 'title', '') or '').strip()
+    if explicit:
+        return explicit
+    task_id = (args.task_id or os.environ.get('QUANT_TASK_ID', '')).strip()
+    if task_id:
+        return task_id
+    subject = message.strip().splitlines()[0].strip() if message.strip() else ''
+    return subject or '未命名任务'
+
+
+def record_ledger(head: str, args: argparse.Namespace, message: str) -> bool:
+    """收口自动记账：向任务账本追加一行；失败不回滚提交，但返回 ``False`` 让调用方报非零。"""
+    title = resolve_ledger_title(args, message)
     calls = args.tool_calls
     if calls is None:
         raw = os.environ.get('QUANT_TOOL_CALLS', '').strip()
@@ -461,17 +477,21 @@ def record_ledger(head: str, args: argparse.Namespace) -> None:
         state = append_finalize_row(
             DEFAULT_LEDGER,
             commit=head,
-            task_id=task_id,
+            task_id=title,
             tool_calls=calls,
             duration_min=args.duration_min,
         )
-    except (OSError, RuntimeError, csv.Error) as exc:  # 账本异常不阻断已完成的提交与备份
-        print(f'warning：账本写入失败（不阻断收口）：{exc}', file=sys.stderr)
-        return
+    except (OSError, RuntimeError, csv.Error) as exc:  # 账本异常不回滚已完成的提交与备份
+        print(f'记账失败：{exc}', file=sys.stderr)
+        print(f'记账失败总结：提交 {head[:7]} 已入库但未记账，请用 '
+              f'tools/task_ledger.py add --title "{title}" --phase done --apply 补登',
+              file=sys.stderr)
+        return False
     if state == 'duplicate':
         print(f'账本：{head[:7]} 已有收口行，未重复写')
     else:
-        print(f'账本：已追加 {head[:7]}（calls={"unknown" if calls is None else calls}）')
+        print(f'账本：已追加 {head[:7]}（title={title}，calls={"unknown" if calls is None else calls}）')
+    return True
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -482,7 +502,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--message', required=True, help='中文提交信息（不得有空行/BOM）')
     parser.add_argument('--apply', action='store_true', help='真正提交并同步备份（缺省只打印计划）')
     parser.add_argument('--task-id', default='',
-                        help='任务标识（会话 id / 任务名）；缺省取 QUANT_TASK_ID，再缺省用提交哈希')
+                        help='任务标识（会话 id / 任务名）；缺省取 QUANT_TASK_ID，再缺省用提交信息首行')
+    parser.add_argument('--title', default='',
+                        help='任务账本标题；缺省取 --task-id / QUANT_TASK_ID / 提交信息首行，不用短哈希')
     parser.add_argument('--tool-calls', type=int,
                         help='本任务工具调用数；缺省取 QUANT_TOOL_CALLS，取不到写 unknown')
     parser.add_argument('--duration-min', type=float, help='本任务耗时（分钟），未知留空')
@@ -531,7 +553,9 @@ def main(argv: list[str] | None = None) -> int:
         backup_short, push_state = commit_backup(backup_root, merged, head)
         print(f'备份仓 {backup_short}｜{push_state}')
         print(f'工作区未纳入：{len(changes) - len(chosen)} 项（保持原样）')
-        record_ledger(head, args)
+        if not record_ledger(head, args, message):
+            print('收口未完整：提交与备份已完成，但记账失败（见上）', file=sys.stderr)
+            return 3
         return 0
     except BackupRootError as exc:
         print(f'备份仓解析失败：{exc}', file=sys.stderr)
