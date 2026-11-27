@@ -14,7 +14,7 @@ import subprocess
 import sys
 import time
 import types
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import polars as pl
 import pytest
@@ -462,7 +462,10 @@ def test_acquire_lock_blocked_logs_event(tmp_path, monkeypatch):
     """活跃锁挡下时写 lock_blocked（持锁 pid / 锁 mtime / 目标交易日），再退出。"""
     lock = tmp_path / 'daily_update.lock'
     log_file = tmp_path / 'daily_update.log'
-    lock.write_text(json.dumps({'pid': 4242, 'started_at': '2026-11-26T09:00:00'}),
+    # 时间戳必须相对当前：写死历史时刻会在 12h 后越过陈旧锁阈值（LOCK_MAX_AGE_HOURS），
+    # 被归档接管而不再抛 SystemExit（2026-11-27 实测该用例随时间失效）。
+    started_at = (datetime.now() - timedelta(hours=1)).isoformat(timespec='seconds')
+    lock.write_text(json.dumps({'pid': 4242, 'started_at': started_at}),
                     encoding='utf-8')
     monkeypatch.setattr(du, 'LOCK_PATH', lock)
     monkeypatch.setattr(du, 'DAILY_LOG', log_file)
@@ -629,6 +632,60 @@ def test_verify_still_flags_unregistered_change(tmp_path):
         {'meta/events/events.parquet', 'meta/events/manifest.json'}, {}, {})
     assert report['unexpected'] == ['meta/events/rogue.parquet']
     assert '预期外改动 meta/events/rogue.parquet' in report['problems']
+
+
+def test_manifest_step_registers_quotes_manifest(tmp_path, monkeypatch):
+    """行情目录总账必须登记为预期写件（2026-11-27 实测：差异 1 件致致命 exit=1）。
+
+    ``quotes/manifest.json`` 由 build 收尾与对账步按磁盘实测回写，没有逐件产者；
+    不登记就会被 ``_verify`` 判成「预期外改动」。
+    """
+    root = tmp_path / 'store'
+    shard = root / 'quotes' / 'stock' / 'sh'
+    shard.mkdir(parents=True)
+    pl.DataFrame({'date': [date(2026, 11, 27)], 'ts_code': ['600000.SH'],
+                  'close': [10.0]}).write_parquet(shard / '600000.SH.parquet')
+    (root / 'quotes' / 'manifest.json').write_text(
+        json.dumps({'files': 0, 'rows': 0, 'bytes': 0}), encoding='utf-8')
+    monkeypatch.setattr(du, '_sync_disk_scan_ledger', lambda root: 'stub')
+    monkeypatch.setattr(du, 'MANIFEST_FACTS_CACHE', tmp_path / 'facts.json')
+    plan = du._Plan(
+        root=root, config=types.SimpleNamespace(
+            data=types.SimpleNamespace(tdx_data_path=None)),
+        store=None, factor_store=None, data_types=['stock'], codes=None,
+        latest=date(2026, 11, 27), coverage={}, gaps=[], skipped=[], inputs={},
+        expected={'quotes/stock/sh/600000.SH.parquet'}, plan_quote=set(),
+        range_label='', marker_ts=0.0)
+    args = types.SimpleNamespace(manifest_full_hash=False,
+                                 max_gap_days=du.DEFAULT_MAX_GAP_DAYS)
+
+    ok, detail = du._step_manifest(plan, args, {})
+
+    assert du.QUOTES_MANIFEST_REL in plan.expected
+    assert '预期外改动' not in detail
+    assert ok is True, detail
+
+
+def test_sync_disk_scan_ledger_only_touches_backfilled_entries(tmp_path, monkeypatch):
+    """只刷新 evidence=disk_scan 的登记：受控写入的数据集 writer 记录不被覆盖。"""
+    root = tmp_path / 'store'
+    registry = root / 'meta' / 'registry'
+    registry.mkdir(parents=True)
+    (registry / 'auto_register.json').write_text(json.dumps({'version': 1, 'datasets': {
+        'quotes_stock': {'last_write': {'evidence': 'disk_scan'}},
+        'events': {'last_write': {'evidence': 'write_dataset'}},
+    }}), encoding='utf-8')
+    captured: dict[str, list[str]] = {}
+
+    def _fake_run(cmd, label, timeout=None):
+        captured['cmd'] = cmd
+        return 0
+
+    monkeypatch.setattr(du, '_run_module', _fake_run)
+    detail = du._sync_disk_scan_ledger(root)
+
+    assert captured['cmd'][-3:] == ['--only', 'quotes_stock', '--force']
+    assert detail == '1 个 rc=0'
 
 
 # ----------------------------------------------------------------------

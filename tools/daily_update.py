@@ -2386,6 +2386,51 @@ def _step_pool(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
     return '未完成' not in line, (line or '未到期/已跳过')
 
 
+#: 行情目录级总账：build 收尾回写一次；manifest 步对账前若行情又有变动则再回写。
+QUOTES_MANIFEST_REL = 'quotes/manifest.json'
+
+
+def _refresh_quotes_manifest(root: Path) -> bool:
+    """按磁盘实测回写 ``quotes/manifest.json``（原子、幂等），返回是否真的写盘。
+
+    build 收尾（第 4 步）已回写过一次，但其后的期货（第 6 步）等仍会追加行情行，
+    总账会再落后（2026-11-27 实测 futures 登记 153,896 行 / 磁盘 153,956 行，差 +60）。
+    失败只告警：交回既有汇总对账判据报差异，不把本步判死。
+    """
+    try:
+        from src.data.local_store.build import refresh_quotes_manifest  # noqa: PLC0415
+
+        return bool(refresh_quotes_manifest(root).get('changed'))
+    except (OSError, ValueError, RuntimeError, TypeError) as exc:
+        logger.error('[daily] quotes/manifest.json 回写失败（{}: {}），总账可能仍滞后',
+                     type(exc).__name__, exc)
+        return False
+
+
+def _sync_disk_scan_ledger(root: Path) -> str:
+    """把「按磁盘实测补登」的数据集按当天实测再补登一次（幂等）。
+
+    quotes_* / stock_basic / fund_basic 等直写盘、不经 ``write_dataset`` 的数据集，
+    ledger 只在人工回填时更新，日更后必然落后磁盘，体检每天报 ``ledger_lag``
+    （2026-11-26 / 11-27 连续两天 8 条）。只刷新 ``evidence=disk_scan`` 的登记：
+    走受控写入的数据集 writer 记录不被覆盖。
+    """
+    ledger = root / 'meta' / 'registry' / 'auto_register.json'
+    try:
+        payload = json.loads(ledger.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return 'ledger 不可读，跳过'
+    datasets = payload.get('datasets') if isinstance(payload, dict) else None
+    keys = sorted(key for key, entry in (datasets or {}).items()
+                  if ((entry or {}).get('last_write') or {}).get('evidence') == 'disk_scan')
+    if not keys:
+        return '无 disk_scan 登记'
+    code = _run_module([sys.executable, str(ROOT / 'tools' / 'backfill_ledger.py'),
+                        '--root', str(root), '--only', ','.join(keys), '--force'],
+                       'ledger 补登')
+    return f'{len(keys)} 个 rc={code}'
+
+
 def _step_manifest(plan: _Plan, args: argparse.Namespace,
                    state: dict[str, Any]) -> tuple[bool, str]:
     """回写本次改动件的 manifest，并做逐件对账与预期差集检查（致命步）。
@@ -2395,8 +2440,16 @@ def _step_manifest(plan: _Plan, args: argparse.Namespace,
     复用的只是「同一文件的事实怎么取」，变更集判定与逐件对账判据均不改变。
     """
     root = plan.root
+    # 直写盘数据集的 ledger 补登与行情总账回写都放在取变更集之前：两者都是本步
+    # 的合法写盘，先做完再对账，才不会把自家写入判成「预期外改动」。
+    _sync_disk_scan_ledger(root)
     cache = _manifest_facts_cache(bool(getattr(args, 'manifest_full_hash', False)))
     changed = _walk(root, plan.marker_ts)
+    if any(rel.startswith('quotes/') and rel.endswith('.parquet') for rel in changed):
+        _refresh_quotes_manifest(root)
+    # 行情总账由 build/本步回写，无逐件产者；不登记就会被判「预期外改动」
+    # （2026-11-27 实测：差异 1 件 → 致命失败 exit=1）。
+    plan.expected.add(QUOTES_MANIFEST_REL)
     refreshed = _refresh(root, changed, cache)
     report = _verify(root, changed, plan.expected, plan.coverage, _coverage(root), cache)
     digest = _sha256_text(f'{rel}:{file_facts(root / rel, cache)["sha256"]}'
