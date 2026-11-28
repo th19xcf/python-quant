@@ -53,8 +53,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic  # noqa: E402
-from src.data.manifest_refresh import refresh_manifest_files  # noqa: E402
 from src.data.dataset_contracts import write_dataset
+from src.data.manifest_refresh import refresh_manifest_files  # noqa: E402
 
 WINDOW = 250
 BASE_COLUMNS: tuple[str, ...] = (
@@ -62,6 +62,10 @@ BASE_COLUMNS: tuple[str, ...] = (
     'free_float_share', 'change_reason', 'source', 'fetched_at',
 )
 DERIVED_COLUMNS: tuple[str, ...] = ('free_float_share_filled', 'free_float_source')
+#: 重建后的股本表必须齐备的列（8 基础 + 2 派生），供 02b 写后校验使用。
+REBUILT_COLUMNS: tuple[str, ...] = BASE_COLUMNS + DERIVED_COLUMNS
+#: 股本表相对 local_store 根的固定路径。
+SHARES_REL_PATH = Path('meta') / 'factors' / 'stock_shares.parquet'
 
 
 def _sha256(path: Path) -> str:
@@ -77,6 +81,25 @@ def _store_root(root: Path | None) -> Path:
         return root
     from src.data.local_store.paths import default_store_root
     return default_store_root()
+
+
+def validate_rebuilt_table(root: Path | str) -> list[str]:
+    """股本表重建后的写后校验：必须 10 列且含 ``free_float_source``。
+
+    返回问题清单（空 = 通过）。``02b`` 重建步骤据此判失败：任何只有 8 列、
+    或缺失派生列的表都必须立刻报错，不能等体检才暴露。
+    """
+    path = Path(root) / SHARES_REL_PATH
+    if not path.is_file():
+        return [f'股本表不存在: {path}']
+    columns = pl.scan_parquet(str(path)).collect_schema().names()
+    problems: list[str] = []
+    if len(columns) < len(REBUILT_COLUMNS):
+        problems.append(f'列数 {len(columns)} < {len(REBUILT_COLUMNS)}')
+    missing = [name for name in REBUILT_COLUMNS if name not in columns]
+    if missing:
+        problems.append(f'缺少列: {missing}')
+    return problems
 
 
 def derive(frame: pl.DataFrame, calendar: list[date], window: int = WINDOW, *,

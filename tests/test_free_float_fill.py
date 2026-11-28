@@ -12,11 +12,13 @@ import polars as pl
 import pytest
 
 from tools.derive_free_float_fill import (
+    REBUILT_COLUMNS,
     _snapshot_backup,
     check,
     clip_filled_to_float,
     derive,
     filled_gt_float_rows,
+    validate_rebuilt_table,
 )
 from tools.fill_free_float_shares import _check_plan, _stats, plan_fill
 
@@ -221,3 +223,46 @@ def test_snapshot_backup_reuses_identical_snapshot(tmp_path) -> None:
     again = _snapshot_backup(src, sha1, backup_root=root)
     assert again == first
     assert len(list(first.parent.iterdir())) == 1
+
+
+# ----------------------------------------------------------------------
+# 02b 写后校验：8 列必须判失败，10 列通过
+# ----------------------------------------------------------------------
+def _write_shares(root, frame: pl.DataFrame):
+    path = root / 'meta' / 'factors' / 'stock_shares.parquet'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame.write_parquet(path)
+    return path
+
+
+def test_rebuilt_table_with_eight_columns_fails(tmp_path) -> None:
+    """重建后只剩 8 列（缺两列派生列）必须判失败，不能静默放过。"""
+    base = _table([_row(5, 1000, 1000, 800)])
+    assert base.columns == list(BASE_SCHEMA)
+    _write_shares(tmp_path, base)
+    problems = validate_rebuilt_table(tmp_path)
+    assert problems, '8 列输出必须判失败'
+    assert any('free_float_source' in item for item in problems)
+
+
+def test_rebuilt_table_with_ten_columns_passes(tmp_path) -> None:
+    """正常跑过派生步骤的 10 列表校验通过。"""
+    out = derive(_table([_row(5, 1000, 1000, 800)]), CALENDAR)
+    assert out.columns == list(REBUILT_COLUMNS)
+    _write_shares(tmp_path, out)
+    assert validate_rebuilt_table(tmp_path) == []
+
+
+# ----------------------------------------------------------------------
+# 派生步骤幂等：重复执行不新增行、不改既有非空值
+# ----------------------------------------------------------------------
+def test_derive_is_idempotent_across_repeated_runs() -> None:
+    frame = _table([_row(5, 1000, 1000, 800), _row(6, 1000, 1000, None),
+                    _row(7, 1000, 1200, None), _row(8, 1000, 500, None)])
+    first = derive(frame, CALENDAR)
+    second = derive(first, CALENDAR)
+    assert second.equals(first)
+    assert second.height == first.height
+    assert second.select(['ts_code', 'effective_date']).unique().height == second.height
+    # 原 8 列（含已有非空 free_float_share）逐值不变
+    assert second.select(list(BASE_SCHEMA)).equals(frame.select(list(BASE_SCHEMA)))

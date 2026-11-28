@@ -54,6 +54,8 @@ from src.data.universe_source import (  # noqa: E402
 from src.database.db_manager import DatabaseManager  # noqa: E402
 from src.utils.code_converter import to_baostock_code  # noqa: E402
 from src.utils.config import get_config  # noqa: E402
+from tools.derive_free_float_fill import main as derive_free_float_main  # noqa: E402
+from tools.derive_free_float_fill import validate_rebuilt_table  # noqa: E402
 
 #: 抽查标的：主板 / 创业板 / 北交所各一只（北交所优先取 920 段）。
 SAMPLE_CODES = ('600000.SH', '300750.SZ', '920001.BJ')
@@ -62,6 +64,16 @@ SAMPLE_CODES = ('600000.SH', '300750.SZ', '920001.BJ')
 def _float(value: Any) -> float:
     """把 polars 聚合返回值（Any 联合类型）收敛成 float，便于格式化与比较。"""
     return float(value)
+
+
+def derive_free_float(root: Path) -> int:
+    """02b 后置：股本表重建后固定重跑自由流通派生（幂等），返回退出码。
+
+    ``assemble_shares`` 只写 8 列基础字段；``free_float_share_filled`` /
+    ``free_float_source`` 由 ``tools/derive_free_float_fill.py`` 唯一产出，
+    必须紧跟重建执行，否则体检会报缺列。
+    """
+    return derive_free_float_main(['--root', str(root)])
 
 
 def load_universe() -> tuple[list[str], dict[str, date], str]:
@@ -510,6 +522,17 @@ def main(argv: list[str] | None = None) -> int:
     print(f'\n[assemble] {assembled["path"]}：{assembled["rows"]} 行 / '
           f'{assembled["codes"]} 只 / {assembled["parts"]} 个分块')
     print(f'[time] 本轮总耗时 {(datetime.now() - started).total_seconds():.1f}s')
+
+    # 02b 固定后置：assemble_shares 只写 8 列，派生两列必须紧跟重建执行。
+    derive_rc = derive_free_float(root)
+    if derive_rc != 0:
+        print(f'[derive] 自由流通派生失败 rc={derive_rc}；股本表仍是 8 列，02b 判失败')
+        return 1
+    problems = validate_rebuilt_table(root)
+    if problems:
+        print(f'[verify] 股本表写后校验失败：{"；".join(problems)}；02b 判失败')
+        return 1
+    print('[verify] 股本表写后校验通过：10 列（含 free_float_source）')
 
     report_coverage(universe, root)
     report_sources(root)
