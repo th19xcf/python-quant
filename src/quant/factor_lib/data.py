@@ -19,6 +19,8 @@
       vwap = amount / (volume * 100) 为当日成交均价（元/股，原始价空间），
       再乘 hfq_factor 转到复权空间；
     - ret = close / delay(close, 1) - 1（后复权收益，已含分红再投资效应）；
+      停牌感知：只有前后两根 bar 都真实成交且交易日序相邻时才计收益，跨停牌
+      （缺行或占位 bar）记缺失，不把停牌前后压成一根单日收益、不 forward-fill；
     - 默认**不按**交易日历过滤（``PanelRequest.calendar_filter``，默认关），
       即照抄行情行，与 2026-11-12 之前的口径一致。显式开启后按白名单剔除
       已证伪的周末行：白名单收录 1991 年 50 个周六的 173 行 + 1992-02-01 的
@@ -57,6 +59,10 @@ PANEL_COLS = [*BASE_COLS, 'hfq_factor', 'raw_open', 'raw_close', 'raw_high', 'ra
 #: 唯一真源在这里：``PanelRequest.liquidity_lookback``、``pick_liquid_universe``
 #: 的默认值、``src.quant.learning.data`` 的尾部成交额筛选都引用本常量。
 LIQUIDITY_LOOKBACK_DAYS = 250
+
+#: 面板缓存口径版本：``ret`` 由「按 bar 序号算」改为停牌感知后必须换缓存位，
+#: 否则会读回旧口径的 ``ret``。改动 ``add_suspension_aware_returns`` 时同步升版。
+PANEL_RET_VERSION = 'ret_suspend_v1'
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,6 +244,43 @@ def _adjust(frame: pl.DataFrame) -> pl.DataFrame:
     ])
 
 
+def add_suspension_aware_returns(panel: pl.DataFrame) -> pl.DataFrame:
+    """补停牌感知的 ``ret``（后复权单日收益）。
+
+    与 ``tools/research/prepare_monthly_samples.py`` 同一口径：
+
+    - 占位 bar 判据：``volume`` 为空或 ``<= 0``；
+    - 交易日序取面板内全部标的的日期并集（默认股票池是多标的截面，等价于市场
+      日历；单标的帧无法据此识别缺行型停牌，需退回复权/收盘连续性另行判断）；
+    - 只有「当前与上一 bar 都真实成交、且两者在交易日序上相邻」时才计算单日
+      收益，跨停牌（缺行或占位 bar）一律记缺失，不把停牌前后压成一根单日
+      收益（如 ``000622.SZ`` 长期停牌复牌会被记成 +369% / −89%），
+      也不 forward-fill 价格、不拿缺口当 0 收益。
+    """
+    days = panel.select('date').unique().sort('date').with_columns(
+        pl.int_range(0, pl.len()).cast(pl.Int64).alias('_tidx'))
+    frame = panel.join(days, on='date', how='left').sort(['ts_code', 'date'])
+    frame = frame.with_columns(
+        (pl.col('volume').is_null() | (pl.col('volume') <= 0)).alias('_ph'),
+    ).with_columns(
+        pl.col('close').shift(1).over('ts_code').alias('_close_prev'),
+        pl.col('_tidx').shift(1).over('ts_code').alias('_tidx_prev'),
+        pl.col('_ph').shift(1).over('ts_code').alias('_ph_prev'),
+    )
+    adjacent = (
+        (pl.col('_tidx') == pl.col('_tidx_prev') + 1)
+        & ~pl.col('_ph') & ~pl.col('_ph_prev')
+        & pl.col('close').is_not_null() & pl.col('_close_prev').is_not_null()
+    )
+    return (
+        frame.with_columns(
+            pl.when(adjacent).then(pl.col('close') / pl.col('_close_prev') - 1.0)
+            .otherwise(None).alias('ret'),
+        )
+        .drop(['_tidx', '_tidx_prev', '_ph', '_ph_prev', '_close_prev'])
+    )
+
+
 def load_panel(request: PanelRequest | None = None, codes: list[str] | None = None) -> pl.DataFrame:
     """构建横截面面板（后复权价 + 原始价 + 收益 + VWAP）。
 
@@ -269,7 +312,8 @@ def load_panel(request: PanelRequest | None = None, codes: list[str] | None = No
         else f'_cal_{request.calendar_filter_mode}'
     )
     cache_path = _cache_dir() / (
-        f'panel_{len(codes)}_{request.start}_{request.end}_{factor_version}{calendar_tag}.parquet'
+        f'panel_{len(codes)}_{request.start}_{request.end}_{factor_version}'
+        f'{calendar_tag}_{PANEL_RET_VERSION}.parquet'
     )
     if request.use_cache and cache_path.exists():
         return _with_derived(pl.read_parquet(cache_path))
@@ -301,8 +345,9 @@ def load_panel(request: PanelRequest | None = None, codes: list[str] | None = No
         raise RuntimeError('面板为空：所选标的在目标区间均无行情，请检查本地列存')
 
     panel = pl.concat(frames, how='vertical_relaxed').sort(['ts_code', 'date'])
+    # 停牌感知收益：跨停牌/占位 bar 记缺失，不按 bar 下标把多日缺口压成单日收益
+    panel = add_suspension_aware_returns(panel)
     panel = panel.with_columns([
-        (pl.col('close') / pl.col('close').shift(1).over('ts_code') - 1.0).alias('ret'),
         (
             pl.col('amount') / (pl.col('volume') * 100.0) * pl.col('hfq_factor')
         ).alias('vwap'),
@@ -409,8 +454,10 @@ __all__ = [
     'CALENDAR_FILTER_MODES',
     'NONTRADING_WHITELIST_PATH',
     'PANEL_COLS',
+    'PANEL_RET_VERSION',
     'PRICE_COLS',
     'PanelRequest',
+    'add_suspension_aware_returns',
     'dimension_check',
     'filter_to_calendar',
     'load_panel',

@@ -384,3 +384,30 @@ def test_calendar_filter_falls_back_when_calendar_empty(monkeypatch):
     dates = data.resolve_trading_dates(request, _StubStore())  # type: ignore[arg-type]
     assert dates is None
     assert data.filter_to_calendar(frame, dates).height == frame.height
+
+
+def test_suspension_aware_returns_skip_gap_and_placeholder():
+    """跨停牌（缺行或占位 bar）不得压成单日收益：一律记缺失，不填 0。"""
+    days = _dates(date(2024, 1, 2), 8)
+    # A 全程成交；B 在 3~5 缺行、7 为占位 bar（volume=0），复牌/占位当日收益应为空
+    a = [{'date': d, 'ts_code': 'A', 'close': 10.0 + i, 'volume': 1000.0}
+         for i, d in enumerate(days)]
+    b_days = [days[0], days[1], days[2], days[6], days[7]]
+    b_vol = [1000.0, 1000.0, 1000.0, 1000.0, 0.0]
+    b = [{'date': d, 'ts_code': 'B', 'close': 20.0 + i, 'volume': v}
+         for i, (d, v) in enumerate(zip(b_days, b_vol, strict=True))]
+    out = data.add_suspension_aware_returns(pl.DataFrame([*a, *b]))
+
+    def ret_of(code: str, day: date) -> float | None:
+        row = out.filter((pl.col('ts_code') == code) & (pl.col('date') == day))
+        return row['ret'].to_list()[0]
+
+    # A 每个交易日相邻：首日缺失、其余为单日收益
+    assert ret_of('A', days[0]) is None
+    assert abs(ret_of('A', days[1]) - (11.0 / 10.0 - 1.0)) < 1e-12
+    # B 复牌日（跨 3 个缺行交易日）不按 bar 下标算多日收益
+    assert ret_of('B', days[6]) is None
+    # B 占位 bar 当日（volume=0）收益缺失，且不能是 0
+    assert ret_of('B', days[7]) is None
+    # B 连续成交的两天仍正常计算
+    assert abs(ret_of('B', days[2]) - (22.0 / 21.0 - 1.0)) < 1e-12

@@ -42,6 +42,43 @@ def _default_root() -> Path:
     return resolve_store_root(get_config())
 
 
+def suspension_aware_ret(quotes: pl.DataFrame) -> pl.DataFrame:
+    """在个股日线上补 ``adj`` / ``adj_prev`` / ``ret``（停牌感知）。
+
+    口径与 ``tools/research/prepare_monthly_samples.py`` 的停牌处理一致：
+
+    - 占位 bar 判据：``volume`` 为空或 ``<= 0``；
+    - 交易日序取本帧全部标的的日期并集（本模块扫描全市场行情，等价于市场日历）；
+    - 只有「当前 bar 与上一 bar 都真实成交，且两者在交易日序上相邻」时才计算
+      单日收益；跨停牌（缺行或占位 bar）一律记缺失，绝不把停牌前后压成一根
+      单日收益（如 ``000622.SZ`` 2006→2013、2025 长期停牌复牌会被记成 +369% /
+      −89%），也不 forward-fill 价格、不拿缺口当 0 收益。
+    """
+    days = quotes.select('date').unique().sort('date').with_columns(
+        pl.int_range(0, pl.len()).cast(pl.Int64).alias('_tidx'))
+    frame = quotes.join(days, on='date', how='left').sort(['ts_code', 'date'])
+    frame = frame.with_columns(
+        (pl.col('close') * pl.col('hfq_factor')).alias('adj'),
+        (pl.col('volume').is_null() | (pl.col('volume') <= 0)).alias('_ph'),
+    ).with_columns(
+        pl.col('adj').shift(1).over('ts_code').alias('adj_prev'),
+        pl.col('_tidx').shift(1).over('ts_code').alias('_tidx_prev'),
+        pl.col('_ph').shift(1).over('ts_code').alias('_ph_prev'),
+    )
+    adjacent = (
+        (pl.col('_tidx') == pl.col('_tidx_prev') + 1)
+        & ~pl.col('_ph') & ~pl.col('_ph_prev')
+        & pl.col('adj').is_not_null() & pl.col('adj_prev').is_not_null()
+    )
+    return (
+        frame.with_columns(
+            pl.when(adjacent).then(pl.col('adj') / pl.col('adj_prev') - 1.0)
+            .otherwise(None).alias('ret'),
+        )
+        .drop(['_tidx', '_tidx_prev', '_ph', '_ph_prev'])
+    )
+
+
 def _load_quotes(base: Path) -> pl.DataFrame:
     """个股日线 → 后复权收益、60 日已实现波动率与停牌/触板标记。"""
     quotes = (
@@ -49,16 +86,11 @@ def _load_quotes(base: Path) -> pl.DataFrame:
         .select(['date', 'ts_code', 'close', 'volume', 'amount', 'pct_chg', 'hfq_factor'])
         .filter(pl.col('date') >= pl.lit(LOOKBACK_BUFFER).str.to_date())
         .collect()
-        .sort(['ts_code', 'date'])
-        .with_columns((pl.col('close') * pl.col('hfq_factor')).alias('adj'))
-        .with_columns(pl.col('adj').shift(1).over('ts_code').alias('adj_prev'))
-        .with_columns((pl.col('adj') / pl.col('adj_prev') - 1).alias('ret'))
-        .with_columns(
-            pl.col('ret').rolling_std(60, min_samples=60).over('ts_code').alias('vol60'),
-        )
-        .with_columns(
-            pl.col('vol60').shift(1).over('ts_code').alias('vol60_prev'),
-        )
+    )
+    quotes = suspension_aware_ret(quotes).with_columns(
+        pl.col('ret').rolling_std(60, min_samples=60).over('ts_code').alias('vol60'),
+    ).with_columns(
+        pl.col('vol60').shift(1).over('ts_code').alias('vol60_prev'),
     )
     limit = (
         pl.when(pl.col('ts_code').str.ends_with('.BJ')).then(0.295)

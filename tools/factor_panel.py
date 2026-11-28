@@ -16,9 +16,18 @@ CLI：
 
 输出 schema：
     ts_code / signal_date / ep / bp / dy / b_ocf_ttm / roe_ttm / accruals
-    / gross_margin / industry_l1 / industry_l1_q (行业内 ep 分位示例) / ...
+    / gross_margin / equity_basis / industry_l1 / ep_ind_pct / ...
 
 所有财务字段均按 ``ann_date`` PIT 口径，绝不按 ``end_date`` 对齐。
+
+估值空段回退：``valuation_daily`` 的 ``pb`` / ``dv_ratio`` 空段为 **2015–2017**
+（2010–2014 与 2018 起为原生 baostock pbMRQ、非空），用预生成的
+``valuation_pre2018_patch.parquet`` 回退补齐 ``bp`` / ``dy``，只作用于
+``signal_date < 2018-01-01`` 且只填空值，不改动 ``valuation_daily`` 本身。
+补丁的 ``bp`` 分母是「股东权益合计（含少数股东权益）」，比原生 baostock pbMRQ
+（归母）系统性偏低约 1.6%，故用 ``equity_basis`` 显式标记：2015–2017 回填行标
+``total_equity_incl_minority``，其余年份的原生行标 ``parent_equity``，
+禁止跨段混为同口径（``dy`` 公式与原采集器一致，无口径偏差）。
 """
 from __future__ import annotations
 
@@ -47,6 +56,8 @@ def _paths(base: Path) -> dict[str, Path]:
     fin = base / 'meta' / 'financials'
     return {
         'valuation': fin / 'valuation_daily.parquet',
+        #: 2015-2017 估值回退补丁（valuation_daily 的 pb/dv_ratio 空段即 2015-2017）
+        'valuation_patch': fin / 'valuation_pre2018_patch.parquet',
         'income': fin / 'income.parquet',
         'balance': fin / 'balance.parquet',
         'cashflow': fin / 'cashflow.parquet',
@@ -55,12 +66,18 @@ def _paths(base: Path) -> dict[str, Path]:
     }
 
 
+#: 补丁生效上界（不含）：只回填 signal_date < 2018-01-01；补丁数据本身覆盖 2015-2017。
+PRE2018_CUTOFF = date(2018, 1, 1)
+#: ``equity_basis`` 取值：补丁口径（净资产含少数股东权益）与原生口径（归母）。
+PATCH_EQUITY_BASIS = 'total_equity_incl_minority'
+NATIVE_EQUITY_BASIS = 'parent_equity'
+
 # ---- 因子字段注册 ----
 # (输出列名, 计算公式描述, 来源表列表)
 FACTOR_SPEC = [
     ('ep',          '1 / pe (pe > 0)',                      ['valuation']),
-    ('bp',          '1 / pb (pb > 0)',                      ['valuation']),
-    ('dy',          'dv_ratio 直接取（估值快照）',           ['valuation']),
+    ('bp',          '1 / pb (pb > 0)；2015-2017 用补丁（含少数股东权益），其余原生 baostock pbMRQ', ['valuation', 'valuation_patch']),
+    ('dy',          'dv_ratio 直接取；2015-2017 用补丁 dp，其余取原生 dv_ratio', ['valuation', 'valuation_patch']),
     ('b_ocf_ttm',   '经营现金流TTM / 总市值',                ['cashflow', 'valuation']),
     ('roe_ttm',     '归母净利TTM / 所有者权益（asof）',      ['income', 'balance']),
     ('accruals',    '(净利单季 − 经营CF单季) / 总资产 asof', ['income', 'cashflow', 'balance']),
@@ -148,6 +165,53 @@ def asof_merge(panel: pl.DataFrame, factor: pl.DataFrame,
     return out.sort(['signal_date', 'ts_code'])
 
 
+def _apply_pre2018_patch(panel: pl.DataFrame, patch_path: Path) -> pl.DataFrame:
+    """用 2015-2017 估值补丁回填 ``bp`` / ``dy``，并写入 ``equity_basis`` 口径标记。
+
+    空段为 2015–2017；2010–2014 与 2018 起为原生 baostock pbMRQ（归母）口径。
+
+    - 只作用于 ``signal_date < PRE2018_CUTOFF``，且只回填当前为空的行，
+      不覆盖正式估值表已有的值；补丁缺失时原样返回（不改变既有口径）。
+    - ``bp`` 分母为「股东权益合计（含少数股东权益）」，比 2010–2014 / 2018 起
+      原生 baostock pbMRQ（归母）系统性偏低：回填行标
+      ``total_equity_incl_minority``，原生行标 ``parent_equity``，下游据此识别
+      「补齐但带偏差」，不得跨段混为同口径。
+    """
+    if not patch_path.is_file():
+        logger.warning('2015-2017 估值补丁不存在（{}），bp/dy 维持原样', patch_path)
+        return panel.with_columns(
+            pl.when(pl.col('bp').is_not_null()).then(pl.lit(NATIVE_EQUITY_BASIS))
+            .otherwise(None).alias('equity_basis'))
+
+    patch = (
+        pl.read_parquet(patch_path,
+                        columns=['ts_code', 'trade_date', 'bp', 'dp', 'equity_basis'])
+        .filter(pl.col('trade_date') < PRE2018_CUTOFF)
+        .select([
+            'ts_code',
+            pl.col('trade_date').alias('signal_date'),
+            pl.col('bp').alias('bp_patch'),
+            pl.col('dp').alias('dy_patch'),
+            pl.col('equity_basis').alias('_patch_equity_basis'),
+        ])
+    )
+    joined = panel.join(patch, on=['ts_code', 'signal_date'], how='left')
+    bp_patched = pl.col('bp').is_null() & pl.col('bp_patch').is_not_null()
+    dy_patched = pl.col('dy').is_null() & pl.col('dy_patch').is_not_null()
+    counts = joined.select(
+        bp_patched.sum().alias('bp'), dy_patched.sum().alias('dy')).row(0)
+    out = joined.with_columns([
+        pl.when(bp_patched).then(pl.col('bp_patch')).otherwise(pl.col('bp')).alias('bp'),
+        pl.when(dy_patched).then(pl.col('dy_patch')).otherwise(pl.col('dy')).alias('dy'),
+        pl.when(bp_patched).then(pl.col('_patch_equity_basis'))
+        .when(pl.col('bp').is_not_null()).then(pl.lit(NATIVE_EQUITY_BASIS))
+        .otherwise(None).alias('equity_basis'),
+    ]).drop(['bp_patch', 'dy_patch', '_patch_equity_basis'])
+    logger.info('2015-2017 估值补丁：bp 回填 {} 行 / dy 回填 {} 行（口径标记 {}）',
+                int(counts[0]), int(counts[1]), PATCH_EQUITY_BASIS)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # 主构建流程
 # ---------------------------------------------------------------------------
@@ -183,6 +247,9 @@ def build_panel(signal_dates: list[date] | None = None,
         .otherwise(None).alias('bp'),
         pl.col('dv_ratio').alias('dy'),
     ]).drop(['pe', 'pb', 'dv_ratio'])
+
+    # ---- 1b. 2015-2017 估值回退补丁（bp / dy；空段即 2015-2017）----
+    panel = _apply_pre2018_patch(panel, paths['valuation_patch'])
 
     # ---- 2. TTM 财务表预计算 ----
     # income
@@ -294,7 +361,7 @@ def build_panel(signal_dates: list[date] | None = None,
     keep = ['ts_code', 'signal_date',
             'ep', 'bp', 'dy',
             'b_ocf_ttm', 'roe_ttm', 'accruals', 'gross_margin',
-            'industry_l1', 'ep_ind_pct']
+            'equity_basis', 'industry_l1', 'ep_ind_pct']
     out = panel.select([c for c in keep if c in panel.columns])
     return out
 
@@ -305,6 +372,7 @@ def build_panel(signal_dates: list[date] | None = None,
 
 MANIFEST_SOURCES = [
     'meta/financials/valuation_daily.parquet',
+    'meta/financials/valuation_pre2018_patch.parquet',
     'meta/financials/income.parquet',
     'meta/financials/balance.parquet',
     'meta/financials/cashflow.parquet',

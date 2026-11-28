@@ -8,6 +8,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+from src.quant.analysis.style_rotation_local import suspension_aware_ret
 from src.quant.analysis.style_rotation_state import (
     DIMENSIONS,
     evaluate_style_rotation,
@@ -138,3 +139,23 @@ def test_headless_page_renders_tables(qapp):
             '小盘占优', '大盘占优', '价值占优', '成长占优', '高波占优', '低波占优', '均衡')
     finally:
         page.deleteLater()
+
+
+def test_suspension_aware_ret_removes_gap_pseudo_return():
+    """跨停牌不产生单日伪收益：000622.SZ 型「复牌一根」必须记缺失。"""
+    days = [date(2024, 1, 2) + timedelta(days=i) for i in range(6)]
+    # A 全程成交，构成市场交易日序；B 只在首尾出现（中间整段停牌缺行）
+    a = [{'date': d, 'ts_code': 'A', 'close': 10.0 + i, 'volume': 1000.0,
+          'hfq_factor': 1.0} for i, d in enumerate(days)]
+    b = [{'date': days[0], 'ts_code': 'B', 'close': 5.0, 'volume': 1000.0, 'hfq_factor': 1.0},
+         {'date': days[5], 'ts_code': 'B', 'close': 25.0, 'volume': 1000.0, 'hfq_factor': 1.0}]
+    out = suspension_aware_ret(pl.DataFrame([*a, *b]))
+
+    def ret_of(code: str, day: date) -> float | None:
+        row = out.filter((pl.col('ts_code') == code) & (pl.col('date') == day))
+        return row['ret'].to_list()[0]
+
+    # B 复牌当日：跨 5 个交易日缺口，不能记成 (25/5-1)=+400% 单日收益
+    assert ret_of('B', days[5]) is None
+    # A 相邻交易日仍正常计算
+    assert abs(ret_of('A', days[1]) - (11.0 / 10.0 - 1.0)) < 1e-12
