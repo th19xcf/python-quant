@@ -149,24 +149,54 @@ def _header_fields(csv_path: Path) -> list[str]:
     return next(csv.reader([first.rstrip("\r\n")]))
 
 
+#: 只读首行判表头时的探测窗口；表头远小于它，命中即不必整读台账。
+_HEADER_PROBE_BYTES = 4096
+
+
+def _write_upgraded_header(csv_path: Path, rest: bytes) -> None:
+    with suspend_changelog_recording():
+        write_bytes_atomic(
+            ",".join(FIELDS).encode("utf-8") + b"\n" + rest, csv_path)
+
+
 def _upgrade_header(csv_path: Path) -> None:
     """只改写首行表头（9 列 → 10 列），其后的历史行按字节原样拷贝。
 
+    先只读首行（≤4KB）判定表头：已是 10 列时直接返回，不再整读台账。此前每次
+    append 都 ``read_bytes()`` 整份台账（91.9MB），日更 9,176 次侧车写累计读约
+    843GB。只有确认表头是旧的 9 列时才退回整读并改写；首行异常长（窗口内无
+    换行）同样退回整读，判定与原来一致。
+
     走 ``write_bytes_atomic``（临时文件 → fsync → 替换），失败时原文件保持不动。
     """
-    raw = csv_path.read_bytes()
-    if not raw:
+    try:
+        if csv_path.stat().st_size == 0:
+            return
+    except OSError:
         return
-    pos = raw.find(b"\n")
-    first, rest = (raw, b"") if pos < 0 else (raw[: pos + 1], raw[pos + 1 :])
+    with open(csv_path, "rb") as f:
+        probe = f.read(_HEADER_PROBE_BYTES)
+    pos = probe.find(b"\n")
+    if pos >= 0:
+        header = next(csv.reader([probe[: pos + 1].decode("utf-8").rstrip("\r\n")]))
+        if header == FIELDS:
+            return
+        if header != FIELDS[:-1]:
+            raise ValueError(f"表头与预期不符，拒绝改写：{header}")
+        raw = csv_path.read_bytes()
+        newline = raw.find(b"\n")
+        _write_upgraded_header(csv_path, b"" if newline < 0 else raw[newline + 1 :])
+        return
+    # 首行超出探测窗口：退回整读，保持原有判定（不降级为「跳过升级」）。
+    raw = csv_path.read_bytes()
+    newline = raw.find(b"\n")
+    first = raw if newline < 0 else raw[: newline + 1]
     header = next(csv.reader([first.decode("utf-8").rstrip("\r\n")]))
     if header == FIELDS:
         return
     if header != FIELDS[:-1]:
         raise ValueError(f"表头与预期不符，拒绝改写：{header}")
-    with suspend_changelog_recording():
-        write_bytes_atomic(
-            ",".join(FIELDS).encode("utf-8") + b"\n" + rest, csv_path)
+    _write_upgraded_header(csv_path, b"" if newline < 0 else raw[newline + 1 :])
 
 
 def read_events(csv_file: str | os.PathLike[str] | None = None) -> list[dict[str, str]]:

@@ -714,6 +714,32 @@ def test_manifest_step_refreshes_quotes_manifest_after_late_write(tmp_path, monk
     assert ok is True, detail
 
 
+def test_sidecar_refresh_summary_only_on_formal_store(tmp_path, monkeypatch):
+    """侧车回写只在正式库记 1 条汇总；非正式 store、0 件都不落台账（2026-11-28 B 项）。"""
+    from src.data import changelog
+
+    ledger = tmp_path / 'logs' / 'data_changelog.csv'
+    monkeypatch.setattr(changelog, 'changelog_path', lambda: ledger)
+    store = tmp_path / 'store'
+
+    du._record_sidecar_refresh(3, datetime(2026, 11, 28, 9, 0, 0),
+                               datetime(2026, 11, 28, 9, 0, 4), store)
+    assert not ledger.exists(), '临时 store 不在正式层，不应出现汇总行'
+
+    monkeypatch.setattr(du, '_in_formal_store', lambda root: True)
+    du._record_sidecar_refresh(3, datetime(2026, 11, 28, 9, 0, 0),
+                               datetime(2026, 11, 28, 9, 0, 4), store)
+    rows = changelog.read_events(ledger)
+    assert len(rows) == 1
+    assert rows[0]['path'] == 'data/local_store'
+    assert rows[0]['action'] == 'update'
+    assert '3 件' in rows[0]['reason']
+    assert '09:00:00~09:00:04' in rows[0]['reason']
+
+    du._record_sidecar_refresh(0, datetime.now(), datetime.now(), store)
+    assert len(changelog.read_events(ledger)) == 1, '0 件不落汇总行'
+
+
 def test_valuation_timeout_scales_with_remaining_codes(tmp_path, monkeypatch):
     """估值步硬超时必须按剩余标的数缩放，固定 1,500s 会截断全量刷新。"""
     root = tmp_path / 'store'

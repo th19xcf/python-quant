@@ -68,7 +68,7 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def file_facts(path: Path, cache: 'FactsCache | None' = None) -> dict[str, Any]:
+def file_facts(path: Path, cache: FactsCache | None = None) -> dict[str, Any]:
     """按磁盘实测取 rows / bytes / sha256 / columns（非 parquet 按文本表处理）。
 
     ``cache`` 给出时按 ``(path, size, mtime_ns)`` 复用已算事实：三项全一致才命中，
@@ -247,12 +247,17 @@ def _dump_indent(text: str) -> int:
 def refresh_manifest_files(manifest_path: Path | str, store_root: Path | str,
                            written: Iterable[Path | str], *,
                            required: bool = False,
-                           facts_cache: 'FactsCache | None' = None) -> list[str]:
+                           facts_cache: FactsCache | None = None,
+                           facts: dict[str, dict[str, Any]] | None = None,
+                           ) -> list[str]:
     """把本次写盘的正式文件按磁盘实测回写进指定 manifest。
 
     ``manifest_path`` 不存在时直接返回空列表（测试用的临时 store 不凭空造登记）；
     ``required=True`` 时，manifest 存在但找不到某文件的登记条目即抛错——那属于
     漏登记，不是「无需回写」。返回实际命中并重算的路径（相对 ``store_root``）。
+
+    ``facts`` 可把调用方已算好的 ``{相对 store 根的路径: file_facts 结果}`` 直接
+    传进来复用，省掉一次 ``stat`` + 重算；未命中的文件仍按磁盘实测计算，判据不变。
     """
     target = Path(manifest_path)
     if not target.is_file():
@@ -267,7 +272,8 @@ def refresh_manifest_files(manifest_path: Path | str, store_root: Path | str,
     for item in written:
         path = Path(item)
         rel = path.relative_to(root).as_posix() if path.is_relative_to(root) else str(path)
-        facts = file_facts(path, facts_cache)
+        known = facts.get(rel) if facts else None
+        file_facts_data = known if known is not None else file_facts(path, facts_cache)
         hits = [node for node, fallback, base in nodes
                 if _declares(node, fallback, path, root, base)]
         if not hits:
@@ -277,7 +283,7 @@ def refresh_manifest_files(manifest_path: Path | str, store_root: Path | str,
                     '请先补登记再写盘（DG-3）')
             continue
         for node in hits:
-            _apply(node, path, facts)
+            _apply(node, path, file_facts_data)
         refreshed.append(rel)
     if not refreshed:
         return []

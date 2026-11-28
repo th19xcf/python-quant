@@ -154,6 +154,7 @@ from src.data.hash_cache import (  # noqa: E402
     FactsCache,
     full_recompute_requested,
 )
+from src.data.atomic_write import suspend_changelog_recording  # noqa: E402
 from src.data.manifest_refresh import file_facts, refresh_manifest_files  # noqa: E402
 
 DATA_SUFFIXES = ('.parquet', '.csv', '.tsv', '.txt')
@@ -1717,8 +1718,22 @@ def _find_entry(root: Path, rel: str) -> dict[str, Any] | None:
     return None
 
 
+def _changed_data_facts(root: Path, changed: dict[str, int],
+                        cache: FactsCache | None = None) -> dict[str, dict[str, Any]]:
+    """对本次变更的数据件只算一次事实，供回写 / 对账 / 摘要复用（每件省 2 次 stat）。"""
+    facts: dict[str, dict[str, Any]] = {}
+    for rel in sorted(changed):
+        if not rel.endswith(DATA_SUFFIXES) or rel.endswith('.manifest.json'):
+            continue
+        path = root / rel
+        if path.is_file():
+            facts[rel] = file_facts(path, cache)
+    return facts
+
+
 def _refresh(root: Path, changed: dict[str, int],
-             cache: FactsCache | None = None) -> int:
+             cache: FactsCache | None = None,
+             facts: dict[str, dict[str, Any]] | None = None) -> int:
     """把本次改动件按磁盘实测回写进各自的 manifest（sidecar 优先，其次目录级）。"""
     grouped: dict[str, list[str]] = {}
     for rel in sorted(changed):
@@ -1747,7 +1762,8 @@ def _refresh(root: Path, changed: dict[str, int],
         if not manifest.is_file():
             continue
         refreshed += len(refresh_manifest_files(
-            manifest, root, [root / item for item in files], facts_cache=cache))
+            manifest, root, [root / item for item in files],
+            facts_cache=cache, facts=facts))
     return refreshed
 
 
@@ -1792,9 +1808,11 @@ def _summary_problems(root: Path) -> list[str]:
 def _verify(root: Path, changed: dict[str, int], expected: set[str],
             before: dict[tuple[str, str], dict[str, Any]],
             after: dict[tuple[str, str], dict[str, Any]],
-            cache: FactsCache | None = None) -> dict[str, Any]:
+            cache: FactsCache | None = None,
+            facts: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     mismatches: list[str] = []
     unregistered: list[str] = []
+    known = facts or {}
     for rel in sorted(changed):
         if not rel.endswith(DATA_SUFFIXES) or rel.endswith('.manifest.json'):
             continue
@@ -1802,10 +1820,13 @@ def _verify(root: Path, changed: dict[str, int], expected: set[str],
         if node is None:
             unregistered.append(rel)
             continue
-        facts = file_facts(root / rel, cache)
+        if rel in known:
+            data_facts = known[rel]
+        else:
+            data_facts = file_facts(root / rel, cache)
         for key in STAT_KEYS:
-            if key in node and node[key] != facts[key]:
-                mismatches.append(f'{rel}:{key}(manifest={node[key]} disk={facts[key]})')
+            if key in node and node[key] != data_facts[key]:
+                mismatches.append(f'{rel}:{key}(manifest={node[key]} disk={data_facts[key]})')
     unexpected = sorted(
         rel for rel in changed
         if rel not in expected and not rel.startswith(SIDE_PREFIXES))
@@ -2512,6 +2533,48 @@ def _sync_disk_scan_ledger(root: Path) -> str:
     return f'{len(keys)} 个 rc={code}'
 
 
+def _in_formal_store(root: Path) -> bool:
+    """``root`` 是否就是正式库 ``data/local_store``（只有它下面的侧车会被自动埋点）。"""
+    try:
+        from src.data.changelog import repo_root  # noqa: PLC0415
+
+        formal = Path(repo_root()) / 'data' / 'local_store'
+        return os.path.normcase(os.path.abspath(root)) == os.path.normcase(
+            os.path.abspath(formal))
+    except (OSError, ValueError):
+        return False
+
+
+def _record_sidecar_refresh(refreshed: int, started: datetime, ended: datetime,
+                            root: Path) -> None:
+    """侧车 ``*.manifest.json`` 批量回写只记 1 条汇总（B）。
+
+    逐件埋点会把 9,176 行/日写进台账，而侧车是派生记账，可由 manifest 步幂等重算；
+    数据文件本身的 create/update 记账不受影响。汇总行带件数与起止时分，便于追溯。
+    仅当 store 根就是正式库时记录：临时 store / ``--store-root`` 指向别处时，
+    侧车本就不在正式层、不会被埋点，也就不该出现汇总行。
+    """
+    if refreshed <= 0 or not _in_formal_store(root):
+        return
+    try:
+        from src.data import changelog  # noqa: PLC0415
+
+        changelog.append_event(
+            action='update',
+            path='data/local_store',
+            task='daily_update.sidecar_refresh',
+            reason=(f'侧车 manifest 批量回写 {refreshed} 件'
+                    f'（{started:%H:%M:%S}~{ended:%H:%M:%S}）；'
+                    '逐件埋点按 manifest 步汇总，数据文件记账不变'),
+            sha256='',
+            size_bytes=None,
+            dedupe_window_seconds=0,
+        )
+    except Exception as exc:  # noqa: BLE001 - 汇总记不上不得反噬已完成的回写
+        logger.warning('[daily] 侧车回写汇总台账写入失败（{}: {}）',
+                       type(exc).__name__, exc)
+
+
 def _step_manifest(plan: _Plan, args: argparse.Namespace,
                    state: dict[str, Any]) -> tuple[bool, str]:
     """回写本次改动件的 manifest，并做逐件对账与预期差集检查（致命步）。
@@ -2519,6 +2582,8 @@ def _step_manifest(plan: _Plan, args: argparse.Namespace,
     哈希/行数走 ``work/cache/manifest_facts.json`` 增量复用：``(path, size, mtime)``
     全一致才复用，任一项变化即重算；``QUANT_MANIFEST_FULL_HASH=1`` 可强制全量重算。
     复用的只是「同一文件的事实怎么取」，变更集判定与逐件对账判据均不改变。
+    每件数据文件只取一次事实，回写 / 对账 / 摘要共用；侧车回写期间关闭逐件埋点，
+    改为 1 条汇总（见 :func:`_record_sidecar_refresh`）。
     """
     root = plan.root
     # 直写盘数据集的 ledger 补登与行情总账回写都放在取变更集之前：两者都是本步
@@ -2531,11 +2596,19 @@ def _step_manifest(plan: _Plan, args: argparse.Namespace,
     # 行情总账由 build/本步回写，无逐件产者；不登记就会被判「预期外改动」
     # （2026-11-27 实测：差异 1 件 → 致命失败 exit=1）。
     plan.expected.add(QUOTES_MANIFEST_REL)
-    refreshed = _refresh(root, changed, cache)
-    report = _verify(root, changed, plan.expected, plan.coverage, _coverage(root), cache)
-    digest = _sha256_text(f'{rel}:{file_facts(root / rel, cache)["sha256"]}'
-                          for rel in sorted(changed)
-                          if (root / rel).is_file())
+    data_facts = _changed_data_facts(root, changed, cache)
+    started = datetime.now()
+    with suspend_changelog_recording():
+        refreshed = _refresh(root, changed, cache, data_facts)
+    _record_sidecar_refresh(refreshed, started, datetime.now(), root)
+    report = _verify(root, changed, plan.expected, plan.coverage, _coverage(root),
+                     cache, data_facts)
+    digest = _sha256_text(
+        f'{rel}:'
+        + (data_facts[rel]['sha256'] if rel in data_facts
+           else file_facts(root / rel, cache)['sha256'])
+        for rel in sorted(changed)
+        if (root / rel).is_file())
     for rel in report['unregistered']:
         logger.warning('[daily] 未登记（manifest 无该件条目）：{}', rel)
     remaining, _ = _plan_gaps(_coverage(root), plan.latest, plan.data_types,

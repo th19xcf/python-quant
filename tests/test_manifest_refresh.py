@@ -171,6 +171,32 @@ def test_refresh_is_idempotent(tmp_path):
     assert manifest.read_bytes() == first
 
 
+def test_refresh_uses_provided_facts_without_recompute(tmp_path):
+    """调用方已算好的 facts 直接复用：不再 stat + 重算磁盘，回写值与之逐项一致。"""
+    root = tmp_path / 'store'
+    target = root / 'meta' / 'events' / 'events.parquet'
+    target.parent.mkdir(parents=True)
+    manifest = target.parent / 'manifest.json'
+    _write_manifest(manifest, {
+        'files': [{'path': 'meta/events/events.parquet', **STALE,
+                   'columns': ['event_id']}],
+    })
+    pl.DataFrame({'event_id': ['a']}).write_parquet(target)
+    rel = 'meta/events/events.parquet'
+    provided = {
+        rel: {'rows': 7, 'bytes': 12345, 'sha256': 'c' * 64, 'columns': ['event_id']},
+    }
+
+    refreshed = refresh_manifest_files(
+        manifest, root, [target], required=True, facts=provided)
+
+    assert refreshed == [rel]
+    entry = json.loads(manifest.read_text(encoding='utf-8'))['files'][0]
+    assert entry['rows'] == 7
+    assert entry['bytes'] == 12345
+    assert entry['sha256'] == 'c' * 64
+
+
 def test_required_raises_when_entry_missing(tmp_path):
     """漏登记不是「无需回写」：required=True 必须报错，不静默跳过。"""
     root = tmp_path / 'store'

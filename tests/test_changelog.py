@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+from pathlib import Path
 
 import pytest
 
@@ -77,6 +78,53 @@ def test_upgrade_keeps_history_bytes_identical(tmp_path):
     # 历史行仍是 9 列，只有新追加的一行为 10 列
     assert len(next(csv.reader([after[1].decode("utf-8")]))) == 9
     assert len(next(csv.reader([after[-1].decode("utf-8")]))) == len(FIELDS)
+
+
+def test_current_header_does_not_read_whole_ledger(tmp_path, monkeypatch):
+    """表头已是 10 列时只读首行探测：不能再整读 91.9MB 台账（2026-11-28 A 项）。"""
+    csv_file = tmp_path / "data_changelog.csv"
+    row = "r,2026-11-01T00:00:00,t,update,reports/a,1," + "a" * 64 + ",,system,r"
+    csv_file.write_text(
+        ",".join(FIELDS) + "\n" + "\n".join([row] * 600) + "\n",
+        encoding="utf-8",
+        newline="",
+    )
+    assert csv_file.stat().st_size > 4 * 1024
+
+    def _no_full_read(_self):
+        raise AssertionError("表头已是最新时不应整读台账")
+
+    monkeypatch.setattr(Path, "read_bytes", _no_full_read)
+    append_event(
+        action="update",
+        path="reports/b.parquet",
+        task="t",
+        reason="r",
+        sha256="b" * 64,
+        size_bytes=1,
+        csv_file=csv_file,
+        dedupe_window_seconds=0,
+    )
+    events = read_events(csv_file)
+    assert events[-1]["path"] == "reports/b.parquet"
+
+
+def test_unexpected_header_is_rejected_without_rewrite(tmp_path):
+    """既非 10 列、也非旧的 9 列表头：必须拒绝改写，文件保持原样。"""
+    csv_file = tmp_path / "c.csv"
+    csv_file.write_text("a,b,c\n1,2,3\n", encoding="utf-8", newline="")
+    before = csv_file.read_bytes()
+    with pytest.raises(ValueError, match="表头与预期不符"):
+        append_event(
+            action="update",
+            path="reports/a",
+            task="t",
+            reason="r",
+            sha256="a" * 64,
+            size_bytes=1,
+            csv_file=csv_file,
+        )
+    assert csv_file.read_bytes() == before
 
 
 def test_read_events_pads_short_rows(tmp_path):
