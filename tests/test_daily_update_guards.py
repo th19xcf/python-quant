@@ -666,6 +666,94 @@ def test_manifest_step_registers_quotes_manifest(tmp_path, monkeypatch):
     assert ok is True, detail
 
 
+def test_manifest_step_refreshes_quotes_manifest_after_late_write(tmp_path, monkeypatch):
+    """build 收尾回写后 futures 又追加行情：对账步必须再按磁盘回写总账。
+
+    复刻 2026-11-27：build 收尾时总账 rows=1，之后第 6 步追加 1 个合约的当日 bar，
+    磁盘已经是 2 行；manifest 步若不按磁盘再回写一次，总账会永久落后（153,896 vs
+    153,956），``_verify`` 会把差异判成致命失败。
+    """
+    root = tmp_path / 'store'
+    stock = root / 'quotes' / 'stock' / 'sh'
+    stock.mkdir(parents=True)
+    pl.DataFrame({'date': [date(2026, 11, 27)], 'ts_code': ['600000.SH'],
+                  'close': [10.0]}).write_parquet(stock / '600000.SH.parquet')
+    futures = root / 'quotes' / 'futures' / 'cffex'
+    futures.mkdir(parents=True)
+    pl.DataFrame({'trade_date': ['20261127'], 'ts_code': ['IF2412'],
+                  'close': [4000.0]}).write_parquet(futures / 'IF2412.parquet')
+    # build 收尾时刻的总账快照：只统计到个股那 1 行（futures 尚未写入）
+    (root / 'quotes' / 'manifest.json').write_text(
+        json.dumps({
+            'files': 1, 'rows': 1, 'bytes': 0,
+            'universe': {'stock': {
+                'files': 1, 'rows': 1, 'bytes': 0,
+                'markets_detail': {'sh': {'files': 1, 'rows': 1, 'bytes': 0}}}},
+        }), encoding='utf-8')
+    monkeypatch.setattr(du, '_sync_disk_scan_ledger', lambda root: 'stub')
+    monkeypatch.setattr(du, 'MANIFEST_FACTS_CACHE', tmp_path / 'facts.json')
+    plan = du._Plan(
+        root=root, config=types.SimpleNamespace(
+            data=types.SimpleNamespace(tdx_data_path=None)),
+        store=None, factor_store=None, data_types=['stock'], codes=None,
+        latest=date(2026, 11, 27), coverage={}, gaps=[], skipped=[], inputs={},
+        expected={'quotes/stock/sh/600000.SH.parquet',
+                  'quotes/futures/cffex/IF2412.parquet'},
+        plan_quote=set(), range_label='', marker_ts=0.0)
+    args = types.SimpleNamespace(manifest_full_hash=False,
+                                 max_gap_days=du.DEFAULT_MAX_GAP_DAYS)
+
+    ok, detail = du._step_manifest(plan, args, {})
+
+    payload = json.loads((root / 'quotes' / 'manifest.json').read_text(encoding='utf-8'))
+    assert payload['rows'] == 2
+    assert payload['universe']['futures']['rows'] == 1
+    assert du._summary_problems(root) == []
+    assert ok is True, detail
+
+
+def test_valuation_timeout_scales_with_remaining_codes(tmp_path, monkeypatch):
+    """估值步硬超时必须按剩余标的数缩放，固定 1,500s 会截断全量刷新。"""
+    root = tmp_path / 'store'
+    (root / 'meta' / 'financials').mkdir(parents=True)
+    codes = ['600000.SH', '000001.SZ', '600519.SH', '000002.SZ', '300750.SZ']
+    pl.DataFrame({
+        'ts_code': codes, 'name': ['x'] * 5,
+        'list_date': [date(2000, 1, 1)] * 5, 'delist_date': [None] * 5,
+        'status': ['L'] * 5, 'market': ['主板'] * 5,
+    }).write_parquet(root / 'meta' / 'stock_basic.parquet')
+    pl.DataFrame({'ts_code': codes, 'trade_date': [date(2026, 11, 26)] * 5},
+                 schema={'ts_code': pl.String, 'trade_date': pl.Date}).write_parquet(
+        root / 'meta' / 'financials' / 'valuation_daily.parquet')
+    # 断点：5 只里已补完 3 只，剩余 2 只待采
+    parts = root / '_staging' / 'financials_parts_20261127'
+    parts.mkdir(parents=True)
+    (parts / 'progress.json').write_text(json.dumps({
+        'valuation_ranges': {'2026-11-27_2026-11-27': codes[:3]}}), encoding='utf-8')
+    captured: dict[str, object] = {}
+
+    def _fake_run(cmd, label, timeout=None, **_kwargs):
+        captured['timeout'] = timeout
+        return 0
+
+    monkeypatch.setattr(du, '_run_module', _fake_run)
+    plan = types.SimpleNamespace(root=root, latest=date(2026, 11, 27))
+    args = types.SimpleNamespace(skip_valuation=False, allow_remote=True)
+
+    _ok, detail = du._run_valuation(plan, args)
+
+    expected = du.VALUATION_TIMEOUT_BASE + int(2 * du.VALUATION_SECONDS_PER_CODE)
+    assert captured['timeout'] == expected
+    assert '待采 2 只' in detail
+
+
+def test_valuation_timeout_budget_bounds():
+    """预算的上下界：进度不可知取上限，零待采取基础段，超大余量被上限截断。"""
+    assert du._valuation_timeout_budget(None) == du.VALUATION_TIMEOUT_MAX
+    assert du._valuation_timeout_budget(0) == du.VALUATION_TIMEOUT_BASE
+    assert du._valuation_timeout_budget(100_000) == du.VALUATION_TIMEOUT_MAX
+
+
 def test_sync_disk_scan_ledger_only_touches_backfilled_entries(tmp_path, monkeypatch):
     """只刷新 evidence=disk_scan 的登记：受控写入的数据集 writer 记录不被覆盖。"""
     root = tmp_path / 'store'

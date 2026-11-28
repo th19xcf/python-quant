@@ -1136,6 +1136,59 @@ def _valuation_last_date(root: Path) -> date | None:
     return value if isinstance(value, date) else None
 
 
+#: 估值步超时预算：按「剩余待采标的数」缩放，避免全量刷新被固定阈值截断
+#: （2026-11-27 首轮跑到 4,800/5,600 即被 1,500s 截断，被迫换批次续跑）。
+#: 实测 ≈0.31 s/只（workers=3），取 0.5 s/只留 60% 余量；基础段覆盖启动、
+#: 名录校验与分片合并；上限防源端卡死时无限拖住后续步骤。
+VALUATION_SECONDS_PER_CODE = 0.5
+VALUATION_TIMEOUT_BASE = 300
+VALUATION_TIMEOUT_MAX = 3600
+
+
+def _valuation_pending_estimate(root: Path, target: date) -> int | None:
+    """估算本轮估值还需实抓的标的数（只读名录与断点小文件，不扫 620MB 估值表）。
+
+    与 ``collect_financials.py`` 的跳过判据同源：区间键为 ``<起点>_<终点>``，
+    起点取本地估值末日 + 1（末日已追平时退化为 ``<终点>_<终点>``），已完成数取
+    ``progress.json`` 的 ``valuation_ranges`` 桶。名录或进度不可读时返回 ``None``，
+    由调用方按上限预算兜底；估算偏大只会放宽超时，不会提前截断。
+    """
+    try:
+        from src.data.financials.store import parts_root  # noqa: PLC0415
+        from src.data.universe_source import load_local_universe  # noqa: PLC0415
+
+        _, listed = load_local_universe(root)
+    except (ImportError, OSError, ValueError, SystemExit):
+        return None
+    total = len(listed)
+    if not total:
+        return None
+    last = _valuation_last_date(root)
+    if last is None:
+        return total
+    since = last + timedelta(days=1)
+    if since > target:
+        since = target
+    range_key = f'{since.isoformat()}_{target.isoformat()}'
+    done = 0
+    try:
+        payload = json.loads((parts_root(root) / 'progress.json')
+                             .read_text(encoding='utf-8'))
+        bucket = (payload.get('valuation_ranges') or {}).get(range_key) or []
+        done = len(bucket)
+    except (OSError, ValueError, AttributeError, TypeError):
+        done = 0
+    return max(0, total - done)
+
+
+def _valuation_timeout_budget(pending: int | None) -> int:
+    """把剩余标的数换算成硬超时秒数；``pending`` 不可知时取上限。"""
+    if pending is None:
+        return VALUATION_TIMEOUT_MAX
+    budget = VALUATION_TIMEOUT_BASE + int(pending * VALUATION_SECONDS_PER_CODE)
+    return min(max(budget, VALUATION_TIMEOUT_BASE), VALUATION_TIMEOUT_MAX)
+
+
 def _run_valuation(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
     """全市场日频估值增量：起点由脚本从本地估值末日 + 1 自动推算，终点取 plan.latest。
 
@@ -1145,6 +1198,8 @@ def _run_valuation(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
     ``--until`` 透传 ``plan.latest``（即单入口 ``--end``）：次日补跑时名录只到昨日，
     若终点仍取「最近交易日」（= 今日）会触发名录新鲜度守卫误判；显式指定终点后
     守卫的 as_of 与名录末日一致，不再误拒。
+
+    超时按剩余标的数缩放：全量约 5,600 只、实测 ≈0.31 s/只，固定 1,500s 必然截断。
     """
     if args.skip_valuation:
         return True, '已跳过（--skip-valuation）'
@@ -1153,13 +1208,16 @@ def _run_valuation(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
     last = _valuation_last_date(plan.root)
     if last is None:
         return False, '估值表缺失，无法推算起点'
+    pending = _valuation_pending_estimate(plan.root, plan.latest)
+    budget = _valuation_timeout_budget(pending)
     code = _run_module(
         [sys.executable, str(ROOT / 'tools' / 'collect_financials.py'),
          '--only', 'valuation', '--since', 'auto',
-         '--until', plan.latest.isoformat()], '全市场估值增量', timeout=1500)
+         '--until', plan.latest.isoformat()], '全市场估值增量', timeout=budget)
     after = _valuation_last_date(plan.root)
     ok = code == 0 and after is not None and after >= plan.latest
-    return ok, f'末日 {last}→{after or "-"} | rc={code}'
+    return ok, (f'末日 {last}→{after or "-"} | 待采 {pending if pending is not None else "?"} 只'
+                f' | 超时 {budget}s | rc={code}')
 
 
 def _run_index_valuation(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
