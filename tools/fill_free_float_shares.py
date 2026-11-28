@@ -80,9 +80,11 @@ PAGE_SIZE = 5000
 THROTTLE = 0.25
 #: 单页最多重试次数，连续失败即停压
 MAX_ATTEMPTS = 3
-#: 原始缓存落点（离线复用；``E:\www\tmp`` 是历史采集的外部输入目录）
-LEGACY_RAW_GLOB = 'em_equity_all_*.parquet'
-LEGACY_RAW_DIR = Path(r'E:\www\tmp')
+#: 原始缓存落点（离线复用）：正式层 ``meta/factors/raw/`` 下的采集快照。
+#: 该快照原放在仓库外目录，2026-11-28 收编进正式层（源文件未移动、未删除），
+#: 逐文件登记见同目录 ``manifest.json``。
+RAW_CACHE_SUBDIR = Path('meta') / 'factors' / 'raw'
+RAW_CACHE_GLOB = 'em_equity_all_*.parquet'
 RAW_COLUMNS = ['SECUCODE', 'END_DATE', 'LISTED_A_SHARES', 'FREELIQCI_SHARES',
                'TOTAL_SHARES', 'CHANGE_REASON']
 FREE_SOURCE = 'eastmoney:F10_FREELIQCI_SHARES'
@@ -229,8 +231,8 @@ def fetch(*, work: Path, throttle: float = THROTTLE) -> Path:
 # ----------------------------------------------------------------------
 # 原始缓存 → (ts_code, effective_date) 口径
 # ----------------------------------------------------------------------
-def resolve_raw(explicit: Path | None, work: Path) -> Path:
-    """原始缓存定位：显式路径 → staging 汇总 → 历史外部缓存（取最新）。"""
+def resolve_raw(explicit: Path | None, work: Path, root: Path) -> Path:
+    """原始缓存定位：显式路径 → staging 汇总 → 正式层快照（取最新）。"""
     if explicit is not None:
         if not explicit.is_file():
             raise SystemExit(f'原始缓存不存在: {explicit}')
@@ -238,13 +240,14 @@ def resolve_raw(explicit: Path | None, work: Path) -> Path:
     staged = work / 'raw.parquet'
     if staged.is_file():
         return staged
-    if LEGACY_RAW_DIR.is_dir():
-        candidates = sorted(LEGACY_RAW_DIR.glob(LEGACY_RAW_GLOB),
+    raw_dir = root / RAW_CACHE_SUBDIR
+    if raw_dir.is_dir():
+        candidates = sorted(raw_dir.glob(RAW_CACHE_GLOB),
                             key=lambda p: p.stat().st_mtime, reverse=True)
         if candidates:
             return candidates[0]
     raise SystemExit('未找到原始缓存：请先跑 --fetch，或用 --raw 指定。'
-                     f'（已查找 {staged} 与 {LEGACY_RAW_DIR / LEGACY_RAW_GLOB}）')
+                     f'（已查找 {staged} 与 {raw_dir / RAW_CACHE_GLOB}）')
 
 
 def load_em(path: Path) -> pl.DataFrame:
@@ -511,7 +514,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f'股本表缺少基础列: {missing}')
         return 2
 
-    raw_path = resolve_raw(Path(args.raw) if args.raw else raw, work)
+    raw_path = resolve_raw(Path(args.raw) if args.raw else raw, work, root)
     planned = plan_fill(table, load_em(raw_path))
     stats = _stats(planned)
     print(f'[raw] {raw_path}')
