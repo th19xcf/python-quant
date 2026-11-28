@@ -1,0 +1,13 @@
+{
+ "panel_rows": 724972,
+ "stocks": 5850,
+ "months": 202,
+ "first_period": "2010-01",
+ "last_period": "2026-10",
+ "ret_nonnull": 717124,
+ "mktcap_nonnull": 695458,
+ "bp_nonnull": 703385,
+ "dy_nonnull": 710082,
+ "industry_nonnull": 724896,
+ "industry_names": 31
+}
