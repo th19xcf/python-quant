@@ -167,8 +167,9 @@ CLOSE_CUTOFF = dtime(15, 5)
 #: 末根距目标交易日超过该天数视为长期停更/退市，不进待补清单（与 fill_daily_gap 默认同口径）。
 DEFAULT_MAX_GAP_DAYS = 90
 #: build 前的「通达信日结已落地」守卫：盘后数据实测 16:23:48 才落地（曾晚于日更启动），
-#: 链路本身无停等，故 build 前按每 5 分钟重试、最多等 40 分钟；超时判该步失败。
-TDX_LANDING_POLL_SECONDS = 300
+#: 链路本身无停等，故 build 前按每 45 秒重试、最多等 40 分钟；超时判该步失败。
+#: 轮询间隔取 45s（30~60s 区间）：比原先 300s 更快感知落地，又不构成对外部源的忙等。
+TDX_LANDING_POLL_SECONDS = 45
 TDX_LANDING_MAX_WAIT_SECONDS = 2400
 #: 探测落地的优先样本（覆盖沪指/深成指/主板个股），命中即返回，避免每次全目录扫。
 TDX_LANDING_PROBES = (('sh', '000001'), ('sz', '399001'), ('sh', '600000'), ('sz', '000001'))
@@ -403,15 +404,33 @@ def _sha256_text(items: Iterable[str]) -> str:
     return digest.hexdigest()
 
 
+#: ``_coverage`` 进程内缓存：键为 parquet 的绝对路径，值为 (mtime_ns, size, 解析结果)。
+#: build / manifest 之后同进程重读会因 stat 变化自动失效，不会返回旧快照。
+_COVERAGE_CACHE: dict[str, tuple[tuple[int, int], dict[tuple[str, str], dict[str, Any]]]] = {}
+
+
 def _coverage(root: Path) -> dict[tuple[str, str], dict[str, Any]]:
-    """读 ``meta/daily_index.parquet`` 作为覆盖度（口径以该表为准）。"""
+    """读 ``meta/daily_index.parquet`` 作为覆盖度（口径以该表为准）。
+
+    进程内按 (mtime_ns, size) 缓存的只读快照：同一进程多处调用只解析一次 parquet；
+    文件被重写时 stat 变化即失效重读。返回值只读消费，调用方不得就地修改。
+    """
     import polars as pl  # noqa: PLC0415
 
     path = root / 'meta' / 'daily_index.parquet'
-    if not path.is_file():
+    try:
+        stat = path.stat()
+    except OSError:
         return {}
+    key = str(path)
+    stamp = (stat.st_mtime_ns, stat.st_size)
+    cached = _COVERAGE_CACHE.get(key)
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
     frame = pl.read_parquet(path, columns=['ts_code', 'data_type', 'rows', 'start', 'end'])
-    return {(row['data_type'], row['ts_code']): row for row in frame.to_dicts()}
+    data = {(row['data_type'], row['ts_code']): row for row in frame.to_dicts()}
+    _COVERAGE_CACHE[key] = (stamp, data)
+    return data
 
 
 def _to_date(value: Any) -> date | None:
@@ -1836,8 +1855,12 @@ def _run_steps(steps: Sequence[tuple[str, str, bool, Callable[[], tuple[bool, st
             ok, detail = func()
         except Exception as exc:  # noqa: BLE001 - 单步异常不得中断后续步骤
             ok, detail = False, f'{type(exc).__name__}: {exc}'
-        outcomes.append(_StepOutcome(key, name, critical, ok, detail,
-                                     time.perf_counter() - started))
+        elapsed = time.perf_counter() - started
+        outcomes.append(_StepOutcome(key, name, critical, ok, detail, elapsed))
+        # 分步耗时观测：与 run_start / run_end 同一份 JSONL，省去事后拼 console log。
+        _log_event({'event': 'step_end', 'pid': os.getpid(), 'step': key, 'name': name,
+                    'critical': critical, 'ok': ok, 'seconds': round(elapsed, 2),
+                    'ts': datetime.now().isoformat(timespec='seconds')})
         if state is not None and not ok and not critical:
             state.setdefault('failed_noncritical', []).append({
                 'step': key, 'name': name, 'exit': _step_exit_code(detail),
@@ -3154,7 +3177,7 @@ def main(argv: list[str] | None = None) -> int:
                         help='跳过复权因子刷新（个股 + 基金增量重算）')
     parser.add_argument('--no-tdx-landing-guard', dest='tdx_landing_guard',
                         action='store_false',
-                        help='关闭 build 前的通达信日结落地守卫（默认开启：每 5 分钟重试）')
+                        help='关闭 build 前的通达信日结落地守卫（默认开启：每 45 秒重试）')
     parser.add_argument('--tdx-landing-max-wait', type=int,
                         default=TDX_LANDING_MAX_WAIT_SECONDS,
                         help='通达信落地守卫最长等待秒数（默认 2400=40 分钟，超时 build 判失败）')

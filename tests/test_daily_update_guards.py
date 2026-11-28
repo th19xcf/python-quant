@@ -88,6 +88,7 @@ def test_daily_index_end_mismatch_fails_build_step(tmp_path, monkeypatch):
     args = _build_args()
     monkeypatch.setattr(du, '_run_build', lambda **kwargs: 0)
     monkeypatch.setattr(du, '_recent_completed_trade_day', lambda root: date(2026, 11, 16))
+    monkeypatch.setattr(du, 'DAILY_LOG', tmp_path / 'daily.log')
 
     ok, detail = du._step_build(plan, args)
     assert ok is False
@@ -293,6 +294,7 @@ def test_fund_lag_flow_reaches_factor_step(tmp_path, monkeypatch):
     monkeypatch.setattr(du, '_run_build', lambda **kwargs: 0)
     monkeypatch.setattr(du, '_recent_completed_trade_day', lambda root: date(2026, 11, 16))
     monkeypatch.setattr(fund_module, 'rebuild_fund_factors', fake_rebuild)
+    monkeypatch.setattr(du, 'DAILY_LOG', tmp_path / 'daily.log')
 
     outcomes = du._run_steps([
         ('build', '本地行情构建 + 末日断言', True, lambda: du._step_build(plan, _build_args())),
