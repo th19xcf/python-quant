@@ -27,8 +27,8 @@
                        稳定化收敛 → 追加入库；稀疏关键词结构正常的 0 条按「当日无公告」
                        接受，结构异常仍判失败；非致命，失败只告警）
     10. 申万行业指数    tools/build_sw_industry_index.py --re-pull（801xxx 段 31 只，幂等只追加；
-                       源端 OHLC 只到 2026-11-09，不追 T 日、不伪造，尾缺口记侧车 tail_gap；
-                       非致命，失败只告警）
+                       源端 OHLC 落后时不追 T 日、不伪造，尾缺口记侧车 tail_gap，
+                       源端中段缺行登记 tail_gap.source_mid_gap；非致命，失败只告警）
     11. ST 快照与区间表  src.data.risk_flags refresh + src.data.st_history build
     12. 名录每日检查    src.main --update-fund / --update-index（有变更才落盘）
     13. 估值增量        tools/collect_financials.py --only valuation --since auto

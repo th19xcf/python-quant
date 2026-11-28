@@ -6,7 +6,7 @@
 
 口径（2026-11-19 与用户确认）：
 * 落位 ``quotes/index/sh/8010xx.SH.parquet``，列契约与既有指数分片一致；
-* 源端 OHLC 只到 2026-11-09，缺口 11-10~11-18 不伪造，manifest 记 ``tail_gap``；
+* 源端 trend 序列中段缺行登记为 ``tail_gap.source_mid_gap``，不伪造 OHLC；
 * 空返回一律按失败处理（源端对不存在的代码返回 code=200 + data=[]，不可当「无数据」）；
 * ``--re-pull`` 幂等：只追加库内没有的新日期，既有行一律不改。
 
@@ -65,6 +65,12 @@ ROSTER: dict[str, str] = {
     '801790': '非银金融', '801880': '汽车', '801890': '机械设备', '801950': '煤炭',
     '801960': '石油石化', '801970': '环保', '801980': '美容护理',
 }
+
+# 源端 trend 序列中段缺行（已知现象，非本地丢失）。本地 31 只分片已有 11-17/11-18，
+# 11-19 的 pre_close 与本地 11-18 收盘吻合，可证这两天真实存在；11-10 源端与本地
+# 同样缺失（源端只有 11-09 与 11-11）。全量重建会按源端把这三天冲掉，故 --re-pull
+# 只追加尾部，并把缺行登记在侧车 tail_gap.source_mid_gap 供体检放行。
+SOURCE_MID_GAP: tuple[str, ...] = ('2026-11-10', '2026-11-17', '2026-11-18')
 
 
 def _sha256(path: Path) -> str:
@@ -162,6 +168,10 @@ def tail_gap_for(last_date: date, cal: list[date]) -> dict:
         'reason': '源端 trend 接口 OHLC 只更新到此为止；analysis 端点虽有收盘但无 open/high/low，'
                   '不伪造缺失 OHLC',
         're_pull': 'python tools/build_sw_industry_index.py --re-pull',
+        'source_mid_gap': list(SOURCE_MID_GAP),
+        'source_mid_gap_reason': '源端 trend 全历史序列中段缺这几根，不是本地丢数；'
+                                 '本地已有的日期必须保留，--re-pull 只追加尾部，'
+                                 '禁止 --stage-only/--promote 全量重建',
     }
 
 
@@ -176,6 +186,8 @@ def verify(frames: dict[str, pl.DataFrame], raw: dict[str, list[dict]],
     close_src_mismatch = 0
     close_ana_mismatch = 0
     missing_days_total = 0
+    source_mid_gap_missing_total = 0
+    mid_gap = {datetime.strptime(d, '%Y-%m-%d').date() for d in SOURCE_MID_GAP}
 
     ana_cache: dict[str, dict[str, dict]] = {}
     for code in frames:
@@ -232,14 +244,18 @@ def verify(frames: dict[str, pl.DataFrame], raw: dict[str, list[dict]],
         d0, d1 = df['date'][0], df['date'][-1]
         want = {d for d in cal if d0 <= d <= d1}
         have = set(df['date'].to_list())
-        missing = sorted(want - have)
+        # 源端中段缺行已登记为已知现象，不计入「本地缺失交易日」
+        mid_missing = sorted((want & mid_gap) - have)
+        missing = sorted(want - have - mid_gap)
         missing_days_total += len(missing)
+        source_mid_gap_missing_total += len(mid_missing)
         report['per_index'][code] = {
             'name': ROSTER[code], 'rows': df.height,
             'first': d0.isoformat(), 'last': d1.isoformat(), 'tp2': tp2,
             'src': diffs, 'ana': cross,
             'missing_trade_days': len(missing),
             'missing_sample': [d.isoformat() for d in missing[:5]],
+            'source_mid_gap_missing': [d.isoformat() for d in mid_missing],
         }
 
     report['checks'] = {
@@ -250,6 +266,8 @@ def verify(frames: dict[str, pl.DataFrame], raw: dict[str, list[dict]],
         'src_close_mismatch': close_src_mismatch,
         'ana_close_mismatch': close_ana_mismatch,
         'missing_trade_days_total': missing_days_total,
+        'source_mid_gap': list(SOURCE_MID_GAP),
+        'source_mid_gap_missing_total': source_mid_gap_missing_total,
         'indices': len(frames),
         'rows_total': sum(df.height for df in frames.values()),
     }
@@ -287,6 +305,7 @@ def write_sidecar(parquet: Path, ts_code: str, df: pl.DataFrame, tail_gap: dict)
         'index_basic': {'name': ROSTER[ts_code.split('.')[0]], 'publisher': '申万宏源',
                         'index_type': '行业指数', 'category': '申万一级行业'},
         'tail_gap': tail_gap,
+        'source_mid_gap': list(SOURCE_MID_GAP),
         'generated_at': datetime.now().isoformat(timespec='seconds'),
     }
     tmp = path.with_suffix('.json.tmp')
@@ -410,7 +429,8 @@ def main(argv=None) -> int:
     print(f"src^close_mismatch={chk['src_close_mismatch']} pct_max={chk['src_pct_max']:.4f} "
           f"ana^close_mismatch={chk['ana_close_mismatch']} pct_max={chk['ana_pct_max']:.4f} "
           f"missing_days={chk['missing_trade_days_total']}")
-    print(f"tail_gap={tail_gap['start']}~{tail_gap['end']} ({tail_gap['rows']} 个交易日)")
+    print(f"tail_gap={tail_gap['start']}~{tail_gap['end']} ({tail_gap['rows']} 个交易日) "
+          f"source_mid_gap={len(SOURCE_MID_GAP)} 个已登记")
 
     if chk['self_pct_max'] > 1e-12 or chk['src_close_mismatch'] or chk['ana_close_mismatch']:
         raise SystemExit('对拍未通过，停止入库')
@@ -463,6 +483,7 @@ def main(argv=None) -> int:
         'codes_added': sum(1 for value in added_rows.values() if value),
         'local_last': (local_last or source_last).isoformat(),
         'source_last': source_last.isoformat(),
+        'source_mid_gap': list(SOURCE_MID_GAP),
         'tail_gap': tail_gap,
         'rows_after': sum(final_rows.values()),
         'generated_at': datetime.now().isoformat(timespec='seconds'),
