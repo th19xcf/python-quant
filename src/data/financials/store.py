@@ -412,13 +412,20 @@ _SOURCE_SEGMENT_FIELDS: tuple[tuple[str, str], ...] = (
     ('ps', 'ps'), ('dv_ratio', 'dv'), ('total_mv', 'mv'), ('circ_mv', 'circ_mv'))
 
 
-def _merge_agg_exprs(table: str) -> list[pl.Expr]:
+def _merge_agg_exprs(table: str, existing_first: bool = False) -> list[pl.Expr]:
     """``merge_parts`` 的分组聚合式：逐字段「最后非空」+ ``source`` 按字段跟随。
 
     修复 G-080：旧实现用 ``unique(keep='last')`` 整行取最后一片，只要最后一片
     该列为空，历史非空值就被降级为 null，``source`` 串也随整行被替换。这里改为
     逐列取「最后一个非空值」，并让字段级 ``source`` 段跟着该字段的来源行走：
     新值为空时字段与它的 ``source`` 段都保持原值。
+
+    **income.net_profit 例外（2026-11-28 周批回退）**：该列已被 2026-11-11 的
+    新浪合并口径修正为正式值，而周批分片带的是 akshare 原始归母口径。若沿用
+    「最后非空」，旧分片会把修正值覆盖回归母（实测 2016–2026 每年 71~77% 被改回）。
+    故当正式表存在（``existing_first=True``，正式表是最早输入、``_ORDER_COLUMN==0``）
+    时该列改为「正式表非空值优先，原始分片只在正式表为空/该键为新增时补位」，
+    对已修正列不再采用最后非空覆盖。其余列与其余表语义不变。
 
     ``source`` 三种形态的处置：
     - 能解析出 ``field=来源`` 段（估值）→ 按 :data:`_SOURCE_SEGMENT_FIELDS`
@@ -434,10 +441,19 @@ def _merge_agg_exprs(table: str) -> list[pl.Expr]:
     """
     key = set(_KEY_COLUMNS[table])
     schema = SCHEMAS[table]
-    aggs: list[pl.Expr] = [
-        pl.col(name).drop_nulls().last().alias(name)
-        for name in schema if name not in key and name != 'source'
-    ]
+    aggs: list[pl.Expr] = []
+    for name in schema:
+        if name in key or name == 'source':
+            continue
+        if table == 'income' and name == 'net_profit' and existing_first:
+            # 正式表（ord==0）的非空值优先；否则回退到分片的最后一个非空值
+            formal = pl.when(pl.col(_ORDER_COLUMN) == 0).then(pl.col(name))
+            aggs.append(pl.coalesce([
+                formal.drop_nulls().first(),
+                pl.col(name).drop_nulls().last(),
+            ]).alias(name))
+        else:
+            aggs.append(pl.col(name).drop_nulls().last().alias(name))
     if 'source' not in schema:
         return aggs
     fields = [(col, seg_key) for col, seg_key in _SOURCE_SEGMENT_FIELDS
@@ -482,7 +498,8 @@ def merge_parts(table: str, store_root: Path | str | None = None,
     files = sorted(
         str(p) for d in search_dirs if Path(d).exists() for p in Path(d).glob('*.parquet'))
     existing = table_path(table, store_root)
-    if existing.exists():
+    has_existing = existing.exists()
+    if has_existing:
         # 已有最终表作为最早输入；分片按顺序覆盖同主键旧版本
         files.insert(0, str(existing))
     if not files:
@@ -505,7 +522,7 @@ def merge_parts(table: str, store_root: Path | str | None = None,
             .select([*SCHEMAS[table], _ORDER_COLUMN])
             .sort([*key, _ORDER_COLUMN])
             .group_by(key, maintain_order=True)
-            .agg(_merge_agg_exprs(table))
+            .agg(_merge_agg_exprs(table, existing_first=has_existing))
             .select(list(SCHEMAS[table]))
             .sort(key))
     dest = table_path(table, store_root)

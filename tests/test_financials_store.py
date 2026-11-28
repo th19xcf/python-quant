@@ -146,11 +146,12 @@ def test_merge_parts_keeps_non_null_when_new_row_is_null(tmp_path: Path) -> None
         'ts_code': ['600519.SH'], 'end_date': [date(2025, 12, 31)],
         'ann_date': [date(2026, 3, 28)], 'ann_date_source': ['em_notice'],
         'source': ['em'], 'fetched_at': [datetime(2026, 11, 4)],
-        'revenue': [200.0], 'net_profit': [20.0],
+        'revenue': [200.0], 'net_profit': [20.0], 'parent_net_profit': [20.0],
     }
     store.write_table(pl.DataFrame(base), 'income', tmp_path)
-    # 后采分片只有 net_profit，revenue 为空
-    later = {**base, 'source': ['sina'], 'revenue': [None], 'net_profit': [25.0]}
+    # 后采分片只有部分列，revenue 为空；net_profit 也是原始分片口径
+    later = {**base, 'source': ['sina'], 'revenue': [None],
+             'net_profit': [25.0], 'parent_net_profit': [25.0]}
     part_dir = store.parts_dir('income', tmp_path)
     part_dir.mkdir(parents=True, exist_ok=True)
     pl.DataFrame(later).write_parquet(part_dir / '20251231_late.parquet')
@@ -168,9 +169,51 @@ def test_merge_parts_keeps_non_null_when_new_row_is_null(tmp_path: Path) -> None
     assert rows == 1
     frame = store.read_table('income', tmp_path)
     assert frame.height == 1
-    assert frame['revenue'][0] == 200.0       # 旧非空值保留
-    assert frame['net_profit'][0] == 25.0     # 新非空值覆盖
+    assert frame['revenue'][0] == 200.0            # 旧非空值保留
+    assert frame['parent_net_profit'][0] == 25.0   # 非保护列仍取最后非空
+    assert frame['net_profit'][0] == 20.0          # 保护列不被原始分片覆盖
     assert frame['source'][0] == 'sina'
+
+
+def test_merge_parts_protects_corrected_net_profit_from_raw_part(tmp_path: Path) -> None:
+    """2026-11-28 周批回退回归测试：原始分片不得覆盖正式表已修正的 net_profit。
+
+    正式表 net_profit=100（11-11 新浪合并口径修正值），周批分片带 akshare
+    原始归母口径 net_profit=999；合并后同键行必须仍是 100，分片新增键照常落地。
+    """
+    base = {
+        'ts_code': ['600519.SH'], 'end_date': [date(2025, 12, 31)],
+        'ann_date': [date(2026, 3, 28)], 'ann_date_source': ['em_notice'],
+        'source': ['akshare:stock_lrb_em|net_profit=keep_local'],
+        'fetched_at': [datetime(2026, 11, 11)],
+        'revenue': [200.0], 'net_profit': [100.0], 'parent_net_profit': [90.0],
+    }
+    store.write_table(pl.DataFrame(base), 'income', tmp_path)
+    part_dir = store.parts_dir('income', tmp_path)
+    part_dir.mkdir(parents=True, exist_ok=True)
+    # 同键分片：原始口径把 net_profit 改回 999，同时 revenue 有合法更新
+    pl.DataFrame({**base, 'source': ['akshare:stock_lrb_em'],
+                  'fetched_at': [datetime(2026, 11, 28)],
+                  'revenue': [201.0], 'net_profit': [999.0]}).write_parquet(
+        part_dir / 'raw_same_key.parquet')
+    # 新增键（另一报告期）照常进入
+    pl.DataFrame({**base, 'end_date': [date(2026, 3, 31)],
+                  'ann_date': [date(2026, 4, 28)], 'source': ['akshare:stock_lrb_em'],
+                  'net_profit': [50.0], 'revenue': [60.0]}).write_parquet(
+        part_dir / 'raw_new_key.parquet')
+
+    # 反例：旧实现（net_profit 也取最后非空）会把它改成 999
+    legacy = pl.concat([
+        pl.read_parquet(store.table_path('income', tmp_path)),
+        pl.read_parquet(part_dir / 'raw_same_key.parquet'),
+    ], how='diagonal_relaxed').unique(subset=['ts_code', 'end_date'], keep='last')
+    assert legacy['net_profit'][0] == 999.0
+
+    assert store.merge_parts('income', tmp_path) == 2
+    rows = {r['end_date']: r for r in store.read_table('income', tmp_path).to_dicts()}
+    assert rows[date(2025, 12, 31)]['net_profit'] == 100.0   # 已修正值不被覆盖
+    assert rows[date(2025, 12, 31)]['revenue'] == 201.0      # 非保护列照常更新
+    assert rows[date(2026, 3, 31)]['net_profit'] == 50.0     # 新增键照常落地
 
 
 def test_merge_parts_field_level_source_follows_value(tmp_path: Path) -> None:
